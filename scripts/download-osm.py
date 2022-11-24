@@ -1,0 +1,842 @@
+#!/usr/bin/env python3
+"""
+Usage:
+  download-osm list <service> [-l] [-c]
+  download-osm bbox <pbf-file> <bbox-file> [-v]
+  download-osm planet [-o <file> [-f] [-b <bbox-file>]] [-j <file> [-k <kv>]...]
+               [-l] [-p] [-n] [-v]  [--]  [<aria2c_args>...]
+  download-osm [url|geofabrik|osmfr|bbbike] <area_or_url>
+               [-o <file> [-f] [-b <bbox-file>]] [-s <file>]
+               [-l] [-y] [-c] [-n] [-v] [-j <file> [-k <kv>]...]  [--]  [<aria2c_args>...]
+  download-osm --help
+  download-osm --version
+
+Download types:
+  planet           Loads latest planet file (50+ GB) from all known mirrors
+  list <service>   Show available areas for a service. For now only 'geofabrik'.
+  url <url>        Loads file from the specific <url>.
+                   If <url>.md5 is available, download-osm will use it to validate.
+  geofabrik <id>   Loads file from Geofabrik by ID, where the ID is either
+                   "australia-oceania/new-zealand" or just "new-zealand".
+                   See https://download.geofabrik.de/
+  bbbike <id>      Loads file from BBBike by extract ID, for example "Austin".
+                   See https://download.bbbike.org/osm/
+  osmfr <id>       Loads file from openstreetmap.fr by extract ID, for example
+                   "central-america/costa_rica".  Download will add '-latest.osm.pbf'.
+                   See https://download.openstreetmap.fr/extracts
+  bbox             Compute bounding box for the given data pbf and save the string to
+                   a text file with a single line.
+
+Options:
+  -o --output <file>    Configure aria2c to save downloaded file under a given name.
+                        If directory does not exist, it will be created.
+                        If the file already exists, exits with an error, unless --force.
+  -f --force            If set and file already exists, will delete it before downloading.
+  -y --poly                if set will download the poly only (only geofabrick).
+  -b --bbox <file>      Similar to the "bbox" command, create a bbox value file.
+                        Uses bbox from the catalog if available, e.g. Geofabrik.
+                        This param requires the --output option.
+  -p --include-primary  If set, will download from the main osm.org (please avoid
+                        using this parameter to reduce the load on the primary server)
+  -l --force-latest     Always download the very latest available planet file,
+                        even if there are too few mirrors that have it.
+                        For area services, forces catalog re-download.
+  -c --no-cache         Do not cache downloaded list of extracts
+  -s --state <file>     Download state file and save it to the <file>
+  -j --imposm-cfg <f>   Create an imposm configuration json file, and write
+                        replication_url param into it.  Use -k any additional values.
+                        (requires planet, geofabrik, or osmfr download type)
+  -k --kv <key=value>   Add extra key=value params to the imposm config (requires -j)
+  -n --dry-run          If set, do all the steps except the actual data download.
+                        State file will still be downloaded if --state is set.
+  -v --verbose          Print additional debugging information
+  --help                Show this screen.
+  --version             Show version.
+
+Any parameters after empty ' -- ' param will be passed to aria2c. For example,
+this sets the number of maximum concurrent downloads:
+    download-osm planet -- --max-concurrent-downloads=2
+See https://aria2.github.io/manual/en/html/aria2c.html#options for more options.
+By default, aria2c is executed with --checksum (md5 hash) and --split parameters.
+Split is used to download with as many streams, as download-osm finds.
+Use  --split  or  -s  parameter to override that number. Use --dry-run
+to see all parameters downloader will use with aria2c without downloading.
+
+Internal callback mode:  If DOWNLOAD_OSM_BBOX_FILE env var is set, expects 3 parameters,
+where the 3rd parameter is the name of the PDF file. Will run bbox command.
+"""
+
+import asyncio
+import json
+import re
+import subprocess
+import sys
+from asyncio import sleep, Future
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import List, Dict, Tuple, Iterable, Optional
+
+import aiohttp
+from aiohttp import ClientSession
+from bs4 import BeautifulSoup
+# noinspection PyProtectedMember
+from docopt import docopt, __all__ as docopt_funcs
+from tabulate import tabulate
+
+class Bbox:
+    def __init__(self, bbox=None,
+                 left=-180.0, bottom=-85.0511, right=180.0, top=85.0511,
+                 center_zoom=5) -> None:
+        if bbox:
+            left, bottom, right, top = bbox.split(',')
+        self.min_lon = float(left)
+        self.min_lat = float(bottom)
+        self.max_lon = float(right)
+        self.max_lat = float(top)
+        try:
+            # Allow both integer and float center zooms
+            self.center_zoom = int(center_zoom)
+        except ValueError:
+            self.center_zoom = float(center_zoom)
+
+    @staticmethod
+    def from_geometry(geo):
+        """Given GeoJSON geometry, compute the bounding box"""
+        bbox = Bbox()
+        bbox.min_lon, bbox.max_lon = bbox.max_lon, bbox.min_lon
+        bbox.min_lat, bbox.max_lat = bbox.max_lat, bbox.min_lat
+
+        def minmax(vals):
+            if isinstance(vals[0], List):
+                for v in vals:
+                    minmax(v)
+            else:
+                lon, lat = vals
+                if lon < bbox.min_lon:
+                    bbox.min_lon = lon
+                if lon > bbox.max_lon:
+                    bbox.max_lon = lon
+                if lat < bbox.min_lat:
+                    bbox.min_lat = lat
+                if lat > bbox.max_lat:
+                    bbox.max_lat = lat
+
+        minmax(geo)
+        return bbox
+
+    @staticmethod
+    def from_polygon(content: str):
+        lines = content.strip().splitlines()[2:][:-2]
+        coords = [re.split(r'[\s\t]+', v.strip()) for v in lines]
+        return Bbox.from_geometry(
+            [[float(v[0]), float(v[1])] for v in coords if len(v) == 2])
+
+    def bounds_str(self):
+        return ','.join(map(str, self.bounds()))
+
+    def bounds(self):
+        return self.min_lon, self.min_lat, self.max_lon, self.max_lat
+
+    def center_str(self, precision=1):
+        return ','.join(map(lambda v: str(round(v, precision)), self.center()))
+
+    def center(self):
+        return (
+            (self.min_lon + self.max_lon) / 2.0,
+            (self.min_lat + self.max_lat) / 2.0,
+            self.center_zoom)
+
+    def to_tiles(self, zoom: int):
+        """Convert current bbox into (min_x, min_y, max_x, max_y) tile coordinates for a given zoom.
+        The result is inclusive for both the min and the max coordinates"""
+        max_val = 2 ** zoom - 1
+
+        def limit(v):
+            return min(max_val, max(0, v[0])), min(max_val, max(0, v[1]))
+
+        x1, y1 = limit(deg2num(self.min_lat, self.min_lon, zoom))
+        x2, y2 = limit(deg2num(self.max_lat, self.max_lon, zoom))
+        return min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2),
+
+USER_AGENT = f'download-osm'
+
+
+class Catalog:
+    def __init__(self):
+        self.mirrors = [
+            MirrorMult('GB', 'https://planet.openstreetmap.org/pbf/', is_primary=True),
+            Mirror('DE',
+                   'https://download.bbbike.org/osm/planet/planet-latest.osm.pbf'),
+            MirrorMult('DE', 'https://ftp.spline.de/pub/openstreetmap/pbf/'),
+            MirrorMult('DE', 'https://ftp5.gwdg.de'
+                             '/pub/misc/openstreetmap/planet.openstreetmap.org/pbf/'),
+            # https://planet.passportcontrol.net/pbf/ redirects to broken SSL cert
+            # when used from some locations.
+            # See https://twitter.com/IchikawaYukko/status/1261541590566223872
+            MirrorMult('JP', 'https://planet.passportcontrol.net/pbf/'),
+            MirrorMult('DE', 'https://ftp.fau.de/osm-planet/pbf/'),
+            Mirror('NL', 'https://ftp.nluug.nl/maps/planet.openstreetmap.org'
+                         '/pbf/planet-latest.osm.pbf'),
+            Mirror('NL', 'https://ftp.snt.utwente.nl'
+                         '/pub/misc/openstreetmap/planet-latest.osm.pbf'),
+            MirrorMult('TW', 'https://free.nchc.org.tw/osm.planet/pbf/'),
+            Mirror('US', 'https://ftp.osuosl.org'
+                         '/pub/openstreetmap/pbf/planet-latest.osm.pbf'),
+            MirrorMult('US', 'https://ftpmirror.your.org/pub/openstreetmap/pbf/'),
+
+            # Internet archive is a bit tricky, so ignoring for now. PRs welcome.
+            #   https://archive.org/details/osmdata
+        ]
+
+    async def init(self,
+                   session: ClientSession, verbose: bool,
+                   use_primary: bool, force_latest: bool) -> Tuple[List[str], str]:
+        """Load the list of all available sources from all mirrors,
+        and pick the most recent file that is widely available.
+        Returns a list of urls and the expected md5 hash.
+        """
+        print('Retrieving available files...')
+        await sleep(0.01)  # Make sure the above print statement prints first
+        sources_by_hash: Dict[str, List[Source]] = defaultdict(list)
+        await asyncio.wait([v.init(session, verbose) for v in self.mirrors])
+        for mirror in self.mirrors:
+            for s in mirror.sources:
+                sources_by_hash[s.hash].append(s)
+        # Remove "latest" from sources if they have no md5 hash
+        # noinspection PyTypeChecker
+        no_hash_sources = sources_by_hash.pop(None, [])
+
+        ts_to_hash = self.get_attr_to_hash(sources_by_hash, 'timestamp', 'file date')
+        if not ts_to_hash:
+            raise ValueError('Unable to consistently load data - dates do not match')
+
+        # Sources without md5 can only be used if there is one unique length per md5.
+        # If more than one hash has the same length (e.g. download sizes didn't change),
+        # we don't know which is which, so we have to ignore them.
+        len_to_hash = self.get_attr_to_hash(sources_by_hash, 'file_len', 'length')
+        if len_to_hash or not no_hash_sources:
+            for src in no_hash_sources:
+                if src.file_len in len_to_hash:
+                    src.hash = len_to_hash[src.file_len]
+                    sources_by_hash[src.hash].append(src)
+                else:
+                    print(f'WARN: Source {src} has unrecognized file length='
+                          + ('unknown' if src.file_len is None else f'{src.file_len:,}'))
+        else:
+            print('Unable to use sources - unable to match "latest" without date/md5:')
+            for s in no_hash_sources:
+                print(s)
+
+        # Pick the best hash to download - should have the largest timestamp,
+        # but if the count is too low, use the second most common timestamp.
+        for hsh in sources_by_hash:
+            # Some sources just have "latest", so for each hash try to get a real date
+            # by sorting real dates before the None timestamp,
+            # and with the non-None file sizes first.
+            sources_by_hash[hsh].sort(
+                key=lambda v: (v.timestamp or datetime.max, v.file_len or (1 << 63)))
+        # Treat "latest" (None) timestamp as largest value (otherwise sort breaks)
+        stats = [(v[0].timestamp or datetime.max, len(v), v[0])
+                 for v in sources_by_hash.values()]
+        stats.sort(reverse=True)
+
+        print('\nLatest available files:\n')
+        info = [dict(date=f'{s[0]:%Y-%m-%d}' if s[0] < datetime.max else 'Unknown',
+                     mirror_count=s[1], md5=s[2].hash,
+                     size=s[2].size_str())
+                for s in stats]
+        print(tabulate(info, headers='keys') + '\n')
+
+        if not force_latest and len(stats) > 1 and stats[0][1] * 1.5 < stats[1][1]:
+            hash_to_download = stats[1][2].hash
+            info = f' because the latest {stats[0][0]:%Y-%m-%d} is not widespread yet'
+        else:
+            hash_to_download = stats[0][2].hash
+            info = ''
+
+        src_list = sources_by_hash[hash_to_download]
+        ts = next((v.timestamp for v in src_list if v.timestamp), None)
+        ts = f'{ts:%Y-%m-%d}' if ts else 'latest (unknown date)'
+
+        if len(src_list) > 2 and not use_primary:
+            src_list = [v for v in src_list if not v.mirror.is_primary]
+            info = ' (will not use primary)' + info
+
+        print(f'Will download planet published on {ts}, '
+              f'size={src_list[0].size_str()}, md5={src_list[0].hash}, '
+              f'using {len(src_list)} sources{info}')
+        if verbose:
+            print(
+                tabulate([dict(country=s.mirror.country, url=s.url) for s in src_list],
+                         headers='keys') + '\n')
+
+        return [s.url for s in src_list], hash_to_download
+
+    @staticmethod
+    def get_attr_to_hash(sources_by_hash, attr_name, attr_desc):
+        """Verify that a specific attribute is unique per hash in all sources"""
+        attr_to_hash = {}
+        for sources in sources_by_hash.values():
+            for source in sources:
+                attr = getattr(source, attr_name)
+                if attr is None:
+                    continue
+                if attr not in attr_to_hash:
+                    attr_to_hash[attr] = source.hash
+                elif attr_to_hash[attr] != source.hash:
+                    print(f'ERROR: Multiple files with the same {attr_desc} have different hashes:')
+                    print(f'* {source}, {attr_desc}={attr}, hash={source.hash}')
+                    src = sources_by_hash[attr_to_hash[attr]][0]
+                    print(f'* {src}, {attr_desc}={getattr(src, attr_name)}, hash={src.hash}')
+                    return None
+        return attr_to_hash
+
+
+class Mirror:
+    re_name = re.compile(r'^planet-(\d{6}|latest)\.osm\.pbf(\.md5)?$')
+
+    def __init__(self, country, url, is_primary=False):
+        self.country: str = country
+        self.url: str = url
+        self.is_primary: bool = is_primary
+        self.sources: List[Source] = []
+
+    async def init(self, session: ClientSession, verbose: bool):
+        """initialize the self.sources with the relevant Source objects
+        by parsing the mirror's HTML page, and getting all <a> tags"""
+        try:
+            sources = await self.get_sources(session, verbose)
+            if not sources:
+                raise ValueError('No sources found')
+            await load_sources(sources, session, verbose)
+            if len(sources) > 1 and sources[0].hash == sources[1].hash:
+                del sources[0]  # latest is the same as the last one
+            self.sources = sources
+        except Exception as ex:
+            print(f'Unable to use {self.country} source {self.url}: {ex}')
+
+    async def get_sources(self, session, verbose):
+        return [Source(name='planet-latest.osm.pbf', url=self.url, mirror=self)]
+
+
+class MirrorMult(Mirror):
+    """A mirror with multiple files"""
+
+    async def get_sources(self, session, verbose):
+        soup = BeautifulSoup(await fetch(session, self.url), 'html.parser')
+        return self.parse_hrefs(
+            [(v.text.strip(), v['href'].strip())
+             for v in soup.find_all('a') if 'href' in v.attrs],
+            verbose)
+
+    def parse_hrefs(self, items: List[tuple], verbose) -> List['Source']:
+        """Convert a list of (name, href) tuples to a list of valid sources,
+        including only the two most recent ones, plus the 'latest' if available."""
+        all_sources: Dict[str, Source] = {}
+        for name, href in sorted(items):
+            m = self.re_name.match(name)
+            if not m:
+                if verbose:
+                    print(f'Ignoring unexpected name "{name}" from {self.url}')
+                continue
+            try:
+                url = href if '/' in href else (self.url + href)
+                date = m.group(1)
+                is_md5 = bool(m.group(2))
+                dt = None if date == 'latest' else datetime.strptime(date, '%y%m%d')
+                if not is_md5:
+                    if date in all_sources:
+                        raise ValueError(f'{date} already already exists')
+                    all_sources[date] = Source(name, url, dt, self)
+                else:
+                    if date not in all_sources:
+                        raise ValueError('md5 file exists, but data file does not')
+                    all_sources[date].url_hash = url
+            except Exception as ex:
+                print(f'WARN: {ex}, while parsing {name} from {self.url}')
+
+        # get the last 2 sources that have dates in the name, as well as the "latest"
+        latest = all_sources.pop('latest', None)
+        result = [all_sources[k]
+                  for k in list(sorted(all_sources.keys(), reverse=True))[:2]]
+        if latest:
+            result.insert(0, latest)
+        return result
+
+
+@dataclass
+class Source:
+    name: str
+    url: str
+    timestamp: datetime = None
+    mirror: Mirror = None
+    url_hash: str = None
+    hash: str = None
+    file_len: int = None
+
+    def __post_init__(self):
+        if self.url_hash is None:
+            self.url_hash = self.url + '.md5'
+
+    def __str__(self):
+        return self.to_str()
+
+    def to_str(self, use_hash_url=False):
+        res = f'{self.name} from {self.url_hash if use_hash_url else self.url}'
+        if self.mirror:
+            res = f'{res} ({self.mirror.country})'
+        return res
+
+    async def load_hash(self, session: ClientSession, verbose: bool):
+        if not self.url_hash:
+            return
+        try:
+            if verbose:
+                print(f'Getting md5 checksum from {self.url_hash}')
+            hsh = (await fetch(session, self.url_hash)).strip().split(' ')[0]
+            if not re.match(r'^[a-fA-F0-9]{32}$', hsh):
+                raise ValueError(f"Invalid md5 hash '{hsh}'")
+            self.hash = hsh
+        except Exception as ex:
+            print(f'Unable to load md5 hash for {self.to_str(True)}: {ex}')
+
+    async def load_metadata(self, session: ClientSession, verbose: bool):
+        if not self.url:
+            return
+        try:
+            if verbose:
+                print(f'Getting content length for {self.url}')
+            async with session.head(self.url) as resp:
+                if resp.status >= 400:
+                    raise ValueError(f'Status={resp.status} for HEAD request')
+                if 'Content-Length' in resp.headers:
+                    self.file_len = int(resp.headers['Content-Length'])
+        except Exception as ex:
+            print(f'Unable to load metadata for {self}: {ex}')
+
+    def size_str(self):
+        if self.file_len is None:
+            return 'Unknown'
+        return f'{self.file_len / 1024.0 / 1024:,.1f} MB ({self.file_len:,})'
+
+
+@dataclass
+class SearchResult:
+    source: Source
+    repl_url: str = None
+    state_url: str = None
+    bbox: str = None
+
+
+def load_sources(sources: Iterable[Source], session: ClientSession, verbose: bool):
+    return asyncio.wait([v.load_hash(session, verbose) for v in sources]
+                        + [v.load_metadata(session, verbose) for v in sources])
+
+
+async def fetch(session: ClientSession, url: str) -> str:
+    async with session.get(url) as resp:
+        if resp.status >= 400:
+            raise ValueError(f'Received status={resp.status}')
+        return await resp.text()
+
+
+class AreaSource:
+
+    def __init__(self, session: ClientSession, force_latest: bool, no_cache: bool):
+        self.session = session
+        self.force_latest = force_latest
+        self.no_cache = no_cache
+        self.name = type(self).__name__
+
+    async def search(self, area_id: str, is_guessing: bool) -> Optional[SearchResult]:
+        raise ValueError(f'Search is not implemented for {self.name}')
+
+    async def get_catalog(self) -> dict:
+        list_path = Path(__file__).parent / 'cache' / f'{self.name}.json'
+        list_path.parent.mkdir(parents=True, exist_ok=True)
+        data = None
+        if not self.force_latest:
+            try:
+                data = list_path.read_text(encoding='utf-8')
+            except FileNotFoundError:
+                pass
+        if data is None:
+            print(f'Downloading the list of available {self.name} areas...')
+            data = await self.fetch_catalog()
+            if not self.no_cache:
+                list_path.write_text(data, encoding='utf-8')
+        catalog, warnings = await self.parse_catalog(data)
+        if warnings:
+            print(f'ERRORS parsing {self.name} catalog file:', file=sys.stderr)
+            for warn in warnings:
+                print(f' * {warn}', file=sys.stderr)
+        return catalog
+
+    def fetch_catalog(self) -> Future:
+        raise ValueError(f'Catalog is not supported for {self.name}')
+
+    async def parse_catalog(self, data) -> Tuple[Dict[str, str], List[str]]:
+        raise ValueError(f'Catalog is not supported for {self.name}')
+
+
+class Geofabrik(AreaSource):
+    def fetch_catalog(self):
+        return fetch(self.session, 'https://download.geofabrik.de/index-v1.json')
+
+    async def get_printable_catalog(self):
+        catalog = await self.get_catalog()
+        return [dict(id=v['full_id'], name=v['full_name']) for v in catalog.values()]
+
+    async def parse_catalog(self, data):
+        entries = {v['properties']['id']: {**v['properties'], 'geo': v.get('geometry')}
+                   for v in json.loads(data)['features']}
+        warnings = []
+        # resolve parents until no more changes are made
+        for entry in entries.values():
+            full_id = entry['id']
+            try:
+                full_name = entry['name']
+                current = entry
+                for idx in range(10):  # avoids infinite recursion
+                    if 'parent' in current:
+                        current = entries[current['parent']]
+                        full_id = f"{current['id']}/{full_id}"
+                        full_name = f"{current['name']} / {full_name}"
+                    else:
+                        break
+                else:
+                    raise ValueError(
+                        f"Geofabrik data '{entry['id']}' has infinite parent loop")
+                entry['full_id'] = full_id
+                entry['full_name'] = full_name
+                entry['url'] = entry['urls']['pbf']
+                entry['url_updates'] = entry['urls']['updates']
+            except KeyError as key:
+                warnings.append(
+                    f'Unable to parse entry {full_id} - key {key} does not exist')
+        return {v['full_id']: v
+                for v in sorted(entries.values(), key=lambda v: v['full_id'])}, warnings
+
+    async def search(self, area_id: str, is_guessing: bool) -> Optional[SearchResult]:
+        catalog = await self.get_catalog()
+        if area_id not in catalog:
+            # If there is no exact match, find anything that ends with key
+            reg = re.compile('.*' + re.escape('/' + area_id.lstrip('/')) + '$',
+                             re.IGNORECASE)
+            area_urls = [k for k in catalog.keys() if reg.match(k)]
+            if not area_urls:
+                error = f"ID '{area_id}' was not found in Geofabrik."
+                if not is_guessing:
+                    error += "\nUse 'list geofabrik' to see available extract, or try --force-latest to refresh the list of extracts."
+            elif len(area_urls) > 1:
+                variants = [(v, catalog[v]['full_name']) for v in area_urls]
+                error = (f"More than one ID '{area_id}' was found in "
+                         f'Geofabrik, use longer ID:\n{tabulate(variants)}')
+            else:
+                error = None
+                area_id = area_urls[0]
+
+            if error:
+                if is_guessing:
+                    print(error)
+                    return None
+                else:
+                    raise SystemExit(error)
+        entry = catalog[area_id]
+        bbox = None
+        if entry['geo']:
+            bbox = Bbox.from_geometry(entry['geo']['coordinates']).bounds_str()
+
+        return SearchResult(
+            Source(area_id, entry['url']),
+            entry['url_updates'],
+            entry['url'].replace('-latest.osm.pbf', '-updates/state.txt'),
+            bbox)
+
+
+class UrlSrc(AreaSource):
+    async def search(self, val: str, is_guessing: bool) -> Optional[SearchResult]:
+        if not is_guessing or val.startswith('https://') or val.startswith('http://'):
+            return SearchResult(Source('raw url', val))
+        return None
+
+
+class Bbbike(AreaSource):
+    url = 'https://download.bbbike.org/osm/bbbike/'
+
+    def fetch_catalog(self):
+        return fetch(self.session, self.url)
+
+    async def get_printable_catalog(self):
+        catalog = await self.get_catalog()
+        # BBBike has a nice info screen for each area
+        return [dict(id=k, info='/'.join(v.url.split('/')[:-1]) + '/')
+                for k, v in catalog.items()]
+
+    async def parse_catalog(self, data):
+        soup = BeautifulSoup(data, 'html.parser')
+        return {
+            v.text: Source(
+                v.text,
+                f"{self.url}{v['href']}{v['href'].rstrip('/')}.osm.pbf")
+            for v in soup.find_all('a')
+            if 'href' in v.attrs and v.text != '..'
+        }, []
+
+    async def search(self, area_id: str, is_guessing: bool) -> Optional[SearchResult]:
+        catalog = await self.get_catalog()
+        area_id = area_id.lower()
+        for k, v in catalog.items():
+            if area_id == k.lower():
+                return SearchResult(v)
+        return None
+
+
+class Osmfr(AreaSource):
+    async def search(self, area_id: str, is_guessing: bool) -> Optional[SearchResult]:
+        url = f'http://download.openstreetmap.fr/extracts/{area_id}-latest.osm.pbf'
+        poly = await fetch(self.session, f'https://download.openstreetmap.fr/polygons/{area_id}.poly')
+        return SearchResult(
+            Source(area_id, url),
+            f'http://download.openstreetmap.fr/replication/{area_id}/minute/',
+            url.replace('-latest.osm.pbf', '.state.txt'),
+            Bbox.from_polygon(poly).bounds_str())
+
+
+area_sources = {
+    # The keys must match the program parameters above.
+    # The sources order is important
+    'url': UrlSrc,
+    'geofabrik': Geofabrik,
+    'bbbike': Bbbike,
+    'osmfr': Osmfr,
+}
+
+
+async def save_state_file(session, state_url, state_file):
+    state_file = Path(state_file).resolve()
+    print(f'Downloading state file {state_url} to {state_file}')
+    data = await fetch(session, state_url)
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(data, encoding='utf-8')
+
+
+def save_cfg_file(dry_run, cfg_file, repl_url, extras):
+    cfg_file = Path(cfg_file).resolve()
+    print(f"{'Would create' if dry_run else 'Creating'} Imposm config file {cfg_file}:")
+    if not repl_url.endswith('/'):
+        repl_url += '/'
+    if repl_url.endswith('/minute/'):
+        interval = '1m'
+    elif repl_url.endswith('/hour/'):
+        interval = '1h'
+    else:
+        interval = '24h'
+    data = dict(replication_url=repl_url, replication_interval=interval)
+    for kv in (extras or []):
+        kv = kv.split('=', 1)
+        if len(kv) != 2:
+            raise SystemExit(
+                f"--kv '{kv[0]}' must be in a 'key=value' format")
+        data[kv[0]] = kv[1]
+    print(tabulate(data.items()))
+    if not dry_run:
+        cfg_file.write_text(json.dumps(data, indent=2, sort_keys=True) + '\n',
+                            encoding='utf-8')
+
+
+class AreaParamParser:
+
+    def __init__(self, session, force_latest, no_cache, args) -> None:
+        self.args = args
+        self.session = session
+        self.area_id = self.args['<area_or_url>']
+        self.repl_url = None
+        self.state_url = None
+        self.force_latest = force_latest
+        self.no_cache = no_cache
+        # Limit sources to just the one passed in the arguments, or keep all
+        self.sources = {k: v for k, v in area_sources.items() if
+                        self.args[k]} or area_sources
+        self.is_guessing = len(self.sources) > 1
+
+    async def parse(self):
+        if self.is_guessing:
+            print('Area source has not been specified. Auto-detecting...')
+        for src_name, src_type in self.sources.items():
+            site = src_type(self.session, self.force_latest, self.no_cache)
+            res = await site.search(self.area_id, self.is_guessing)
+            if res:
+                src = res.source
+                await self.load_source(src)
+                if src.file_len is not None:
+                    break
+        else:
+            raise SystemExit(f"Unable to auto-detect the source for '{self.area_id}'")
+        if self.is_guessing:
+            print(f"'{src.name}' was found in {src_name}.")
+        print(f'Downloading {src.url} (size={src.size_str()}, md5={src.hash})',
+              flush=True)
+        if self.args.state:
+            if not res.state_url:
+                raise SystemExit(f"State is not available when using '{src_type}'")
+            await save_state_file(self.session, res.state_url, self.args.state)
+        return [src.url], src.hash, res.repl_url, res.bbox
+
+    def load_source(self, source: Source):
+        return load_sources([source], self.session, self.args.verbose)
+
+
+def make_bbox_env_file(pbf_file, bbox_file, verbose):
+    pbf_file = Path(pbf_file)
+    if not pbf_file.is_file():
+        print(f'PBF file {pbf_file} does not exist')
+        return 1
+    bbox_file = Path(bbox_file)
+    print(f'Extracting bbox from {pbf_file} using osmconvert', flush=True)
+    params = ['osmconvert', '--out-statistics', str(pbf_file)]
+    if verbose:
+        print(f'\n  {subprocess.list2cmdline(params)}\n', flush=True)
+    res = subprocess.run(params, capture_output=True)
+    exit_code = res.returncode
+    if exit_code == 0:
+        res_text = res.stdout.decode('utf-8')
+        # Convert output to a dictionary with non-empty values
+        res = {v[0]: v[1] for v in
+               [[vv.strip() for vv in v.split(':', 1)] for v in res_text.split('\n')]
+               if len(v) == 2 and all(v)}
+        bbox = Bbox(left=res['lon min'], bottom=res['lat min'],
+                    right=res['lon max'], top=res['lat max'])
+        save_bbox(bbox.bounds_str(), bbox_file)
+    else:
+        print(f'Error #{exit_code} executing this command:\n  {subprocess.list2cmdline(params)}\n', flush=True)
+
+    return exit_code
+
+
+def save_bbox(bbox: str, bbox_file: Path):
+    print(f'Saving computed BBOX {bbox} to {bbox_file}...')
+    bbox_file.write_text(f'{bbox}\n', encoding='utf-8')
+
+
+async def main_async(args):
+    if args['bbox']:
+        return make_bbox_env_file(args['<pbf-file>'], args['<bbox-file>'], args['--verbose'])
+
+    if not args['--output'] and args['--bbox']:
+        raise SystemExit('The --output param must be set when using --bbox')
+
+    urls, md5, repl_url = None, None, None
+    exit_code = 0
+    async with aiohttp.ClientSession(headers={'User-Agent': USER_AGENT}) as session:
+        force_latest = args['--force-latest']
+        no_cache = args['--no-cache']
+        if args.list:
+            if args.service not in area_sources or args.service == 'url':
+                raise SystemExit(f'Unknown service name {args.service}')
+            site = area_sources[args.service](session, force_latest, no_cache)
+            try:
+                info = await site.get_printable_catalog()
+            except AttributeError:
+                raise SystemExit(
+                    f'Service {args.service} does not support listings.\n'
+                    f"Please ask service maintainers to publish a catalog similar to Geofabrik's.")
+            print(tabulate(info, headers='keys') + '\n')
+        elif args.planet:
+            use_primary = args['--include-primary']
+            urls, md5 = await Catalog().init(session, args.verbose, use_primary,
+                                             force_latest)
+            repl_url = 'http://planet.openstreetmap.org/replication/day/'
+        else:
+            urls, md5, repl_url, bbox = await AreaParamParser(
+                session, force_latest, no_cache, args).parse()
+    if urls:
+        if args.poly:
+            urls = [url.replace("-latest.osm.pbf", ".poly")  for url in urls if "geofabrik" in url]
+            md5 = None
+        exit_code = await run_aria2c(args['<aria2c_args>'], md5, urls, args)
+        if exit_code == 0 and not args.planet and args['--bbox']:
+            bbox_file = Path(args['--bbox'])
+            pbf_file = Path(args['--output'])
+            if args['--dry-run']:
+                if bbox:
+                    print(
+                        f"Would save BBOX '{bbox}' (extracted from the downloaded catalog/metadata) to {bbox_file}...")
+                else:
+                    print(f'Would extract bbox from {pbf_file} using osmconvert')
+            else:
+                if bbox:
+                    save_bbox(bbox, bbox_file)
+                else:
+                    make_bbox_env_file(pbf_file, bbox_file, args['--verbose'])
+        if exit_code == 0 and args['--imposm-cfg']:
+            if not repl_url:
+                raise SystemExit('Imposm config file not available from this source')
+            save_cfg_file(args['--dry-run'], args['--imposm-cfg'], repl_url,
+                          args['--kv'])
+
+    return exit_code
+
+
+async def run_aria2c(aria2c_args, md5, urls, args):
+    params = ['aria2c']
+    if md5:
+        params.append(f'--checksum=md5={md5}')
+    if len(urls) > 1 and not any(
+        (v for v in aria2c_args if v == '-s' or v.startswith('--split'))
+    ):
+        # user has not passed -s or --split, so use as many streams as urls
+        params.append(f'--split={len(urls)}')
+    if not any((v for v in aria2c_args if v.startswith('--http-accept-gzip'))):
+        # user has not passed --http-accept-gzip, so always specify we accept gzip
+        params.append('--http-accept-gzip')
+    if not any((v for v in aria2c_args if v == '-U' or v.startswith('--user-agent'))):
+        # user has not set a custom user agent, set one
+        params.append(f'--user-agent={USER_AGENT}')
+    if args['--output']:
+        assert_conflict_args(
+            '--output', aria2c_args, '-d', '--dir', '-o', '--out', '-i', '--input-file',
+            '--auto-file-renaming', '-Z', '--force-sequential', '--allow-overwrite')
+        out_path = Path(args['--output']).resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        params.append(f'--dir={out_path.parent}')
+        params.append(f'--out={out_path.name}')
+        params.append('--auto-file-renaming=false')
+        if args.force:
+            params.append('--allow-overwrite=true')
+
+    params.extend(aria2c_args)
+    params.extend(urls)
+    # Make sure to print/flush everything to STDOUT before running subprocess
+    print(f'\n  {subprocess.list2cmdline(params)}\n', flush=True)
+
+    if not args['--dry-run']:
+        return subprocess.run(params).returncode
+    else:
+        print('Data is not downloaded because of the --dry-run parameter')
+        return 0
+
+
+def assert_conflict_args(info, aria2c_args, *conflicted_args):
+    for flag in conflicted_args:
+        if any((v for v in aria2c_args if v.startswith(flag))):
+            raise ValueError(f'Unable to use {info} together with '
+                             f'the {flag} aria2c parameter')
+
+
+def main():
+    if 'magic' not in docopt_funcs:
+        print("""
+Found invalid version of docopt. Must use docopt_ng instead. Uninstall it with
+  $ python3 -m pip uninstall docopt
+and re-install all required dependencies with
+  $ python3 -m pip install -r requirements.txt
+""")
+        exit(1)
+    exit(asyncio.run(main_async(docopt(__doc__, version="1.0.0"))))
+
+
+if __name__ == '__main__':
+    main()
