@@ -37,12 +37,6 @@ while [ $# -gt 0 ]; do
     --minzoom*)
       minzoom="$2"
       ;;
-    -r|--round-digits*)
-      rounddigits=$2
-      ;;
-    --max-round-digits*)
-      maxrounddigits=$2
-      ;;
     --maxzoom*)
       maxzoom="$2"
       ;;

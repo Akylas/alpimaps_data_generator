@@ -45,11 +45,22 @@ valhalla_build_config --mjolnir-tile-dir ${PWD}/valhalla_tiles --mjolnir-tile-ex
 ```
 
 ## # First generate the mbtiles with Planetiler
+You can change the languages parameter to your need ( like `en,fr`)
+
+There you have multiple choices. Either build only using the area you want. But you will end up with half-filled tiles on area bounds
+```shell
+java -Xmx32g -jar $PLANETILER_JAR  --download --area=${AREA} --languages="" --force --compact-db --transportation-name-limit-merge -only_layers=route --nodemap-type=array --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles --polygon=$POLY
+```
+Or build using a "parent" area. For example i will always use europe as i mostly build europe countries
 
 ```shell
 java -Xmx32g -jar $PLANETILER_JAR  --download --area=europe --languages="" --force --compact-db --transportation-name-limit-merge -only_layers=route --nodemap-type=array --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles --polygon=$POLY
 ```
+
+## # Generate area tif
+
 Now generate the tif of the area you want. It is best to use polyzoom as the min zoom you want for hillshades / contours. This ensure you wont get half filled tiles. Though the process will be slower and the tif bigger
+We use a small polyzoom (5) to avoid half filled tiles. You can raise it for faster build but you ll have half filled tiles in hillshades or contours (mostly hillshade as contours is starting at zoom 11 here)
 
 ```shell
 ./scripts/generate_tif_from_hgt.sh --poly-shape $POLY --polyzoom 5 --elevation_tiles ./elevation_tiles --output ${AREA}.tif
@@ -57,15 +68,16 @@ Now generate the tif of the area you want. It is best to use polyzoom as the min
 
 ## # Then build hillshades
 ```shell
-./scripts/build_hillshades.sh --minzoom 5 --maxzoom 12 -r 3 --max-round-digits 7  -o ${OUTPUT_DIR}/${AREA}/${AREA}_hillshade.mbtiles -f webp --poly-shape $POLY ${AREA}.tif
+./scripts/build_hillshades.sh --minzoom 5 --maxzoom 12 --round-digits 3 --max-round-digits 7  -o ${OUTPUT_DIR}/${AREA}/${AREA}_hillshade.mbtiles -f webp --poly-shape $POLY ${AREA}.tif
 ```
 
 ## # Then build contours
 ```shell
-./scripts/build_contours.sh --poly-shape $POLY --output ${OUTPUT_DIR}/${AREA}/${AREA}_contours.mbtiles ${AREA}.tif
+./scripts/build_contours.sh  --minzoom 11 --maxzoom 14 --poly-shape $POLY --output ${OUTPUT_DIR}/${AREA}/${AREA}_contours.mbtiles ${AREA}.tif
 ```
 
 ## # Cleanup contours mbtiles
+This steps ensure we have the same tiles in the area mbtiles and hillshade/contours. It is important in AlpiMaps as we merge tiles from area and contours to draw contour lines in between the map style. 
 ```shell
 python ./scripts/filter_tiles_from_other_mbtiles.py --sourcembtiles ${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles ${OUTPUT_DIR}/${AREA}/${AREA}_contours.mbtiles
 ```
@@ -75,15 +87,10 @@ python ./scripts/filter_tiles_from_other_mbtiles.py --sourcembtiles ${OUTPUT_DIR
 ```
 
 ## # build valhalla package
-
-Now here valhalla expects the pbf extract only of the country we use.
-But if you built the country mbtiles using "bigger" area to have a full mbtiles you wont have the right extract.
-In that case you need to download it first
-
 first build valhalla tiles if you didnt already. In my case i build valhalla tiles for the whole europe to ensure i have all tiles to calculate routes
-between europe packages. So i only build valhalla tiles once
+between europe packages. So i only build valhalla tiles once . So here for my case i replace `$AREA` with `europe`
 ```shell
-valhalla_build_tiles -c valhalla.json $AREA-latest.osm.pbf
+valhalla_build_tiles -c valhalla.json planetiler/data/sources/$AREA-latest.osm.pbf
 ```
 Then build valhalla "mbtiles package
 ```shell
