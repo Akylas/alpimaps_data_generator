@@ -1,4 +1,6 @@
 valhalla
+valhalla_tiles
+elevation_tiles
 prime_server
 rio-rgbify
 planetiler
@@ -8,3 +10,6 @@ tippecanoe
 valhalla.json
 __pycache__
 cache
+*.tif
+*.poly
+data
