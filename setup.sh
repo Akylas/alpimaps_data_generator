@@ -17,7 +17,7 @@ python -m pip install -r requirements.txt
 python -m pip install -e .
 cd ..
 
-git clone git@github.com:felt/tippecanoe.git
+git clone git@github.com:farfromrefug/tippecanoe.git
 cd tippecanoe
 make -j
 # make install
