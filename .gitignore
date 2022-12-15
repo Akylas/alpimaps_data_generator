@@ -18,3 +18,4 @@ data
 *.mbtiles
 *.etiles
 *.vtiles
+*.geojson
