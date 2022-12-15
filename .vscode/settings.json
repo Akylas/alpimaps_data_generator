@@ -1,0 +1,4 @@
+{
+    "search.useIgnoreFiles": false,
+    "java.compile.nullAnalysis.mode": "disabled"
+}
