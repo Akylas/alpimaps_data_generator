@@ -105,10 +105,11 @@ UPDATE metadata  SET value=${maxzoom} WHERE name='maxzoom';"
 for ((n = $minzoom ; n < $maxzoom ; n++)); do
     sqlitecommand="${sqlitecommand}
 ATTACH DATABASE '${sourceName}_${n}_rgb_${format}.mbtiles' AS m${n};
-REPLACE INTO tiles SELECT * FROM m${n}.tiles;"
+REPLACE INTO tiles_shallow SELECT * FROM m${n}.tiles_shallow;
+REPLACE INTO tiles_data SELECT * FROM m${n}.tiles_data;"
 done
 
-if ["$output" = ""]; then
+if [ "$output" = "" ]; then
     output="${sourceName}_rgb_${format}.mbtiles"
 fi
 cp  ${sourceName}_${maxzoom}_rgb_$format.mbtiles ${output}

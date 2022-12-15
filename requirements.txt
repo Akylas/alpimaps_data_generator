@@ -23,3 +23,5 @@ pyyaml==6.0
 requests==2.27.1
 tabulate==0.8.9
 tornado==6.1
+geojson==2.5.0
+pyproj==2.5.0

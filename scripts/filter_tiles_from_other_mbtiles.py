@@ -18,8 +18,8 @@ import subprocess
 def optimizeTiles(outputFileName,inputFileName):
   wantedtiles = set()
   tiles = []
-  tilesTableIsView = False
-  viewTableTest = 'images'
+  hasImageTable = False
+  hasShallowTable = False
   with closing(sqlite3.connect(inputFileName)) as outputDb:
     # Harvest tiles
     cursor1 = outputDb.cursor()
@@ -39,8 +39,11 @@ def optimizeTiles(outputFileName,inputFileName):
     cursor1 = outputDb.cursor()
     cursor1.execute("SELECT name FROM sqlite_master WHERE name ='images'")
     result = cursor1.fetchone()
-    tilesTableIsView = result is not None and len(result) > 0
-    print("tilesTableIsView", tilesTableIsView)
+    hasImageTable = result is not None and len(result) > 0
+    if (not hasImageTable): 
+      cursor1.execute("SELECT name FROM sqlite_master WHERE name ='tiles_shallow'")
+      result = cursor1.fetchone()
+      hasShallowTable = result is not None and len(result) > 0
     # Find tiles at specified zoom levels equal to their parent tiles
     cursor1.execute("SELECT tile_column, tile_row, zoom_level FROM tiles")
     for row in cursor1.fetchall():
@@ -58,16 +61,23 @@ def optimizeTiles(outputFileName,inputFileName):
   with closing(sqlite3.connect(outputFileName)) as outputDb:
     cursor2 = outputDb.cursor()
     for x, y, zoom in filtered:
-      if tilesTableIsView:
+      if hasImageTable:
         cursor2.execute("SELECT tile_id FROM map WHERE zoom_level=? AND tile_column=? AND tile_row=?", (zoom, x, y))
         tile_id = cursor2.fetchone()[0]
         cursor2.execute("DELETE FROM images WHERE tile_id=?", (tile_id,))
         cursor2.execute("DELETE FROM map WHERE zoom_level=? AND tile_column=? AND tile_row=?", (zoom, x, y))
+      elif hasShallowTable:
+        cursor2.execute("SELECT tile_data_id FROM tiles_shallow WHERE zoom_level=? AND tile_column=? AND tile_row=?", (zoom, x, y))
+        tile_id = cursor2.fetchone()[0]
+        cursor2.execute("DELETE FROM tiles_data WHERE tile_data_id=?", (tile_id,))
+        cursor2.execute("DELETE FROM tiles_shallow WHERE zoom_level=? AND tile_column=? AND tile_row=?", (zoom, x, y))
       else:
         cursor2.execute("DELETE FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?", (zoom, x, y))
     
-    if tilesTableIsView:
+    if hasImageTable:
       cursor2.execute("DELETE FROM images WHERE tile_id NOT IN (SELECT tile_id FROM map)")
+    elif hasShallowTable:
+      cursor2.execute("DELETE FROM tiles_data WHERE tile_data_id NOT IN (SELECT tile_data_id FROM tiles_shallow)")
     cursor2.close()
     outputDb.commit()
   print("removed filtered %s", len(filtered))

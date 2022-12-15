@@ -12,7 +12,7 @@ DOWNLOAD_DIR="./ign_data"
       SCREEN_OPTS="-d -m"
   fi
 
-  screen $SCREEN_OPTS /usr/local/bin/wget --directory-prefix="." ftp://BD_ALTI_ext:docoazeecoosh1Ai@ftp3.ign.fr:/BDALTIV2_2-0_25M*MNT_LAMB93*
+  screen $SCREEN_OPTS wget --directory-prefix="." ftp://BD_ALTI_ext:docoazeecoosh1Ai@ftp3.ign.fr:/BDALTIV2_2-0_25M*MNT_LAMB93*
 
 
   # for file in ./*
@@ -32,7 +32,6 @@ DOWNLOAD_DIR="./ign_data"
 
   gdalwarp terrain.virt terrain.tif
   gdal_calc.py --co="COMPRESS=LZW" --type=Float32 -A  terrain.tif --outfile=terrain_0.tif --calc="((A+10)*(A+10>0))-10" --NoDataValue=-10
-  echo "terrain.tif"
 }
 
 

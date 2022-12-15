@@ -35,4 +35,4 @@ echo "source2 $source2"
 echo "ps $ps"
 echo "output $output"
 gdalwarp -tr  ${ps} ${ps} ${source1} ${source1Wwarped}
-gdal_merge.py -o ${output} -ps ${ps} ${ps} ${source1} ${source2}
+gdal_merge.py -o ${output} -ps ${ps} ${ps} ${source1Wwarped} ${source2}
