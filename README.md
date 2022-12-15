@@ -49,22 +49,30 @@ You can change the languages parameter to your need ( like `en,fr`)
 
 There you have multiple choices. Either build only using the area you want. But you will end up with half-filled tiles on area bounds
 ```shell
-java -Xmx32g -jar $PLANETILER_JAR  --download --area=${AREA} --languages="" --force --compact-db --transportation-name-limit-merge -only_layers=route --nodemap-type=array --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles --polygon=$POLY
+java -Xmx32g -jar $PLANETILER_JAR  --download --area=${AREA} --languages="" --force --compact-db --transportation-name-limit-merge -exclude_layers=route --nodemap-type=array --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles --polygon=$POLY
 ```
 Or build using a "parent" area. For example i will always use europe as i mostly build europe countries
 
 ```shell
-java -Xmx32g -jar $PLANETILER_JAR  --download --area=europe --languages="" --force --compact-db --transportation-name-limit-merge -only_layers=route --nodemap-type=array --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles --polygon=$POLY
+java -Xmx32g -jar $PLANETILER_JAR  --download --area=europe --languages="" --force --compact-db --transportation-name-limit-merge -exclude_layers=route --nodemap-type=array --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles --polygon=$POLY
+```
+
+## # Generate routes mbtiles
+
+```shell
+java -Xmx32g -jar $PLANETILER_JAR  --download --area=${AREA} --languages="" --force --compact-db --transportation-name-limit-merge -only_layers=route --nodemap-type=array --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}_routes.mbtiles --polygon=$POLY
 ```
 
 ## # Generate area tif
 
 Now generate the tif of the area you want. It is best to use polyzoom as the min zoom you want for hillshades / contours. This ensure you wont get half filled tiles. Though the process will be slower and the tif bigger
 We use a small polyzoom (5) to avoid half filled tiles. You can raise it for faster build but you ll have half filled tiles in hillshades or contours (mostly hillshade as contours is starting at zoom 11 here)
+If you want to have more defined tif over (that you would get from another source) you can use the `--overTif` option. It should do it all for you
 
 ```shell
 ./scripts/generate_tif_from_hgt.sh --poly-shape $POLY --polyzoom 5 --elevation_tiles ./elevation_tiles --output ${AREA}.tif
 ```
+
 
 ## # Then build hillshades
 ```shell
