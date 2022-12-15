@@ -13,3 +13,8 @@ cache
 *.tif
 *.poly
 data
+.yarn
+*.tif
+*.mbtiles
+*.etiles
+*.vtiles
