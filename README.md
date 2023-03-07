@@ -1,5 +1,8 @@
 
-## # Dependencies
+### Introduction
+
+That repo explains how to generate data to be used with [AlpiMaps](https://github.com/Akylas/alpimaps).
+It can also be used to generate mbtiles to be used with other projects like `tileserver-gl`, `qgis` ...
 
 ### macos
 
