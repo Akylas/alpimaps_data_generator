@@ -1,0 +1,12 @@
+[submodule "planetiler"]
+	path = planetiler
+	url =  https://github.com/farfromrefug/planetiler.git
+[submodule "prime_server"]
+	path = prime_server
+	url =  https://github.com/kevinkreiser/prime_server.git
+[submodule "valhalla"]
+	path = valhalla
+	url = https://github.com/valhalla/valhalla.git
+[submodule "tippecanoe"]
+	path = tippecanoe
+	url = https://github.com/farfromrefug/tippecanoe.git
