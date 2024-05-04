@@ -101,7 +101,7 @@ python ./scripts/filter_tiles_from_other_mbtiles.py --sourcembtiles ${OUTPUT_DIR
 first build valhalla tiles if you didnt already. In my case i build valhalla tiles for the whole europe to ensure i have all tiles to calculate routes
 between europe packages. So i only build valhalla tiles once . So here for my case i replace `$AREA` with `europe`
 ```shell
-valhalla_build_tiles -c valhalla.json planetiler/data/sources/$AREA-latest.osm.pbf
+valhalla_build_tiles -c valhalla.json data/sources/$AREA.osm.pbf
 ```
 Then build valhalla "mbtiles package
 ```shell
