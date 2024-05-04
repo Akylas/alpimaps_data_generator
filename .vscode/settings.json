@@ -1,4 +1,8 @@
 {
     "search.useIgnoreFiles": false,
-    "java.compile.nullAnalysis.mode": "disabled"
+    "java.compile.nullAnalysis.mode": "disabled",
+    "terminal.integrated.env.linux": {
+        "JAVA_HOME":"/usr/lib/jvm/java-21-openjdk-amd64",
+        "ZSH_INIT_COMMAND": "source env.sh"
+    },
 }
