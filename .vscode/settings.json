@@ -5,4 +5,11 @@
         "JAVA_HOME":"/usr/lib/jvm/java-21-openjdk-amd64",
         "ZSH_INIT_COMMAND": "source env.sh"
     },
+    "java.configuration.runtimes": [
+        {
+          "name": "JavaSE-21",
+          "path": "/usr/lib/jvm/java-21-openjdk-amd64",
+          "default": true
+        },
+      ]
 }
