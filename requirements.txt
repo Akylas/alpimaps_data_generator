@@ -7,21 +7,21 @@
 ##     /home/openmaptiles/.local/bin/pip-upgrade --skip-virtualenv-check
 ##        choose all if asked
 ##     this file should now be updated
-aiohttp==3.8.1
+aiohttp==3.9.5
 ascii_graph==1.5.1
-asyncpg==0.25.0
-beautifulsoup4==4.9.3
+asyncpg==0.29.0
+beautifulsoup4==4.12.3
 betterproto==1.2.5
-dataclasses-json==0.5.6
-deprecated==1.2.13
-docopt-ng==0.7.2
-flake8==4.0.1
-flake8-quotes==3.3.1
-graphviz==0.19.1
-psycopg2-binary==2.9.3
-pyyaml==6.0
-requests==2.27.1
-tabulate==0.8.9
-tornado==6.1
-geojson==2.5.0
-pyproj==2.5.0
+dataclasses-json==0.6.5
+deprecated==1.2.14
+docopt-ng==0.9.0
+flake8==7.0.0
+flake8-quotes==3.4.0
+graphviz==0.20.3
+psycopg2-binary==2.9.9
+pyyaml==6.0.1
+requests==2.31.0
+tabulate==0.9.0
+tornado==6.4
+geojson==3.1.0
+pyproj==3.6.1
