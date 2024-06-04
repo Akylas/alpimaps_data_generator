@@ -52,12 +52,12 @@ You can change the languages parameter to your need ( like `en,fr`)
 
 There you have multiple choices. Either build only using the area you want. But you will end up with half-filled tiles on area bounds
 ```shell
-java -Xmx32g -jar $PLANETILER_JAR  --download --area=${AREA} --languages="" --force --compact-db --transportation-name-limit-merge -exclude_layers=route --nodemap-type=array --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles --polygon=$POLY
+java -Xmx32g -jar $PLANETILER_JAR  --download --area=${AREA} --languages="" --force --compact-db --transportation-name-limit-merge -exclude_layers=route --nodemap-type=array --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles --polygon=$POLY --max-point-buffer=4
 ```
 Or build using a "parent" area. For example i will always use europe as i mostly build europe countries
 
 ```shell
-java -Xmx32g -jar $PLANETILER_JAR  --download --area=europe --languages="" --force --compact-db --transportation-name-limit-merge -exclude_layers=route --nodemap-type=array --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles --polygon=$POLY
+java -Xmx32g -jar $PLANETILER_JAR  --download --area=europe --languages="" --force --compact-db --transportation-name-limit-merge -exclude_layers=route --nodemap-type=array --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles --polygon=$POLY --max-point-buffer=4
 ```
 
 ## # Generate routes mbtiles
