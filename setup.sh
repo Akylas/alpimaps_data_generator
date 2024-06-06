@@ -38,6 +38,6 @@ cd ..
 # git clone --recurse-submodules https://github.com/valhalla/valhalla.git
 cd valhalla
 # will build to ./build
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_BENCHMARKS=Off -DENABLE_PYTHON_BINDINGS=Off -DENABLE_TESTS=Off
 make -C build -j$NPROC
 cd ..
