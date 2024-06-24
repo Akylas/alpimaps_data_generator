@@ -62,13 +62,13 @@ java -Xmx32g -jar $PLANETILER_JAR  --download --area=europe --languages="" --for
 
 If you want to generate low level world map:
 ```shell
-java -Xmx32g -jar $PLANETILER_JAR  --download --area=planet --languages=fr,en --force --transportation-name-limit-merge --compact-db --only_layers=place,park,boundary,mountain_peak,transportation,transportation_name,water,waterway,water_name,landcover,landcover_name,landuse --maxzoom=7 --nodemap-type=array --mbtiles=${OUTPUT_DIR}/world.mbtiles
+java -Xmx32g -jar $PLANETILER_JAR  --download --area=planet --languages=fr,en --force --transportation-name-limit-merge --compact-db --only_layers=place,park,boundary,mountain_peak,transportation,transportation_name,water,waterway,water_name,landcover,landcover_name,landuse --maxzoom=7 --nodemap-type=array --mbtiles=${OUTPUT_DIR}/world.mbtiles --max-point-buffer=4
 
 
 ## # Generate routes mbtiles
 
 ```shell
-java -Xmx32g -jar $PLANETILER_JAR  --download --area=${AREA} --languages="" --force --compact-db --transportation-name-limit-merge -only_layers=route --nodemap-type=array --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}_routes.mbtiles --polygon=$POLY
+java -Xmx32g -jar $PLANETILER_JAR  --download --area=${AREA} --languages="" --force --compact-db --transportation-name-limit-merge -only_layers=route --nodemap-type=array --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}_routes.mbtiles --polygon=$POLY --max-point-buffer=4
 ```
 
 ## # Generate area tif
