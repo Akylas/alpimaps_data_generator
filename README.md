@@ -57,7 +57,7 @@ java -Xmx32g -jar $PLANETILER_JAR  --download --area=${AREA} --languages="" --fo
 Or build using a "parent" area. For example i will always use europe as i mostly build europe countries
 
 ```shell
-java -Xmx32g -jar $PLANETILER_JAR  --download --area=europe --languages="" --force --compact-db --transportation-name-limit-merge -exclude_layers=route --nodemap-type=array --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles --polygon=$POLY --max-point-buffer=4
+java -Xmx32g -jar $PLANETILER_JAR  --download --area=europe --languages="" --force --compact-db --transportation-name-limit-merge -exclude_layers=route --nodemap-type=array --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles --polygon=$POLY --max-point-buffer=4 --transportation_z13_paths
 ```
 
 If you want to generate low level world map:
