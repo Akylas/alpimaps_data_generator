@@ -146,6 +146,9 @@ def extractTiles(packageId, tileMask, outputFileName, valhallaTileDir, polyzoom)
   if os.path.exists(outputFileName):
     os.remove(outputFileName)
 
+  outputDir = os.path.dirname(os.path.abspath(outputFileName))
+  os.makedirs(outputDir, exist_ok=True)
+
   with closing(sqlite3.connect(outputFileName)) as outputDb:
     outputDb.execute("PRAGMA locking_mode=EXCLUSIVE")
     outputDb.execute("PRAGMA synchronous=OFF")
