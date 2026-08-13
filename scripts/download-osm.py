@@ -82,7 +82,8 @@ import aiohttp
 from aiohttp import ClientSession
 from bs4 import BeautifulSoup
 # noinspection PyProtectedMember
-from docopt import docopt, __all__ as docopt_funcs
+import docopt as docopt_module
+from docopt import docopt
 from tabulate import tabulate
 
 class Bbox:
@@ -200,7 +201,8 @@ class Catalog:
         print('Retrieving available files...')
         await sleep(0.01)  # Make sure the above print statement prints first
         sources_by_hash: Dict[str, List[Source]] = defaultdict(list)
-        await asyncio.wait([v.init(session, verbose) for v in self.mirrors])
+        await asyncio.wait(
+            [asyncio.ensure_future(v.init(session, verbose)) for v in self.mirrors])
         for mirror in self.mirrors:
             for s in mirror.sources:
                 sources_by_hash[s.hash].append(s)
@@ -408,7 +410,9 @@ class Source:
         try:
             if verbose:
                 print(f'Getting content length for {self.url}')
-            async with session.head(self.url) as resp:
+            # aiohttp does not follow redirects on HEAD by default, and
+            # geofabrik answers with a 302 to the actual file.
+            async with session.head(self.url, allow_redirects=True) as resp:
                 if resp.status >= 400:
                     raise ValueError(f'Status={resp.status} for HEAD request')
                 if 'Content-Length' in resp.headers:
@@ -431,8 +435,10 @@ class SearchResult:
 
 
 def load_sources(sources: Iterable[Source], session: ClientSession, verbose: bool):
-    return asyncio.wait([v.load_hash(session, verbose) for v in sources]
-                        + [v.load_metadata(session, verbose) for v in sources])
+    # Python 3.11+ requires tasks, not bare coroutines, in asyncio.wait()
+    return asyncio.wait(
+        [asyncio.ensure_future(v.load_hash(session, verbose)) for v in sources]
+        + [asyncio.ensure_future(v.load_metadata(session, verbose)) for v in sources])
 
 
 async def fetch(session: ClientSession, url: str) -> str:
@@ -597,7 +603,16 @@ class Bbbike(AreaSource):
 class Osmfr(AreaSource):
     async def search(self, area_id: str, is_guessing: bool) -> Optional[SearchResult]:
         url = f'http://download.openstreetmap.fr/extracts/{area_id}-latest.osm.pbf'
-        poly = await fetch(self.session, f'https://download.openstreetmap.fr/polygons/{area_id}.poly')
+        try:
+            poly = await fetch(
+                self.session,
+                f'https://download.openstreetmap.fr/polygons/{area_id}.poly')
+        except ValueError:
+            # osmfr needs the full path, e.g. "europe/monaco". Let the caller
+            # try the next source rather than aborting the auto-detection.
+            if is_guessing:
+                return None
+            raise
         return SearchResult(
             Source(area_id, url),
             f'http://download.openstreetmap.fr/replication/{area_id}/minute/',
@@ -827,7 +842,10 @@ def assert_conflict_args(info, aria2c_args, *conflicted_args):
 
 
 def main():
-    if 'magic' not in docopt_funcs:
+    # docopt-ng exposes these; the original docopt package does not.
+    # ('magic' was dropped from docopt-ng's __all__ in 0.9.0, so don't test for it.)
+    if not any(hasattr(docopt_module, f)
+               for f in ('magic', 'lint_docstring', 'parse_docstring_sections')):
         print("""
 Found invalid version of docopt. Must use docopt_ng instead. Uninstall it with
   $ python3 -m pip uninstall docopt

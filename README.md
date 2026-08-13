@@ -7,7 +7,7 @@ It can also be used to generate mbtiles to be used with other projects like `til
 ### macos
 
 ```shell
-brew install aria2 gdal autoconf automake zmq czmq
+brew install aria2 gdal autoconf automake zmq czmq spatialite-tools luajit
 pip3 install gdal
 
 ```
@@ -16,7 +16,7 @@ pip3 install gdal
 
 ```shell
 sudo add-apt-repository ppa:ubuntugis/ubuntugis-unstable
-sudo apt install -y aria2 gdal-bin autoconf automake pkg-config libtool make gcc g++ lcov cmake make libtool pkg-config g++ gcc curl unzip jq lcov protobuf-compiler vim-common locales libcurl4-openssl-dev zlib1g-dev liblz4-dev libprotobuf-dev
+sudo apt install -y aria2 gdal-bin autoconf automake pkg-config libtool make gcc g++ lcov cmake make libtool pkg-config g++ gcc curl unzip jq lcov protobuf-compiler vim-common locales libcurl4-openssl-dev zlib1g-dev liblz4-dev libprotobuf-dev spatialite-tools luajit
 ```
 You'll also need venv for python (package depending on your python3 version but something like `sudo apt install -y python3.10-venv`)
 
@@ -103,10 +103,33 @@ python ./scripts/filter_tiles_from_other_mbtiles.py --sourcembtiles ${OUTPUT_DIR
 ```
 
 ## # build valhalla package
+
+### Download the elevation tiles
+
+`valhalla_build_tiles` bakes elevation into the graph during its `elevation` stage, so the tiles listed in
+`additional_data.elevation` of `valhalla.json` (`./elevation_tiles`) must be downloaded **before** building the tiles.
+The same folder is reused later by `generate_tif_from_hgt.sh`, so use `-d` (decompressed `.hgt`) here.
+
+Compute the bounds of your poly, then download from Tilezen:
+```shell
+export BOUNDS=$(python ./scripts/get_shape_bounds_tile_envelope.py --poly-shape $POLY --minzoom 5 --maxzoom 5)
+valhalla_build_elevation -v -d -b $BOUNDS -o ./elevation_tiles
+```
+Use the same `--minzoom/--maxzoom` value you intend to pass as `--polyzoom` to `generate_tif_from_hgt.sh` (5 here),
+so both steps cover the same area and no tile gets downloaded twice.
+
+If you build the valhalla graph for a parent area (see below), download the elevation for that parent area instead,
+either with an explicit bbox (`-b '{w},{s},{e},{n}'`) or, once a graph already exists, straight from it:
+```shell
+valhalla_build_elevation -v -d -t -c valhalla.json
+```
+
+### Build the tiles
+
 first build valhalla tiles if you didnt already. In my case i build valhalla tiles for the whole europe to ensure i have all tiles to calculate routes
 between europe packages. So i only build valhalla tiles once . So here for my case i replace `$AREA` with `europe`
 ```shell
-valhalla_build_tiles -c valhalla.json data/sources/$AREA.osm.pbf
+valhalla_build_tiles -c valhalla.json data/sources/${AREA//-/_}.osm.pbf
 ```
 Then build valhalla "mbtiles package
 ```shell

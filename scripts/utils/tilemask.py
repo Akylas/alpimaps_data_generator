@@ -12,7 +12,7 @@ import base64
 import json
 from shapely.geometry import shape, Polygon, mapping
 from shapely.prepared import prep
-from shapely.ops import cascaded_union, unary_union, transform
+from shapely.ops import unary_union, transform
 from functools import partial
 
 DEFAULT_MIN_ZOOM = 0
@@ -214,7 +214,7 @@ def _tileMaskPolygon(x, y, zoom, tiles, parentTiles):
   if (x, y, zoom) in parentTiles:
     polys = [_tileMaskPolygon(x * 2 + dx, y * 2 + dy, zoom + 1, tiles, parentTiles) for dx, dy in [(0, 0), (1, 0), (1, 1), (0, 1)]]
     polys = list(filter(lambda poly:poly is not None, polys))
-    return cascaded_union(polys) if polys else None
+    return unary_union(polys) if polys else None
   return None
 
 def tileMaskPolygon(tileMaskStr):
