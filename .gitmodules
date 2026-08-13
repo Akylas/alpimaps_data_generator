@@ -10,3 +10,6 @@
 [submodule "tippecanoe"]
 	path = tippecanoe
 	url = https://github.com/farfromrefug/tippecanoe.git
+[submodule "rio-rgbify"]
+	path = rio-rgbify
+	url = https://github.com/farfromrefug/rio-rgbify.git
