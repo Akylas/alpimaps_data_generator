@@ -1,8 +1,12 @@
 <script>
   // A collapsible block. Settings that are rarely touched should not push the thing you came
   // for below the fold.
+  import { untrack } from "svelte";
+
   let { title = "", subtitle = "", open = true, badge = "", children } = $props();
-  let expanded = $state(open);
+  // `open` is the initial state, not a binding: reading it untracked says so and keeps Svelte
+  // from warning that only the first value is captured.
+  let expanded = $state(untrack(() => open));
 </script>
 
 <section class="card">

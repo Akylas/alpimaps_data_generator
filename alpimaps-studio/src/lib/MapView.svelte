@@ -23,7 +23,7 @@
   let geomFilter = $state("all");
   let comparing = $state(false);
   let leftOpen = $state(true);
-  let rightOpen = $state(true);
+  let rightOpen = $state(false);
   let showTileGrid = $state(false);
   let styleApplied = $state(false);
 
@@ -233,10 +233,15 @@
   function setTerrainMode(source, mode) {
     const w = which(source);
     const map = mapFor(w);
+    const was = source.terrainMode;
     source.terrainMode = mode;
     // the source type itself changes between modes, so it is rebuilt rather than re-styled
     removeSourceFromMap(map, source);
     addSourceToMap(map, source);
+    // 3D is for looking at tile edges, and a flat camera shows none of them: tilt on the way in
+    // and flatten on the way out, but never fight a pitch the user set themselves
+    if (mode === "terrain3d" && map?.getPitch() === 0) map.easeTo({ pitch: 62, duration: 400 });
+    else if (was === "terrain3d" && mode !== "terrain3d") map?.easeTo({ pitch: 0, duration: 400 });
     restack(w);
     bump();
   }
@@ -549,7 +554,10 @@
     </button>
 
     <div class="spacer"></div>
-    <button class:on={comparing} onclick={toggleCompare} disabled={!secondarySources.length && !comparing}>
+    <button class:on={comparing} onclick={toggleCompare} disabled={!secondarySources.length && !comparing}
+            title={secondarySources.length || comparing
+              ? "swipe between the two maps"
+              : "open the right panel and add layers to the comparison map first"}>
       Compare
     </button>
   </div>
@@ -559,7 +567,7 @@
   <div class="body">
     <div class="side left" class:closed={!leftOpen}>
       {#if leftOpen}
-        <SourcePanel sources={mainSources} title={comparing ? "Right map" : "Layers"}
+        <SourcePanel sources={mainSources} title={comparing ? "Layers · right map" : "Layers"}
                      addable={addableMain} onAdd={(a) => addArtifact(a, "main")}
                      onToggleSource={toggleSource} onToggleLayer={toggleLayer}
                      onSetAllLayers={setAll} onOpacity={setOpacity} onTerrainMode={setTerrainMode}
@@ -574,11 +582,13 @@
       <div class="map" bind:this={mainEl}></div>
     </div>
 
-    <button class="grip right" onclick={() => { rightOpen = !rightOpen; relayout(); }}
-            title={rightOpen ? "collapse" : "compare layers"}>{rightOpen ? "›" : "‹"}</button>
+    <button class="grip right" class:hot={comparing || secondarySources.length}
+            onclick={() => { rightOpen = !rightOpen; relayout(); }}
+            title={rightOpen ? "collapse" : "layers for the comparison map"}>{rightOpen ? "›" : "‹"}</button>
     <div class="side right" class:closed={!rightOpen}>
       {#if rightOpen}
-        <SourcePanel sources={secondarySources} title="Left map"
+        <SourcePanel sources={secondarySources} title="Layers · left map"
+                     emptyHint="add layers here, then hit Compare to swipe between the two maps"
                      addable={addableSecondary} onAdd={(a) => addArtifact(a, "secondary")}
                      onToggleSource={toggleSource} onToggleLayer={toggleLayer}
                      onSetAllLayers={setAll} onOpacity={setOpacity} onTerrainMode={setTerrainMode}
@@ -662,7 +672,9 @@
 <style>
   /* the whole view is a column that fills its parent, so the map follows the window and the
      panels can collapse without anything being sized in pixels */
-  .shell { display: flex; flex-direction: column; height: calc(100vh - 96px); min-height: 420px; gap: 8px; }
+  .shell { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 8px;
+           /* outside the flex shell (browser dev, or a tab that is not full-height) fall back */
+           height: 100%; }
   .toolbar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; flex: none; }
   .toolbar select { padding: 6px 8px; background: #12151a; border: 1px solid #303845;
                     border-radius: 5px; color: #dde3ea; font: inherit; font-size: 12px; max-width: 180px; }
@@ -684,6 +696,7 @@
   .grip { flex: none; width: 14px; background: #161b22; border: 1px solid #262d38; color: #6b7684;
           cursor: pointer; padding: 0; font-size: 11px; border-radius: 4px; margin: 0 2px; }
   .grip:hover { color: #dde3ea; }
+  .grip.hot { color: #7cc9a0; border-color: #2d5f4a; }
 
   .maps { position: relative; flex: 1; min-width: 0; border-radius: 8px; overflow: hidden;
           border: 1px solid #262d38; }

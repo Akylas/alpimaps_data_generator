@@ -10,7 +10,7 @@
   const TABS = [["areas", "Output"], ["map", "Map"], ["build", "Build"], ["settings", "Settings"]];
 </script>
 
-<main>
+<main class:wide={tab === "map"}>
   <header>
     <h1>AlpiMaps Studio</h1>
     <nav>
@@ -46,7 +46,11 @@
   :global(button:disabled) { background: #22282f; color: #5d6673; cursor: not-allowed; }
   :global(code) { font-size: 12px; }
   main { max-width: 1100px; margin: 0 auto; padding: 20px 20px 60px; }
-  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+  /* the map wants the whole window; every other tab reads better in a column */
+  main.wide { max-width: none; height: 100vh; padding: 16px 16px 12px; box-sizing: border-box;
+              display: flex; flex-direction: column; }
+  main.wide header { flex: none; }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
   h1 { font-size: 17px; font-weight: 600; margin: 0; }
   nav { display: flex; gap: 4px; }
   nav button { background: transparent; color: #7c8896; padding: 6px 12px; }

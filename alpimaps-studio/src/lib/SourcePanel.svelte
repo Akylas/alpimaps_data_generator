@@ -3,7 +3,7 @@
   import { TERRAIN_MODES, layerSummary } from "./sources.js";
 
   let {
-    sources = [], title = "", collapsed = false,
+    sources = [], title = "", collapsed = false, emptyHint = "no layers — use + to add one",
     onToggleSource, onToggleLayer, onSetAllLayers, onOpacity, onMove, onRemove, onFit,
     onTerrainMode, onAdd, addable = [],
   } = $props();
@@ -55,7 +55,7 @@
   {/if}
 
   {#if !sources.length}
-    <p class="empty">no layers — use + to add one</p>
+    <p class="empty">{emptyHint}</p>
   {/if}
 
   {#each sources as source, index (source.id)}
