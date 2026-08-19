@@ -52,23 +52,24 @@ You can change the languages parameter to your need ( like `en,fr`)
 
 There you have multiple choices. Either build only using the area you want. But you will end up with half-filled tiles on area bounds
 ```shell
-java -Xmx32g -jar $PLANETILER_JAR  --download --area=${AREA} --languages="" --force --compact-db --transportation-name-limit-merge -exclude_layers=route --nodemap-type=array --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles --polygon=$POLY --max-point-buffer=4
+java -Xmx32g -jar $PLANETILER_JAR  --download --area=${AREA} --languages="" --force --compact-db --transportation-name-limit-merge -exclude_layers=route --nodemap-type=sparsearray --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles --polygon=$POLY --max-point-buffer=4  --transportation_z13_paths --mlt-shared-dict --parallel-tmp-io --simplify-tolerance-at-max-zoom=0.25 --min-feature-size-at-max-zoom=0.25 --landcover_tolerance_z11_13=1.05 --landcover_drop_redundant_subclass=true --landcover_merge_maxzoom=true
 ```
 Or build using a "parent" area. For example i will always use europe as i mostly build europe countries
 
 ```shell
-java -Xmx32g -jar $PLANETILER_JAR  --download --area=europe --languages="" --force --compact-db --transportation-name-limit-merge -exclude_layers=route --nodemap-type=array --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles --polygon=$POLY --max-point-buffer=4 --transportation_z13_paths
+java -Xmx32g -jar $PLANETILER_JAR  --download --area=europe --languages="" --force --compact-db --transportation-name-limit-merge -exclude_layers=route --nodemap-type=sparsearray --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles --polygon=$POLY --max-point-buffer=4 --transportation_z13_paths --mlt-shared-dict --parallel-tmp-io --simplify-tolerance-at-max-zoom=0.25 --min-feature-size-at-max-zoom=0.25 --landcover_tolerance_z11_13=1.05 --landcover_drop_redundant_subclass=true --landcover_merge_maxzoom=true --skip_filled_tiles
 ```
 
 If you want to generate low level world map:
 ```shell
-java -Xmx32g -jar $PLANETILER_JAR  --download --area=planet --languages=fr,en --force --transportation-name-limit-merge --compact-db --only_layers=place,park,boundary,mountain_peak,transportation,transportation_name,water,waterway,water_name,landcover,landcover_name,landuse --maxzoom=7 --nodemap-type=array --mbtiles=${OUTPUT_DIR}/world.mbtiles --max-point-buffer=4
+java -Xmx32g -jar $PLANETILER_JAR  --download --area=planet --languages=fr,en --force --transportation-name-limit-merge --compact-db --only_layers=place,park,boundary,mountain_peak,transportation,transportation_name,water,waterway,water_name,landcover,landcover_name,landuse --maxzoom=7 --nodemap-type=sparsearray --mbtiles=${OUTPUT_DIR}/world.mbtiles --max-point-buffer=4 --mlt-shared-dict --parallel-tmp-io --simplify-tolerance-at-max-zoom=0.25 --min-feature-size-at-max-zoom=0.25 --landcover_tolerance_z11_13=1.05 --landcover_drop_redundant_subclass=true --landcover_merge_maxzoom=true --skip_filled_tiles
 
 
 ## # Generate routes mbtiles
 
 ```shell
-java -Xmx32g -jar $PLANETILER_JAR  --download --area=${AREA} --languages="" --force --compact-db --transportation-name-limit-merge -only_layers=route --nodemap-type=array --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}_routes.mbtiles --polygon=$POLY --max-point-buffer=4
+java -Xmx32g -jar $PLANETILER_JAR  --download --area=${AREA} --languages="" --force --compact-db --transportation-name-limit-merge -only_layers=route --nodemap-type=sparsearray --mbtiles=${OUTPUT_DIR}/${AREA}/${AREA}_routes.mbtiles --polygon=$POLY --max-point-buffer=4 --mlt-shared-dict --parallel-tmp-io --route_road_tolerance=true --route_extent_digits=2 --route_symbol_id=true \
+--simplify-tolerance-at-max-zoom=0.25 --min-feature-size-at-max-zoom=0.25
 ```
 
 ## # Generate area tif

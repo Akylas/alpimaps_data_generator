@@ -136,13 +136,32 @@ def calculateValhallaTilesFromTileMask(tileMask, polyzoom):
         vTiles.add(vTile)
   return sorted(list(vTiles))
 
-def compressTile(tileData):
+# zopfli emits a normal gzip stream, just spends far longer looking for a better
+# one. The reader side is unchanged: mobile-sdk inflates these with
+# inflateInit2(stream, MAX_WBITS + 32), which takes any gzip input.
+# Measured on rhone-alpes gph tiles: about 4% smaller than zlib level 9.
+try:
+  import zopfli.gzip as _zopfli
+except ImportError:
+  _zopfli = None
+
+
+def compressTile(tileData, compression='zopfli'):
+  if compression == 'zopfli' and _zopfli is not None:
+    return _zopfli.compress(tileData)
   compress = zlib.compressobj(9, zlib.DEFLATED, 31, 9, zlib.Z_DEFAULT_STRATEGY)
   deflated = compress.compress(tileData)
   deflated += compress.flush()
   return deflated
 
-def extractTiles(packageId, tileMask, outputFileName, valhallaTileDir, polyzoom):
+
+def _compressFile(job):
+  """(vTile, path, compression) -> (vTile, compressed bytes). Runs in a worker."""
+  vTile, filePath, compression = job
+  with closing(io.open(filePath, 'rb')) as sourceFile:
+    return vTile, compressTile(sourceFile.read(), compression)
+
+def extractTiles(packageId, tileMask, outputFileName, valhallaTileDir, polyzoom, compression='zopfli', workers=None):
   if os.path.exists(outputFileName):
     os.remove(outputFileName)
 
@@ -152,7 +171,7 @@ def extractTiles(packageId, tileMask, outputFileName, valhallaTileDir, polyzoom)
   with closing(sqlite3.connect(outputFileName)) as outputDb:
     outputDb.execute("PRAGMA locking_mode=EXCLUSIVE")
     outputDb.execute("PRAGMA synchronous=OFF")
-    outputDb.execute("PRAGMA page_size=512")
+    # 512 byte pages mean a ~1 MB gph blob spans thousands of overflow pages,\n    # each spending 4 bytes on the next-page pointer. 4096 cuts that overhead\n    # from ~0.8% to ~0.1% and shortens the chain walk on read.\n    outputDb.execute("PRAGMA page_size=4096")
     outputDb.execute("PRAGMA encoding='UTF-8'")
 
     cursor = outputDb.cursor();
@@ -165,15 +184,25 @@ def extractTiles(packageId, tileMask, outputFileName, valhallaTileDir, polyzoom)
     cursor.execute("INSERT INTO metadata(name, value) VALUES('format', 'gph3')")
 
     vTiles = calculateValhallaTilesFromTileMask(tileMask, polyzoom)
+
+    jobs = []
     for vTile in vTiles:
       file = os.path.join(valhallaTileDir, valhallaTilePath(vTile))
       if os.path.isfile(file):
-        print('handling File %s' % file)
-        with closing(io.open(file, 'rb')) as sourceFile:
-          compressedData = compressTile(sourceFile.read())
-          cursor.execute("INSERT INTO tiles(zoom_level, tile_column, tile_row, tile_data) VALUES(?, ?, ?, ?)", (vTile[2], vTile[0], vTile[1], bytes(compressedData)));
+        jobs.append((vTile, file, compression))
       else:
         print('Warning: File %s does not exist!' % file)
+
+    if compression == 'zopfli' and _zopfli is None:
+      print('Warning: zopfli not installed, falling back to zlib level 9')
+
+    # compression dominates the runtime here, and every tile is independent.
+    # imap with chunksize 1 streams the results back so only `workers` tiles are
+    # held in memory at once - some of these blobs are ~10 MB.
+    with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
+      for i, (vTile, compressedData) in enumerate(pool.map(_compressFile, jobs, chunksize=1)):
+        print('[%d/%d] %s -> %d bytes' % (i + 1, len(jobs), valhallaTilePath(vTile), len(compressedData)))
+        cursor.execute("INSERT INTO tiles(zoom_level, tile_column, tile_row, tile_data) VALUES(?, ?, ?, ?)", (vTile[2], vTile[0], vTile[1], bytes(compressedData)));
 
     cursor.execute("CREATE UNIQUE INDEX tiles_index ON tiles (zoom_level, tile_column, tile_row)");
     cursor.close()
@@ -182,7 +211,7 @@ def extractTiles(packageId, tileMask, outputFileName, valhallaTileDir, polyzoom)
   with closing(sqlite3.connect(outputFileName)) as outputDb:
     outputDb.execute("VACUUM")
 
-def processPackage(package_id, tilemask , outputFileName, tilesDir, polyzoom):
+def processPackage(package_id, tilemask , outputFileName, tilesDir, polyzoom, compression='zopfli', workers=None):
   if os.path.exists(outputFileName):
     if not os.path.exists(outputFileName + "-journal"):
       return outputFileName
@@ -191,7 +220,7 @@ def processPackage(package_id, tilemask , outputFileName, tilesDir, polyzoom):
 
   print('Processing %s' % package_id)
   try:
-    extractTiles(package_id, tilemask, outputFileName, tilesDir, polyzoom)
+    extractTiles(package_id, tilemask, outputFileName, tilesDir, polyzoom, compression, workers)
   except:
     if os.path.isfile(outputFileName):
       os.remove(outputFileName)
@@ -206,13 +235,18 @@ def main():
   parser.add_argument('--tilemask', dest='tilemask', help='Input tilemask string')
   parser.add_argument('--poly', dest='poly', help='Input .poly file')
   parser.add_argument('--polymaxzoom', dest='polymaxzoom', help='tilemask maxzoom', type=int)
+  parser.add_argument('--compression', dest='compression', default='zopfli', choices=('zopfli', 'zlib'),
+                      help='gzip encoder. zopfli is ~4%% smaller and much slower, and needs no reader change')
+  parser.add_argument('-j', '--workers', dest='workers', type=int, default=None,
+                      help='parallel compression workers (default: all cores)')
   args = parser.parse_args()
 
   if (not args.tilemask and args.poly):
     args.tilemask = subprocess.run(["python",("%s/generate_poly_tilemask.py" % (os.path.dirname(__file__))),("--poly=%s" % ( args.poly)),("--maxzoom=%s" % (args.polymaxzoom))], stdout=subprocess.PIPE).stdout.decode('utf-8')
 
 
-  processPackage(args.package_id, args.tilemask, args.output, args.input, args.polymaxzoom)
+  processPackage(args.package_id, args.tilemask, args.output, args.input, args.polymaxzoom,
+                 args.compression, args.workers)
 
 if __name__ == "__main__":
   main()

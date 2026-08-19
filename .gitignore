@@ -19,3 +19,16 @@ data
 *.vtiles
 *.geojson
 work_france_ign
+
+# release tooling
+node_modules/
+
+# benchmark output: the scripts are tracked, the archives and logs they produce are not
+bench/*.log
+bench/*.tsv.gz
+bench/terrain/
+.terrain_rgb/
+build_tiles.log
+*.aux.xml
+route_symbols.json
+valhalla_tiles.tar
