@@ -11,6 +11,16 @@ export const OWN_PREFIX = "___";
 
 export const GEOM_KINDS = ["polygons", "lines", "points", "rasters"];
 
+/**
+ * How a terrain-RGB archive is drawn.
+ *
+ * `hillshade` is the useful view and `raster` is the honest one: it paints the encoded bytes
+ * directly, so quantisation banding and the seams between sources are visible as themselves
+ * rather than as shading. `terrain3d` drapes the DEM, which is how tile edges give themselves
+ * away - a mismatched edge is a cliff.
+ */
+export const TERRAIN_MODES = ["hillshade", "raster", "terrain3d"];
+
 export function layerIdPrefix(sourceId, layerId) {
   return `${OWN_PREFIX}${sourceId}${OWN_PREFIX}${layerId}`;
 }
@@ -89,8 +99,21 @@ export function makeSource(artifact, tilejson, base, prefs = {}) {
     tileSize: tilejson.tileSize ?? 512,
     visible: prefs.visible ?? true,
     opacity: prefs.opacity ?? 1,
+    terrainMode: prefs.terrainMode ?? "hillshade",
     layers,
   };
+}
+
+/** Turn every layer of a source on or off at once. */
+export function setAllLayers(source, visible) {
+  for (const layer of source.layers) {
+    layer.visible = visible;
+  }
+}
+
+export function layerSummary(source) {
+  const on = source.layers.filter((l) => l.visible).length;
+  return { on, total: source.layers.length };
 }
 
 export function addSourceToMap(map, source) {
@@ -141,14 +164,23 @@ export function addSourceToMap(map, source) {
 
   const layerId = `${OWN_PREFIX}${source.id}-raster`;
   if (source.terrain) {
-    map.addSource(source.id, {
-      type: "raster-dem",
-      url: source.url,
-      // terrarium and mapbox pack heights differently; the wrong one renders plausible nonsense
-      encoding: source.demEncoding ?? "terrarium",
-      tileSize: source.tileSize,
-    });
-    map.addLayer({ id: layerId, type: "hillshade", source: source.id });
+    if (source.terrainMode === "raster") {
+      // painted as ordinary imagery: what the encoded bytes actually look like
+      map.addSource(source.id, { type: "raster", url: source.url, tileSize: source.tileSize });
+      map.addLayer({ id: layerId, type: "raster", source: source.id });
+    } else {
+      map.addSource(source.id, {
+        type: "raster-dem",
+        url: source.url,
+        // terrarium and mapbox pack heights differently; the wrong one renders plausible nonsense
+        encoding: source.demEncoding ?? "terrarium",
+        tileSize: source.tileSize,
+      });
+      map.addLayer({ id: layerId, type: "hillshade", source: source.id });
+      if (source.terrainMode === "terrain3d") {
+        map.setTerrain({ source: source.id, exaggeration: 1.3 });
+      }
+    }
   } else {
     map.addSource(source.id, { type: "raster", url: source.url, tileSize: source.tileSize });
     map.addLayer({ id: layerId, type: "raster", source: source.id });
@@ -158,6 +190,10 @@ export function addSourceToMap(map, source) {
 
 export function removeSourceFromMap(map, source) {
   if (!map || !map.style) return;
+  // the terrain reference has to go first, or removing the source it points at throws
+  if (source.terrain && map.getTerrain?.()?.source === source.id) {
+    map.setTerrain(null);
+  }
   for (const id of mapLayerIds(source)) {
     if (map.getLayer(id)) map.removeLayer(id);
   }

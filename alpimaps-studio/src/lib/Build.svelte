@@ -1,6 +1,7 @@
 <script>
   import { invoke, listen, isTauri } from "./api.js";
   import { onMount } from "svelte";
+  import Section from "./Section.svelte";
 
   let java = $state(null);
   let javaError = $state("");
@@ -147,6 +148,7 @@
     return [...by.entries()];
   });
   let stepPresets = $derived(presets.filter((p) => p.step === activeStep));
+  let setCount = $derived(Object.keys(values[activeStep] ?? {}).length);
   let ready = $derived(java && jar && area && selected.size && !running);
 </script>
 
@@ -154,8 +156,9 @@
   <p class="warn">Browser dev mode — builds run only inside the app.</p>
 {/if}
 
-<section class="card">
-  <h3>Runtime</h3>
+<Section title="1 · Runtime" open={!java}
+         badge={java ? "ready" : "needs Java"}
+         subtitle={java ? `Java ${java.version} · ${area || "no area"}` : ""}>
   {#if java}
     <p class="ok">Java {java.version} · <code>{java.source}</code></p>
   {:else if downloading}
@@ -179,10 +182,9 @@
       <label>Schema file<input bind:value={schemaYaml} placeholder="…/shortbread.yml" /></label>
     {/if}
   </div>
-</section>
+</Section>
 
-<section class="card">
-  <h3>Steps</h3>
+<Section title="2 · Steps" subtitle={planned.length ? `${planned.length} to run` : "nothing selected"}>
   <div class="steps">
     {#each steps as s}
       <button class="step" class:on={selected.has(s.id)} class:todo={!s.implemented}
@@ -198,14 +200,14 @@
     </p>
   {/if}
   <div class="row">
-    <button onclick={run} disabled={!ready}>Run</button>
+    <button onclick={run} disabled={!ready}>Run {planned.length || ""}</button>
     <button class="ghost" onclick={() => invoke("cancel_run")} disabled={!running}>Cancel</button>
   </div>
-</section>
+</Section>
 
 {#if activeStep}
-  <section class="card">
-    <h3>Options — {steps.find((s) => s.id === activeStep)?.label}</h3>
+  <Section title="3 · Options" open={false}
+           subtitle={`${steps.find((s) => s.id === activeStep)?.label ?? ""} · ${setCount} set`}>
     <div class="presets">
       {#each stepPresets as p}
         <button class="ghost" title={p.description} onclick={() => applyPreset(p)}>{p.name}</button>
@@ -215,7 +217,9 @@
     </div>
 
     {#each groups as [group, defs]}
-      <h4>{group}</h4>
+      {@const groupSet = defs.filter((d) => values[activeStep]?.[d.key] !== undefined).length}
+      <details class="group" open={groupSet > 0}>
+        <summary>{group}{#if groupSet}<span class="count">{groupSet}</span>{/if}</summary>
       {#each defs as d}
         {@const val = values[activeStep]?.[d.key]}
         {@const set = val !== undefined}
@@ -244,13 +248,13 @@
           <p class="hint">unset → {d.hint}</p>
         </div>
       {/each}
+      </details>
     {/each}
-  </section>
+  </Section>
 {/if}
 
 {#if running || lines.length || results.length}
-  <section class="card">
-    <h3>Progress</h3>
+  <Section title="4 · Progress" subtitle={phase}>
     <p class="phase">{phase}</p>
     <progress max="100" value={percent}></progress>
     <p class="muted">{label} {percent}%</p>
@@ -259,17 +263,23 @@
         {r.step}: {r.ok ? "finished" : "failed"}{#if r.elapsed} in {r.elapsed}{/if}
       </p>
     {/each}
-    <pre>{lines.slice(-150).join("\n")}</pre>
-  </section>
+    <details class="group">
+      <summary>Log</summary>
+      <pre>{lines.slice(-150).join("\n")}</pre>
+    </details>
+  </Section>
 {/if}
 
 <style>
-  .card { background: #1a1f27; border: 1px solid #262d38; border-radius: 8px;
-          padding: 16px; margin-bottom: 14px; }
-  h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #7c8896;
-       margin: 0 0 12px; }
-  h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: #5d6673;
-       margin: 16px 0 8px; border-bottom: 1px solid #222932; padding-bottom: 4px; }
+  .group { border-top: 1px solid #222932; }
+  .group summary { cursor: pointer; padding: 8px 0; font-size: 11px; text-transform: uppercase;
+                   letter-spacing: .05em; color: #7c8896; list-style: none; display: flex;
+                   align-items: center; gap: 8px; }
+  .group summary::-webkit-details-marker { display: none; }
+  .group summary::before { content: "›"; color: #5d6673; display: inline-block; }
+  .group[open] summary::before { transform: rotate(90deg); }
+  .count { background: #2d5f4a; color: #cfe8db; font-size: 10px; padding: 0 6px;
+           border-radius: 8px; }
   label { display: block; color: #9aa5b1; font-size: 13px; }
   input, select { display: block; width: 100%; margin-top: 4px; padding: 6px 9px; background: #12151a;
           border: 1px solid #303845; border-radius: 5px; color: #dde3ea; font: inherit;

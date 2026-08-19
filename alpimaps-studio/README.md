@@ -158,6 +158,42 @@ actually defines - otherwise a "tuned" preset quietly becomes a stock build.
 
 ## Map view
 
+Modes across the top: **Inspect**, **Route**, **Profile**, **Tiles**, **Style**. Route and Profile
+are enabled from the *data*, not just the build - a binary with Valhalla linked still cannot route
+an area with no routing package, and offering the mode anyway only fails after two waypoints have
+been placed.
+
+Layers stack per side, in order, with per-source and per-layer visibility, all/none toggles and
+opacity. Both side panels collapse to give the map the width.
+
+Terrain archives render three ways. **hillshade** is the useful view; **raster** paints the
+encoded bytes directly, so quantisation banding and the seam between two sources show as
+themselves rather than as shading; **3D** drapes the DEM, which is how tile edges give themselves
+away - a mismatched edge is a cliff.
+
+**Tiles** mode dumps whichever tile was clicked as JSON, decoded from MVT or MLT, so attribute
+work can be checked against what is actually in the archive rather than against what the renderer
+chose to draw. **Grid** overlays tile boundaries with their z/x/y.
+
+**Style** mode renders an archive through a real MapLibre style, edited in place. Whatever the
+style names its sources, they are repointed at the local server, so a style written for a hosted
+tileset renders the file on disk without editing its URLs.
+
+### Three bugs the rewrite exposed
+
+* **3D terrain wedged every style change.** `setStyle` removes every source, including the DEM
+  the terrain points at; left attached, the new style never finishes loading. No error, no tiles,
+  and every later call fails with "Style is not done loading". Terrain is now released first -
+  and deliberately not gated on `isStyleLoaded()`, because the moment it matters most is mid-load,
+  which is exactly when that check would skip it.
+* **The map did not follow the window.** The view was a fixed 520 px. It is now a flex column,
+  and the panel toggles call `resize()` directly rather than waiting on the ResizeObserver, whose
+  callbacks arrive with the frame lifecycle and so never arrive at all while the window is hidden.
+* **`pbf` v5 has no default export.** `import Pbf from "pbf"` builds under some bundlers and
+  fails under others; the reader is `PbfReader`, by name.
+
+
+
 Layer handling is adapted from [mbview-rs](https://github.com/farfromrefug/mbview-rs)
 (`src/lib/sources.ts`), which already had this right. Two ideas kept verbatim:
 
