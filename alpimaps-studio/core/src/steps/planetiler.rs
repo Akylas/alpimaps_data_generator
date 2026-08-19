@@ -152,7 +152,15 @@ pub async fn run_cancellable(
                 Some(line) => line,
                 None => break,
             },
-            _ = cancel.recv() => {
+            // `recv()` also completes with None once every sender is dropped. Treating that as
+            // a cancellation kills the build the moment a caller does not hold on to the
+            // sender - which looks exactly like planetiler failing for no reason.
+            signal = cancel.recv() => {
+                if signal.is_none() {
+                    // nobody can cancel any more; keep reading output until the process ends
+                    cancel = mpsc::channel(1).1;
+                    continue;
+                }
                 cancelled = true;
                 let _ = child.kill().await;
                 let _ = tx.send(StepEvent::Log { step, line: "cancelled".into() }).await;
@@ -239,6 +247,33 @@ mod tests {
     #[test]
     fn overrides_the_log_interval() {
         assert!(job().command_line().iter().any(|a| a == "--loginterval=1s"));
+    }
+
+    /// A caller that drops the cancel sender - or never holds one - must still get a full run.
+    #[tokio::test]
+    async fn a_dropped_cancel_sender_does_not_cancel() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut j = job();
+        // `true` exits 0 immediately and needs no jar
+        j.java = "/usr/bin/true".into();
+        j.working_dir = dir.path().to_path_buf();
+        j.output = dir.path().join("out.mbtiles");
+        j.tmp_dir = dir.path().join("tmp");
+
+        let (tx, mut rx) = mpsc::channel(64);
+        let cancel = mpsc::channel(1).1; // sender dropped right here
+        let handle = tokio::spawn(run_cancellable(j, tx, cancel));
+
+        let mut cancelled = false;
+        while let Some(event) = rx.recv().await {
+            if let StepEvent::Log { line, .. } = &event {
+                if line == "cancelled" {
+                    cancelled = true;
+                }
+            }
+        }
+        assert!(!cancelled, "a dropped sender must not read as a cancellation");
+        assert!(handle.await.unwrap().unwrap(), "the process ran to completion");
     }
 
     #[test]

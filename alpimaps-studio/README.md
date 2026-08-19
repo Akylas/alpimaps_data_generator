@@ -221,6 +221,32 @@ ordinary browser. Start it with
 `cargo run -p studio-core --example serve -- ../alpimaps_mbtiles --hold` (port 8787) and
 `npm run dev`.
 
+## Command line
+
+`alpimaps` runs the same code the app runs, so a build started from a terminal and one started
+from the GUI produce the same bytes. It replaces the shell scripts it mirrors and keeps their
+shape.
+
+```
+alpimaps catalog --stats
+alpimaps basemap --area rhone-alpes --preset measured -o simplify_tolerance=0.6
+alpimaps terrain --area rhone-alpes --maxzoom 13 --blur 1000
+alpimaps package --area rhone-alpes --compression zopfli
+alpimaps route  --tiles .../rhone-alpes.vtiles --point 5.72,45.19 --point 5.92,45.56
+alpimaps profile --terrain .../rhone-alpes_terrain.mbtiles --point 6.5,45.35 --point 6.9,45.42
+alpimaps serve  --tiles .../rhone-alpes.vtiles
+alpimaps options basemap --presets
+```
+
+`-o key=value` overrides are checked against the same option schema the GUI form is generated
+from, so an unknown key is refused rather than forwarded. Planetiler ignores flags it does not
+recognise, which would otherwise turn a typo into a build that quietly used the default.
+`--dry-run` prints the exact command instead of running it.
+
+Each binary crate carries its own `build.rs` including `valhalla-link.rs`. Cargo link directives
+do not propagate: `cargo:rustc-link-arg` applies only to the crate that emits it, so a binary
+linking studio-core has to repeat them or the link fails on undefined symbols.
+
 ## Preview
 
 `cargo run -p studio-core --example serve -- ../alpimaps_mbtiles` serves every renderable
