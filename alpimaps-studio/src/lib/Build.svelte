@@ -16,11 +16,10 @@
   let schemaYaml = $state("");
   let jar = $state("");
 
-  let activeStep = $state(null);
   let optionDefs = $state({});
   let values = $state({});
   let presets = $state([]);
-  let presetName = $state("");
+  let presetName = $state({});
 
   let running = $state(false);
   let phase = $state("");
@@ -42,7 +41,6 @@
         values[s.id] = {};
       }
       selected = new Set(["basemap"]);
-      activeStep = "basemap";
       await replan();
     } catch (err) {
       javaError = String(err);
@@ -73,9 +71,6 @@
     const next = new Set(selected);
     next.has(id) ? next.delete(id) : next.add(id);
     selected = next;
-    // always focus the clicked step, selected or not - otherwise the only way to look at a
-    // step's options is to toggle it on, and the only way to leave is to toggle it off
-    activeStep = id;
     await replan();
   }
 
@@ -83,14 +78,14 @@
     values = { ...values, [preset.step]: { ...preset.values } };
   }
 
-  async function savePreset() {
-    const name = presetName.trim();
-    if (!name || !activeStep) return;
+  async function savePreset(step) {
+    const name = (presetName[step] ?? "").trim();
+    if (!name || !step) return;
     await invoke("save_preset", {
-      preset: { name, step: activeStep, description: "", values: values[activeStep] ?? {} },
+      preset: { name, step, description: "", values: values[step] ?? {} },
     });
     presets = await invoke("list_presets");
-    presetName = "";
+    presetName = { ...presetName, [step]: "" };
   }
 
   function setValue(step, key, raw, kind) {
@@ -138,17 +133,20 @@
     }
   }
 
-  let groups = $derived.by(() => {
-    const defs = optionDefs[activeStep] ?? [];
+  function groupsFor(step) {
     const by = new Map();
-    for (const d of defs) {
+    for (const d of optionDefs[step] ?? []) {
       if (!by.has(d.group)) by.set(d.group, []);
       by.get(d.group).push(d);
     }
     return [...by.entries()];
-  });
-  let stepPresets = $derived(presets.filter((p) => p.step === activeStep));
-  let setCount = $derived(Object.keys(values[activeStep] ?? {}).length);
+  }
+  const labelFor = (id) => steps.find((s) => s.id === id)?.label ?? id;
+  const setCountFor = (step) => Object.keys(values[step] ?? {}).length;
+
+  // options for everything that will actually run, dependencies included - selecting two steps
+  // used to leave only the last-clicked one configurable
+  let optionSteps = $derived(planned.length ? planned : [...selected]);
   let ready = $derived(java && jar && area && selected.size && !running);
 </script>
 
@@ -205,53 +203,55 @@
   </div>
 </Section>
 
-{#if activeStep}
-  <Section title="3 · Options" open={false}
-           subtitle={`${steps.find((s) => s.id === activeStep)?.label ?? ""} · ${setCount} set`}>
+{#each optionSteps as step, i}
+  <Section title={`3.${i + 1} · ${labelFor(step)}`} open={false}
+           subtitle={setCountFor(step) ? `${setCountFor(step)} set` : "defaults"}>
     <div class="presets">
-      {#each stepPresets as p}
+      {#each presets.filter((p) => p.step === step) as p}
         <button class="ghost" title={p.description} onclick={() => applyPreset(p)}>{p.name}</button>
       {/each}
-      <input bind:value={presetName} placeholder="save current as…" />
-      <button class="ghost" onclick={savePreset} disabled={!presetName.trim()}>Save</button>
+      <input value={presetName[step] ?? ""} placeholder="save current as…"
+             oninput={(e) => (presetName = { ...presetName, [step]: e.target.value })} />
+      <button class="ghost" onclick={() => savePreset(step)}
+              disabled={!(presetName[step] ?? "").trim()}>Save</button>
     </div>
 
-    {#each groups as [group, defs]}
-      {@const groupSet = defs.filter((d) => values[activeStep]?.[d.key] !== undefined).length}
+    {#each groupsFor(step) as [group, defs]}
+      {@const groupSet = defs.filter((d) => values[step]?.[d.key] !== undefined).length}
       <details class="group" open={groupSet > 0}>
         <summary>{group}{#if groupSet}<span class="count">{groupSet}</span>{/if}</summary>
-      {#each defs as d}
-        {@const val = values[activeStep]?.[d.key]}
-        {@const set = val !== undefined}
-        <div class="opt" class:set>
-          <div class="opthead">
-            <label for={d.key}>{d.label}</label>
-            {#if set}<button class="clear" onclick={() => clearValue(activeStep, d.key)}>reset</button>{/if}
+        {#each defs as d}
+          {@const val = values[step]?.[d.key]}
+          {@const set = val !== undefined}
+          <div class="opt" class:set>
+            <div class="opthead">
+              <label for={`${step}-${d.key}`}>{d.label}</label>
+              {#if set}<button class="clear" onclick={() => clearValue(step, d.key)}>reset</button>{/if}
+            </div>
+            {#if d.kind.type === "bool"}
+              <input id={`${step}-${d.key}`} type="checkbox" checked={val === true}
+                     onchange={(e) => setValue(step, d.key, e.target.checked, "bool")} />
+            {:else if d.kind.type === "choice"}
+              <select id={`${step}-${d.key}`} value={val ?? ""}
+                      onchange={(e) => setValue(step, d.key, e.target.value, "choice")}>
+                <option value="">— unset —</option>
+                {#each d.kind.choices as c}<option value={c}>{c}</option>{/each}
+              </select>
+            {:else}
+              <input id={`${step}-${d.key}`}
+                     type={d.kind.type === "text" ? "text" : "number"}
+                     step={d.kind.type === "float" ? "0.05" : "1"}
+                     value={val ?? ""}
+                     oninput={(e) => setValue(step, d.key, e.target.value, d.kind.type)} />
+            {/if}
+            <p class="help">{d.help}</p>
+            <p class="hint">unset → {d.hint}</p>
           </div>
-          {#if d.kind.type === "bool"}
-            <input id={d.key} type="checkbox" checked={val === true}
-                   onchange={(e) => setValue(activeStep, d.key, e.target.checked, "bool")} />
-          {:else if d.kind.type === "choice"}
-            <select id={d.key} value={val ?? ""}
-                    onchange={(e) => setValue(activeStep, d.key, e.target.value, "choice")}>
-              <option value="">— unset —</option>
-              {#each d.kind.choices as c}<option value={c}>{c}</option>{/each}
-            </select>
-          {:else}
-            <input id={d.key}
-                   type={d.kind.type === "text" ? "text" : "number"}
-                   step={d.kind.type === "float" ? "0.05" : "1"}
-                   value={val ?? ""}
-                   oninput={(e) => setValue(activeStep, d.key, e.target.value, d.kind.type)} />
-          {/if}
-          <p class="help">{d.help}</p>
-          <p class="hint">unset → {d.hint}</p>
-        </div>
-      {/each}
+        {/each}
       </details>
     {/each}
   </Section>
-{/if}
+{/each}
 
 {#if running || lines.length || results.length}
   <Section title="4 · Progress" subtitle={phase}>

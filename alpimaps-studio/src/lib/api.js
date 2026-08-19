@@ -39,7 +39,11 @@ async function devInvoke(cmd, args) {
     case "valhalla_route": {
       const res = await fetch(`${DEV_BASE}/route`, {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ locations: args.req.locations, costing: args.req.costing }),
+        body: JSON.stringify({
+          locations: args.req.locations,
+          costing: args.req.costing,
+          package: args.req.package,
+        }),
       });
       if (!res.ok) throw new Error(await res.text());
       return res.text();

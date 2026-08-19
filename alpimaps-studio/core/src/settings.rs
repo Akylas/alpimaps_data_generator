@@ -37,6 +37,11 @@ pub struct Settings {
     pub java_home: Option<PathBuf>,
     pub planetiler_jar: Option<PathBuf>,
     pub valhalla_bin_dir: Option<PathBuf>,
+    /// The `valhalla.json` used as the template for routing. The embedded router validates the
+    /// whole document, so a hand-written stub is not enough - this points at the real one.
+    /// `None` means `repo_root/valhalla.json`.
+    #[serde(default)]
+    pub valhalla_config: Option<PathBuf>,
     pub heap_mb: u32,
     /// Passed as `--loginterval`. Planetiler's own default is `10s`, which yields about six
     /// progress lines for a one-minute build - far too coarse to drive a progress bar.
@@ -62,6 +67,7 @@ impl Settings {
             java_home: None,
             planetiler_jar: None,
             valhalla_bin_dir: Some(repo_root.join("valhalla/build")),
+            valhalla_config: Some(repo_root.join("valhalla.json")),
             heap_mb: 12288,
             log_interval: "1s".into(),
             areas: Vec::new(),
@@ -95,6 +101,13 @@ impl Settings {
 
     pub fn area_dir(&self, area: &str) -> PathBuf {
         self.output_root.join(area)
+    }
+
+    /// Where the Valhalla config template lives. Falls back to the repo checkout.
+    pub fn valhalla_config_path(&self) -> PathBuf {
+        self.valhalla_config
+            .clone()
+            .unwrap_or_else(|| self.repo_root.join("valhalla.json"))
     }
 
     pub fn area(&self, name: &str) -> Option<&AreaConfig> {

@@ -37,7 +37,7 @@ pub struct RouteArgs {
     /// A .vtiles package or a Valhalla tile directory.
     #[arg(long)]
     pub tiles: PathBuf,
-    /// valhalla.json to use as the config template. Defaults to <repo>/valhalla.json.
+    /// valhalla.json to use as the config template. Defaults to the configured one.
     #[arg(long)]
     pub config: Option<PathBuf>,
     /// lon,lat waypoints in order.
@@ -133,7 +133,7 @@ pub fn route(settings: &Settings, args: RouteArgs) -> Result<()> {
         args.tiles.clone()
     };
 
-    let template = args.config.unwrap_or_else(|| settings.repo_root.join("valhalla.json"));
+    let template = args.config.unwrap_or_else(|| settings.valhalla_config_path());
     let mut router = routing::Router::open(&template, &tile_dir)?;
     let request = routing::RouteRequest { locations, costing: args.costing.clone() };
     let response = router.route(&request.to_json())?;

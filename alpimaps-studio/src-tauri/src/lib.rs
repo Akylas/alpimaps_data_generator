@@ -246,17 +246,33 @@ struct RoutingStatus {
     available: bool,
     /// The tile directory in use, once one has been resolved.
     tile_dir: Option<String>,
+    /// The package that directory was unpacked from, so the UI can say which one it routed on.
+    package: Option<String>,
+    /// The `valhalla.json` used as the config template.
+    config: Option<String>,
 }
 
 #[tauri::command]
-fn routing_status(routing_state: State<'_, Routing>) -> RoutingStatus {
-    let tile_dir = routing_state
+fn routing_status(config: State<'_, Config>, routing_state: State<'_, Routing>) -> RoutingStatus {
+    let loaded = routing_state
         .0
         .lock()
         .ok()
-        .and_then(|g| g.as_ref().map(|(dir, _)| dir.display().to_string()));
-    RoutingStatus { available: routing::available(), tile_dir }
+        .and_then(|g| g.as_ref().map(|(dir, _)| (dir.display().to_string(), PACKAGE_IN_USE.lock().ok().and_then(|p| p.clone()))));
+    let (tile_dir, package) = match loaded {
+        Some((dir, pkg)) => (Some(dir), pkg),
+        None => (None, None),
+    };
+    RoutingStatus {
+        available: routing::available(),
+        tile_dir,
+        package,
+        config: config.get().ok().map(|s| s.valhalla_config_path().display().to_string()),
+    }
 }
+
+/// The package file behind the router currently held open, for `routing_status` to report.
+static PACKAGE_IN_USE: Mutex<Option<String>> = Mutex::new(None);
 
 /// Resolve a tile directory for an area, unpacking its package when needed.
 ///
@@ -264,8 +280,17 @@ fn routing_status(routing_state: State<'_, Routing>) -> RoutingStatus {
 /// `valhalla_tiles/` build output: routing against it exercises the artefact users get. The
 /// unpack is cached by the package's size and modification time, so it happens once per build
 /// rather than once per request.
-fn tile_dir_for(settings: &Settings, area: &str, cache_root: &Path) -> Result<PathBuf, String> {
-    let package_path = settings.area_dir(area).join(format!("{area}.vtiles"));
+fn tile_dir_for(
+    settings: &Settings,
+    area: &str,
+    package: Option<&str>,
+    cache_root: &Path,
+) -> Result<PathBuf, String> {
+    // an area can hold several packages (a `.base` variant, an older build); the caller picks,
+    // and `{area}.vtiles` is only the default
+    let package_path = settings
+        .area_dir(area)
+        .join(package.unwrap_or(&format!("{area}.vtiles")).to_string());
     if !package_path.is_file() {
         let fallback = settings.repo_root.join("valhalla_tiles");
         return if fallback.is_dir() {
@@ -287,7 +312,11 @@ fn tile_dir_for(settings: &Settings, area: &str, cache_root: &Path) -> Result<Pa
             format!("{}-{}", m.len(), modified)
         })
         .unwrap_or_else(|| "unknown".into());
-    let unpacked = cache_root.join(format!("{area}-{stamp}"));
+    let key = package_path
+        .file_name()
+        .map(|n| n.to_string_lossy().replace(['/', '\\'], "_"))
+        .unwrap_or_else(|| area.to_string());
+    let unpacked = cache_root.join(format!("{key}-{stamp}"));
     if unpacked.is_dir() {
         return Ok(unpacked);
     }
@@ -295,7 +324,7 @@ fn tile_dir_for(settings: &Settings, area: &str, cache_root: &Path) -> Result<Pa
     // a stale unpack of the same area would otherwise accumulate on every rebuild
     if let Ok(entries) = std::fs::read_dir(cache_root) {
         for entry in entries.flatten() {
-            if entry.file_name().to_string_lossy().starts_with(&format!("{area}-")) {
+            if entry.file_name().to_string_lossy().starts_with(&format!("{key}-")) {
                 let _ = std::fs::remove_dir_all(entry.path());
             }
         }
@@ -311,6 +340,9 @@ struct RouteRequest {
     /// `[lon, lat]` pairs in visiting order.
     locations: Vec<[f64; 2]>,
     costing: String,
+    /// File name of the `.vtiles` package to route on. `None` picks `{area}.vtiles`.
+    #[serde(default)]
+    package: Option<String>,
 }
 
 /// Route through the given waypoints, returning Valhalla's JSON response verbatim.
@@ -332,8 +364,14 @@ async fn valhalla_route(
         .join("valhalla");
     std::fs::create_dir_all(&cache_root).map_err(|e| e.to_string())?;
 
-    let tile_dir = tile_dir_for(&settings, &req.area, &cache_root)?;
-    let template = settings.repo_root.join("valhalla.json");
+    let tile_dir = tile_dir_for(&settings, &req.area, req.package.as_deref(), &cache_root)?;
+    let template = settings.valhalla_config_path();
+    if !template.is_file() {
+        return Err(format!(
+            "no Valhalla config at {} - set one in Settings",
+            template.display()
+        ));
+    }
     let request_json = routing::RouteRequest {
         locations: req.locations,
         costing: req.costing,
@@ -345,6 +383,9 @@ async fn valhalla_route(
     if needs_open {
         let router = routing::Router::open(&template, &tile_dir).map_err(|e| e.to_string())?;
         *guard = Some((tile_dir, router));
+        if let Ok(mut in_use) = PACKAGE_IN_USE.lock() {
+            *in_use = Some(req.package.clone().unwrap_or_else(|| format!("{}.vtiles", req.area)));
+        }
     }
     let (_, router) = guard.as_mut().expect("just opened");
     router.route(&request_json).map_err(|e| e.to_string())

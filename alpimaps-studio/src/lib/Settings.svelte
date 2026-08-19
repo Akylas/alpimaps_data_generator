@@ -46,6 +46,7 @@
     ["planetiler_jar", "Planetiler jar"],
     ["java_home", "Java home", "blank = probe JAVA_HOME then PATH"],
     ["valhalla_bin_dir", "Valhalla binaries"],
+    ["valhalla_config", "valhalla.json", "config template for routing; blank = <repo>/valhalla.json"],
   ];
 </script>
 

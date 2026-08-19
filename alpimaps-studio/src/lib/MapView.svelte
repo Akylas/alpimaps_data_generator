@@ -38,6 +38,8 @@
   let tileDump = $state(null);
 
   let valhallaBuilt = $state(false);
+  let routingInfo = $state(null);
+  let routePackage = $state("");
   let costing = $state("pedestrian");
   let trip = $state(null);
   let routeBusy = $state(false);
@@ -57,7 +59,8 @@
   // Availability follows the data, not just the build. A build with Valhalla linked still cannot
   // route an area that has no routing package, and offering the mode anyway only produces an
   // error after the user has placed two waypoints.
-  let hasRoutingTiles = $derived(artifacts.some((a) => a.kind === "valhalla_package"));
+  let packages = $derived(canonicalFirst(artifacts.filter((a) => a.kind === "valhalla_package")));
+  let hasRoutingTiles = $derived(packages.length > 0);
   let canRoute = $derived(valhallaBuilt && hasRoutingTiles);
   let canProfile = $derived(!!terrainArt);
 
@@ -74,20 +77,31 @@
     });
   }
 
+  /**
+   * Run `fn` once the style is loaded, however long that takes.
+   *
+   * The `styledata` event alone is not enough - it can fire before the style is actually
+   * complete - so this polls as well. There is deliberately no short deadline: a window that is
+   * hidden or occluded gets no animation frames, so the style can take far longer than any
+   * timeout worth setting, and giving up leaves the layer panel empty with nothing to retry it.
+   * The poll stops when the map is torn down.
+   */
   function whenStyleReady(map, fn) {
     if (!map) return;
     if (map.isStyleLoaded()) { fn(); return; }
     let done = false;
+    const stop = () => { done = true; clearInterval(timer); map.off("styledata", attempt); };
     const attempt = () => {
-      if (done || !map.isStyleLoaded()) return;
-      done = true;
-      clearInterval(timer);
-      map.off("styledata", attempt);
+      if (done) return;
+      if (map._removed) { stop(); return; }
+      let ready = false;
+      try { ready = map.isStyleLoaded(); } catch { stop(); return; }
+      if (!ready) return;
+      stop();
       fn();
     };
-    const timer = setInterval(() => { attempt(); if (done) clearInterval(timer); }, 120);
+    const timer = setInterval(attempt, 150);
     map.on("styledata", attempt);
-    setTimeout(() => { done = true; clearInterval(timer); map.off("styledata", attempt); }, 15000);
   }
 
   onMount(async () => {
@@ -95,7 +109,8 @@
       base = await invoke("start_tiles");
       areas = await invoke("list_areas");
       areaName = areas[0]?.name ?? "";
-      valhallaBuilt = (await invoke("routing_status"))?.available ?? false;
+      routingInfo = await invoke("routing_status");
+      valhallaBuilt = routingInfo?.available ?? false;
     } catch (err) {
       error = String(err);
       return;
@@ -109,7 +124,7 @@
 
     // The map has to follow the window, not a fixed height: the shell is flex and the panels
     // collapse, so the container changes size without the window ever being resized.
-    resizeObserver = new ResizeObserver(() => { mainMap?.resize(); secondaryMap?.resize(); });
+    resizeObserver = new ResizeObserver(scheduleResize);
     resizeObserver.observe(containerEl);
     if (import.meta.env.DEV) { window.__main = mainMap; window.__secondary = secondaryMap; }
 
@@ -150,6 +165,25 @@
   }
 
   /**
+   * Coalesce resizes to one per frame.
+   *
+   * A drag of the window edge delivers a stream of ResizeObserver callbacks, and every
+   * `resize()` reallocates the GL drawing buffer and repaints - which is what the flicker
+   * during a resize actually is. One resize per frame keeps the canvas in step with the box
+   * without churning the buffer several times inside a single paint.
+   */
+  let resizePending = false;
+  function scheduleResize() {
+    if (resizePending) return;
+    resizePending = true;
+    requestAnimationFrame(() => {
+      resizePending = false;
+      mainMap?.resize();
+      secondaryMap?.resize();
+    });
+  }
+
+  /**
    * Resize both maps after a layout change.
    *
    * The ResizeObserver covers window resizes, but its callbacks are delivered as part of the
@@ -169,8 +203,12 @@
 
   async function addDefaults() {
     const basemap = canonicalFirst(renderable.filter((a) => a.kind === "basemap"))[0];
+    // routes are a first-class output of this pipeline, not an extra: show them with the map
+    const routes = canonicalFirst(renderable.filter((a) => a.kind === "routes"))[0];
     if (terrainArt) await addArtifact(terrainArt, "main");
     if (basemap) await addArtifact(basemap, "main");
+    if (routes) await addArtifact(routes, "main");
+    routePackage = packages[0]?.file_name ?? "";
   }
 
   async function addArtifact(artifact, w = "main") {
@@ -420,8 +458,11 @@
     if (drawn.length < 2 || !canRoute) return;
     routeBusy = true; error = "";
     try {
-      const raw = await invoke("valhalla_route", { req: { area: areaName, locations: drawn, costing } });
+      const raw = await invoke("valhalla_route", {
+        req: { area: areaName, locations: drawn, costing, package: routePackage || null },
+      });
       trip = readTrip(JSON.parse(raw).trip);
+      routingInfo = await invoke("routing_status");
     } catch (err) {
       error = String(err);
       trip = null;
@@ -513,6 +554,19 @@
     setBackdrop(backdrop);
   }
 
+  /**
+   * Switch modes, undoing anything the old one left behind.
+   *
+   * A custom style replaces the whole map style, so leaving style mode without restoring it
+   * leaves Inspect looking at someone else's layers - nothing to click, and the layer panel
+   * describing sources the map no longer draws that way.
+   */
+  function leaveMode(next) {
+    if (mode === "style" && next !== "style" && styleApplied) clearCustomStyle();
+    mode = next;
+    relayout();
+  }
+
   const MODES = [
     ["inspect", "Inspect", () => true],
     ["route", "Route", () => canRoute],
@@ -534,7 +588,7 @@
                 title={enabled() ? "" : id === "route"
                   ? (valhallaBuilt ? "this area has no routing package" : "this build has no Valhalla linked")
                   : "this area has no terrain archive"}
-                onclick={() => { mode = id; relayout(); }}>{label}</button>
+                onclick={() => { leaveMode(id); }}>{label}</button>
       {/each}
     </div>
 
@@ -603,6 +657,12 @@
                    onApply={applyCustomStyle} onClear={clearCustomStyle} />
     {:else if mode === "route"}
       <div class="row">
+        <select bind:value={routePackage} title="routing package"
+                onchange={() => drawn.length >= 2 && computeRoute()}>
+          {#each packages as p}
+            <option value={p.file_name}>{p.file_name}</option>
+          {/each}
+        </select>
         <select bind:value={costing} onchange={() => drawn.length >= 2 && computeRoute()}>
           {#each COSTING_MODELS as c}<option value={c}>{c}</option>{/each}
         </select>
@@ -629,6 +689,18 @@
         </ol>
       {:else}
         <p class="muted hint">Click two or more points to route between them.</p>
+      {/if}
+      {#if routingInfo?.tile_dir}
+        <p class="muted src">
+          routing on <code>{routingInfo.package ?? "?"}</code>
+          <span title={routingInfo.tile_dir}>· unpacked</span>
+          {#if routingInfo.config}· config <code>{routingInfo.config}</code>{/if}
+        </p>
+      {:else}
+        <p class="muted src">
+          <code>{routePackage || "no package"}</code> — unpacked on the first route
+          {#if routingInfo?.config}· config <code>{routingInfo.config}</code>{/if}
+        </p>
       {/if}
     {:else if mode === "profile"}
       <div class="row">
@@ -710,6 +782,7 @@
   .row select { padding: 6px 8px; background: #12151a; border: 1px solid #303845;
                 border-radius: 5px; color: #dde3ea; font: inherit; font-size: 12px; }
   .summary { margin: 4px 0; font-size: 14px; }
+  .src { font-size: 11px; margin: 6px 0 0; }
   .maneuvers { margin: 8px 0 0; padding-left: 0; list-style: none; font-size: 12px; color: #9aa5b1; }
   .maneuvers li { padding: 2px 0; border-bottom: 1px solid #1e242d; }
   .km { display: inline-block; width: 62px; text-align: right; color: #6b7684;

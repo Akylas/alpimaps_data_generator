@@ -15,7 +15,7 @@ pub struct Args {
     /// Also serve /route, from a .vtiles package or a tile directory.
     #[arg(long)]
     pub tiles: Option<PathBuf>,
-    /// valhalla.json for the routing config. Defaults to <repo>/valhalla.json.
+    /// valhalla.json for the routing config. Defaults to the configured one.
     #[arg(long)]
     pub config: Option<PathBuf>,
 }
@@ -50,7 +50,7 @@ pub async fn run(settings: &Settings, args: Args) -> Result<()> {
             } else {
                 tiles
             };
-            let template = args.config.unwrap_or_else(|| settings.repo_root.join("valhalla.json"));
+            let template = args.config.unwrap_or_else(|| settings.valhalla_config_path());
             match routing::Router::open(&template, &dir) {
                 Ok(router) => Some(router),
                 Err(e) => {
