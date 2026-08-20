@@ -8,7 +8,7 @@ use studio_core::presets::PresetStore;
 use studio_core::settings::Settings;
 use studio_core::steps::options;
 use studio_core::steps::planetiler::{run_cancellable, PlanetilerJob, Schema};
-use studio_core::steps::{StepEvent, StepId};
+use studio_core::steps::{state, StepEvent, StepId};
 use studio_core::toolchain;
 
 #[derive(ClapArgs)]
@@ -37,6 +37,9 @@ pub struct Args {
     /// Print the command that would run, and stop.
     #[arg(long)]
     pub dry_run: bool,
+    /// Rebuild even if this step is recorded as already built for the area.
+    #[arg(long)]
+    pub force: bool,
     /// Stream planetiler's own output.
     #[arg(short, long)]
     pub verbose: bool,
@@ -72,6 +75,34 @@ fn parse_overrides(defs: &[options::OptionDef], raw: &[String]) -> Result<BTreeM
         values.insert(key.to_string(), parsed);
     }
     Ok(values)
+}
+
+/// One line describing what was found on disk, so "already built" says what it saw.
+pub fn describe(status: &state::StepStatus) -> String {
+    match status {
+        state::StepStatus::Built { outputs, elapsed, .. } => {
+            let files: Vec<String> = outputs
+                .iter()
+                .map(|f| format!("{} {}", f.name, super::mb(f.bytes)))
+                .collect();
+            match elapsed {
+                Some(e) => format!("{}, built in {e}", files.join(", ")),
+                None => files.join(", "),
+            }
+        }
+        other => format!("{other:?}"),
+    }
+}
+
+pub fn human_elapsed(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs >= 3600 {
+        format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
+    } else if secs >= 60 {
+        format!("{}m{}s", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    }
 }
 
 fn default_jar(settings: &Settings) -> Option<PathBuf> {
@@ -146,6 +177,22 @@ pub async fn run(settings: &Settings, args: Args, routes: bool) -> Result<()> {
         return Ok(());
     }
 
+    // the record is shared with the app, so a step built there is not rebuilt here
+    let area_dir = settings.area_dir(&args.area);
+    if !args.force {
+        let status = state::status(&area_dir, &args.area, step, &values);
+        if status.is_fresh() {
+            println!(
+                "{} is already built for {} ({}) - pass --force to rebuild",
+                step.label(),
+                args.area,
+                describe(&status)
+            );
+            return Ok(());
+        }
+    }
+    let started = std::time::Instant::now();
+
     let (tx, mut rx) = tokio::sync::mpsc::channel::<StepEvent>(512);
     let handle = tokio::spawn(run_cancellable(job, tx, tokio::sync::mpsc::channel(1).1));
 
@@ -188,12 +235,15 @@ pub async fn run(settings: &Settings, args: Args, routes: bool) -> Result<()> {
                     log.remove(0);
                 }
             }
-            StepEvent::Started { .. } => {}
+            StepEvent::Started { .. } | StepEvent::Skipped { .. } => {}
         }
     }
 
     match handle.await? {
-        Ok(true) => Ok(()),
+        Ok(true) => {
+            state::mark_done(&area_dir, step, Some(human_elapsed(started.elapsed())), &values)?;
+            Ok(())
+        }
         Ok(false) => Err(anyhow!("planetiler exited non-zero")),
         Err(e) => Err(e),
     }

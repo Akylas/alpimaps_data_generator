@@ -3,6 +3,8 @@
   import { onMount } from "svelte";
   import Section from "./Section.svelte";
 
+  let { onFinished } = $props();
+
   let java = $state(null);
   let javaError = $state("");
   let downloading = $state(null);
@@ -30,6 +32,10 @@
   /** Per-step live state, keyed by step id: what is running, what finished, how it went. */
   let status = $state({});
   let runningStep = $state(null);
+  /** What is on disk, per step: the app never decides "already built" from a record alone. */
+  let built = $state({});
+  let force = $state(new Set());
+  let forceAll = $state(false);
 
   onMount(async () => {
     await detect();
@@ -45,6 +51,7 @@
       }
       selected = new Set(["basemap"]);
       await replan();
+      await refreshBuilt();
     } catch (err) {
       javaError = String(err);
     }
@@ -64,6 +71,35 @@
     catch (err) { javaError = String(err); }
     finally { downloading = null; }
   }
+
+  async function refreshBuilt() {
+    if (!area) return;
+    try { built = await invoke("build_state", { area, values }); }
+    catch { built = {}; }
+  }
+
+  /** Delete what a step produced. That, not a record, is what makes it run again. */
+  async function clearOutputs(step) {
+    const outputs = (built[step]?.outputs ?? []).map((f) => f.name);
+    const what = outputs.length ? outputs.join(", ") : labelFor(step);
+    if (!confirm(`Delete ${what}?`)) return;
+    try {
+      await invoke("clear_build_state", { area, step, deleteOutputs: true });
+      await refreshBuilt();
+      onFinished?.();
+    } catch (err) {
+      javaError = String(err);
+    }
+  }
+
+  function toggleForce(step) {
+    const next = new Set(force);
+    next.has(step) ? next.delete(step) : next.add(step);
+    force = next;
+  }
+
+  const fmtSize = (b) => (b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${(b / 1024).toFixed(0)} KB`);
+  const fmtWhen = (secs) => (secs ? new Date(secs * 1000).toLocaleString() : "");
 
   async function replan() {
     try { planned = await invoke("plan_steps", { steps: [...selected] }); }
@@ -145,6 +181,10 @@
         results = [...results, ev];
         runningStep = null;
         mark(ev.step, { state: ev.ok ? "done" : "failed", elapsed: ev.elapsed, percent: 100 });
+        refreshBuilt();
+        break;
+      case "skipped":
+        mark(ev.step, { state: "skipped", reason: ev.reason });
         break;
     }
   }
@@ -159,12 +199,16 @@
           area, steps: [...selected], values,
           schemaYaml: schemaMode === "yaml" ? schemaYaml : null,
           jar: jar || null,
+          force: [...force],
+          forceAll,
         },
       });
     } catch (err) {
       lines = [...lines, `ERROR: ${err}`];
     } finally {
       running = false;
+      await refreshBuilt();
+      onFinished?.();
     }
   }
 
@@ -222,6 +266,7 @@
     {#each steps as s}
       {@const st = status[s.id] ?? {}}
       {@const auto = !selected.has(s.id) && planned.includes(s.id)}
+      {@const disk = built[s.id]}
       <li class="steprow" class:on={selected.has(s.id)} class:auto>
         <button class="pick" onclick={() => toggle(s.id)} disabled={running}
                 title={s.implemented ? "include this step" : "not wired up yet"}>
@@ -230,17 +275,41 @@
           </span>
           <span class="sname">{s.label}</span>
         </button>
+
         {#if !s.implemented}<span class="tag">not wired</span>{/if}
         {#if auto}<span class="tag soft">dependency</span>{/if}
+
         {#if st.state === "running"}
           <span class="stat run">{st.phase ?? "running"} {st.percent ?? 0}%</span>
         {:else if st.state === "done"}
-          <span class="stat ok">done{#if st.elapsed} · {st.elapsed}{/if}</span>
+          <span class="stat ok">just built{#if st.elapsed} · {st.elapsed}{/if}</span>
         {:else if st.state === "failed"}
           <span class="stat bad">failed</span>
+        {:else if st.state === "skipped"}
+          <span class="stat">skipped · {st.reason}</span>
         {:else if st.state === "queued"}
           <span class="stat">queued</span>
+        {:else if disk?.state === "built"}
+          <span class="stat ok" title={`${disk.outputs.map((f) => f.name).join(", ")}\n${fmtWhen(disk.finished_at)}`}>
+            built · {disk.outputs.map((f) => fmtSize(f.bytes)).join(" + ")}
+          </span>
+        {:else if disk?.state === "options_changed"}
+          <span class="stat warnish" title={`changed: ${disk.changed.join(", ")}`}>
+            options changed
+          </span>
+        {:else if disk?.state === "missing"}
+          <span class="stat">not built</span>
         {/if}
+
+        {#if disk?.state === "built" || disk?.state === "options_changed"}
+          <button class="mini" class:on={force.has(s.id)} disabled={running}
+                  title="run this step even though its output is there"
+                  onclick={() => toggleForce(s.id)}>force</button>
+          <button class="mini danger" disabled={running}
+                  title="delete the output, so the step runs again"
+                  onclick={() => clearOutputs(s.id)}>delete</button>
+        {/if}
+
         {#if st.state === "running"}
           <div class="bar"><div class="fill" style="width:{st.percent ?? 0}%"></div></div>
         {/if}
@@ -249,6 +318,9 @@
   </ul>
 
   <div class="runbar">
+    <label class="forceall" title="ignore what is on disk and rebuild the whole plan">
+      <input type="checkbox" bind:checked={forceAll} disabled={running} /> force all
+    </label>
     <button onclick={run} disabled={!ready}>
       {running ? "Running…" : `Run ${planned.length || ""}`}
     </button>
@@ -366,6 +438,15 @@
   .stat.run { color: var(--ok); }
   .stat.ok { color: var(--ok); }
   .stat.bad { color: var(--danger); }
+  .stat.warnish { color: var(--warn); }
+  .mini { background: var(--line-2); color: var(--muted-2); font-size: 10px; padding: 2px 7px;
+          border-radius: var(--r-sm); }
+  .mini:hover:not(:disabled) { background: var(--border); color: var(--text); }
+  .mini.on { background: var(--accent); color: #fff; }
+  .mini.danger:hover:not(:disabled) { background: #4a2d2d; color: #e8b4ae; }
+  .forceall { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted-2);
+              white-space: nowrap; }
+  .forceall input { width: auto; margin: 0; }
   .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--line-2);
          border-radius: 2px; overflow: hidden; }
   .fill { height: 100%; background: var(--accent-hi); transition: width .2s ease; }

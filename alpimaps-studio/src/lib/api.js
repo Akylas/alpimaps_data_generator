@@ -25,6 +25,8 @@ async function devInvoke(cmd, args) {
       return (await fetch(`${DEV_BASE}/steps`)).json();
     case "step_options":
       return (await fetch(`${DEV_BASE}/step-options/${args.step}`)).json();
+    case "build_state":
+      return (await fetch(`${DEV_BASE}/build-state/${args.area}`)).json();
     case "list_presets":
       return (await fetch(`${DEV_BASE}/presets`)).json();
     case "plan_steps": {

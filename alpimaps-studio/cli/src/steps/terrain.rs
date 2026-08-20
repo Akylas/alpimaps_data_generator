@@ -5,6 +5,7 @@ use clap::Args as ClapArgs;
 use std::path::PathBuf;
 use studio_core::elevation::Encoding;
 use studio_core::settings::Settings;
+use studio_core::steps::{state, StepId};
 use studio_core::terrain::{render, source};
 
 #[derive(ClapArgs)]
@@ -38,6 +39,28 @@ pub struct Args {
     pub bounds: Option<String>,
     #[arg(long)]
     pub output: Option<PathBuf>,
+    /// Rebuild even if this step is recorded as already built for the area.
+    #[arg(long)]
+    pub force: bool,
+}
+
+/// The option values this run is defined by, for the build record.
+///
+/// Only the ones that change the output: `--output` and `--force` decide where it goes and
+/// whether to run, not what gets written.
+fn terrain_options(args: &Args) -> std::collections::BTreeMap<String, serde_json::Value> {
+    let mut values = std::collections::BTreeMap::new();
+    values.insert("minzoom".into(), args.minzoom.into());
+    values.insert("maxzoom".into(), args.maxzoom.into());
+    values.insert("encoding".into(), args.encoding.clone().into());
+    values.insert("round_digits".into(), args.round_digits.into());
+    values.insert("max_round_digits".into(), args.max_round_digits.into());
+    values.insert("blur".into(), args.blur.into());
+    values.insert("tile_size".into(), args.tile_size.into());
+    if let Some(bounds) = &args.bounds {
+        values.insert("bounds".into(), bounds.clone().into());
+    }
+    values
 }
 
 fn parse_bounds(raw: &str) -> Result<(f64, f64, f64, f64)> {
@@ -49,6 +72,12 @@ fn parse_bounds(raw: &str) -> Result<(f64, f64, f64, f64)> {
 }
 
 pub fn run(settings: &Settings, args: Args) -> Result<()> {
+    let area_dir = settings.area_dir(&args.area);
+    let recorded = terrain_options(&args);
+    if !args.force && state::status(&area_dir, &args.area, StepId::TerrainRgb, &recorded).is_fresh() {
+        println!("Terrain RGB is already built for {} - pass --force to rebuild", args.area);
+        return Ok(());
+    }
     let encoding = Encoding::parse(&args.encoding)
         .ok_or_else(|| anyhow!("unknown encoding `{}`", args.encoding))?;
     let sources_path = args.sources.unwrap_or_else(|| settings.sources_json.clone());
@@ -129,6 +158,13 @@ pub fn run(settings: &Settings, args: Args) -> Result<()> {
     }
     drop(stmt);
     conn.execute_batch("CREATE UNIQUE INDEX tile_index ON tiles (zoom_level, tile_column, tile_row)")?;
+
+    state::mark_done(
+        &area_dir,
+        StepId::TerrainRgb,
+        Some(super::planetiler::human_elapsed(started.elapsed())),
+        &recorded,
+    )?;
 
     let size = std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
     println!(

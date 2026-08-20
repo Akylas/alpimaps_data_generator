@@ -240,6 +240,19 @@ async fn catalog_handler(State(state): State<ServerState>) -> Response {
     }
 }
 
+/// What is already built for an area, from the files in its output directory.
+async fn build_state_handler(
+    State(state): State<ServerState>,
+    axum::extract::Path(area): axum::extract::Path<String>,
+) -> Response {
+    let Some(root) = state.output_root.clone() else {
+        return (StatusCode::NOT_FOUND, "no output root configured").into_response();
+    };
+    let statuses =
+        crate::steps::state::statuses(&root.join(&area), &area, &std::collections::BTreeMap::new());
+    Json(statuses).into_response()
+}
+
 /// Step metadata, mirroring what the Tauri command returns so the UI can be driven from a
 /// plain browser without a second definition of the step graph.
 async fn steps_handler() -> Json<serde_json::Value> {
@@ -392,6 +405,7 @@ pub async fn start_full(
         .route("/sources", get(sources_handler))
         .route("/catalog", get(catalog_handler))
         .route("/steps", get(steps_handler))
+        .route("/build-state/:area", get(build_state_handler))
         .route("/step-options/:step", get(step_options_handler))
         .route("/presets", get(presets_handler))
         .route("/plan", axum::routing::post(plan_handler))

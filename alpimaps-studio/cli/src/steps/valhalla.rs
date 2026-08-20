@@ -4,6 +4,7 @@ use anyhow::{anyhow, Result};
 use clap::Args as ClapArgs;
 use std::path::PathBuf;
 use studio_core::settings::Settings;
+use studio_core::steps::{state, StepId};
 use studio_core::valhalla::package::{self, Compression, PackageOptions};
 use studio_core::valhalla::routing;
 
@@ -22,6 +23,9 @@ pub struct PackageArgs {
     pub compression: String,
     #[arg(long)]
     pub output: Option<PathBuf>,
+    /// Rebuild even if this step is recorded as already built for the area.
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(ClapArgs)]
@@ -51,6 +55,13 @@ pub struct RouteArgs {
 }
 
 pub fn package(settings: &Settings, args: PackageArgs) -> Result<()> {
+    let area_dir = settings.area_dir(&args.area);
+    let recorded: std::collections::BTreeMap<String, serde_json::Value> =
+        [("compression".to_string(), args.compression.clone().into())].into_iter().collect();
+    if !args.force && state::status(&area_dir, &args.area, StepId::ValhallaPackage, &recorded).is_fresh() {
+        println!("Valhalla package is already built for {} - pass --force to rebuild", args.area);
+        return Ok(());
+    }
     let tile_dir = args.tiles.unwrap_or_else(|| settings.repo_root.join("valhalla_tiles"));
     let output = args
         .output
@@ -97,6 +108,12 @@ pub fn package(settings: &Settings, args: PackageArgs) -> Result<()> {
         report.tiles_missing
     );
     println!("  {}", output.display());
+    state::mark_done(
+        &area_dir,
+        StepId::ValhallaPackage,
+        Some(super::planetiler::human_elapsed(started.elapsed())),
+        &recorded,
+    )?;
     Ok(())
 }
 

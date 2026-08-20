@@ -12,7 +12,7 @@ use studio_core::presets::{Preset, PresetStore};
 use studio_core::valhalla::{package, routing};
 use studio_core::steps::options::{self, OptionDef};
 use studio_core::steps::planetiler::{run_cancellable, PlanetilerJob, Schema};
-use studio_core::steps::{plan, StepEvent, StepId, ALL_STEPS};
+use studio_core::steps::{plan, state as build_state, StepEvent, StepId, ALL_STEPS};
 use std::collections::BTreeMap;
 use studio_core::toolchain::{self, JavaInstall};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -467,6 +467,75 @@ struct RunRequest {
     schema_yaml: Option<String>,
     #[serde(default)]
     jar: Option<String>,
+    /// Steps to rebuild even though they are recorded as already built.
+    #[serde(default)]
+    force: Vec<StepId>,
+    /// Rebuild everything in the plan, ignoring what is recorded.
+    #[serde(default)]
+    force_all: bool,
+}
+
+fn human_elapsed(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs >= 3600 {
+        format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
+    } else if secs >= 60 {
+        format!("{}m{}s", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
+/// What is already built for an area, judged against the files on disk.
+///
+/// Takes the current option values so a step whose options were edited since it ran reports as
+/// changed rather than as done - skipping it would silently ignore the edit.
+#[tauri::command]
+fn build_state(
+    config: State<'_, Config>,
+    area: String,
+    values: Option<BTreeMap<StepId, BTreeMap<String, serde_json::Value>>>,
+) -> Result<BTreeMap<StepId, build_state::StepStatus>, String> {
+    let settings = config.get()?;
+    let values = values.unwrap_or_default();
+    Ok(build_state::statuses(&settings.area_dir(&area), &area, &values))
+}
+
+/// Forget what is known about a step's options, or delete what it produced.
+///
+/// Only the second makes the step run again: "built" is decided by the files, so forgetting the
+/// record alone leaves the output in place and the step still skippable.
+#[tauri::command]
+fn clear_build_state(
+    config: State<'_, Config>,
+    area: String,
+    step: Option<StepId>,
+    delete_outputs: Option<bool>,
+) -> Result<Vec<String>, String> {
+    let settings = config.get()?;
+    let dir = settings.area_dir(&area);
+    match (step, delete_outputs.unwrap_or(false)) {
+        (Some(step), true) => {
+            build_state::remove_outputs(&dir, &area, step).map_err(|e| e.to_string())
+        }
+        (Some(step), false) => {
+            build_state::clear(&dir, step).map_err(|e| e.to_string())?;
+            Ok(Vec::new())
+        }
+        (None, true) => {
+            let mut removed = Vec::new();
+            for step in ALL_STEPS {
+                removed.extend(
+                    build_state::remove_outputs(&dir, &area, step).map_err(|e| e.to_string())?,
+                );
+            }
+            Ok(removed)
+        }
+        (None, false) => {
+            build_state::clear_all(&dir).map_err(|e| e.to_string())?;
+            Ok(Vec::new())
+        }
+    }
 }
 
 /// Run a selection of steps, in dependency order.
@@ -511,11 +580,49 @@ async fn run_steps(
         }
     });
 
+    let area_dir = settings.area_dir(&req.area);
     let mut completed = Vec::new();
     for step in ordered {
+        let values = req.values.get(&step).cloned().unwrap_or_default();
+        let forced = req.force_all || req.force.contains(&step);
+        if !forced {
+            let status = build_state::status(&area_dir, &req.area, step, &values);
+            if let build_state::StepStatus::Built { outputs, .. } = &status {
+                let names: Vec<String> = outputs
+                    .iter()
+                    .map(|f| format!("{} ({:.1} MB)", f.name, f.bytes as f64 / 1_048_576.0))
+                    .collect();
+                let _ = tx
+                    .send(StepEvent::Skipped {
+                        step,
+                        reason: format!("{} already on disk", names.join(", ")),
+                    })
+                    .await;
+                completed.push(step);
+                continue;
+            }
+        }
+        let started = std::time::Instant::now();
+        let record = |ok: bool| {
+            if !ok {
+                return;
+            }
+            if let Err(e) = build_state::mark_done(
+                &area_dir,
+                step,
+                Some(human_elapsed(started.elapsed())),
+                &values,
+            ) {
+                eprintln!("could not record {step:?} as built: {e}");
+            }
+        };
+
         if step == StepId::TerrainRgb {
             match run_terrain(&settings, &req.area, tx.clone()).await {
-                Ok(()) => completed.push(step),
+                Ok(()) => {
+                    record(true);
+                    completed.push(step);
+                }
                 Err(e) => {
                     let _ = tx.send(StepEvent::Log { step, line: format!("ERROR: {e}") }).await;
                     break;
@@ -525,7 +632,10 @@ async fn run_steps(
         }
         if step == StepId::ValhallaPackage {
             match run_valhalla_package(&settings, &req.area, tx.clone()).await {
-                Ok(()) => completed.push(step),
+                Ok(()) => {
+                    record(true);
+                    completed.push(step);
+                }
                 Err(e) => {
                     let _ = tx.send(StepEvent::Log { step, line: format!("ERROR: {e}") }).await;
                     break;
@@ -542,7 +652,6 @@ async fn run_steps(
                 .await;
             continue;
         }
-        let values = req.values.get(&step).cloned().unwrap_or_default();
         let defs = match step {
             StepId::Routes => options::routes_options(),
             _ => options::basemap_options(),
@@ -583,6 +692,7 @@ async fn run_steps(
         if !ok {
             break;
         }
+        record(true);
         completed.push(step);
     }
 
@@ -791,6 +901,8 @@ pub fn run() {
             step_options,
             plan_steps,
             list_presets,
+            build_state,
+            clear_build_state,
             save_preset,
             delete_preset,
             run_steps

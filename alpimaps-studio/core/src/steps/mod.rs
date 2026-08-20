@@ -1,5 +1,6 @@
 pub mod options;
 pub mod planetiler;
+pub mod state;
 
 use serde::{Deserialize, Serialize};
 
@@ -62,6 +63,22 @@ impl StepId {
         )
     }
 
+    /// What this step writes into the area directory, by name.
+    ///
+    /// This is what lets "already built" mean something on disk rather than only in a record:
+    /// the files are checked before a step is skipped. Steps that write outside the area
+    /// directory (the downloads, the raw Valhalla tile tree) list nothing.
+    pub fn outputs(self, area: &str) -> Vec<String> {
+        match self {
+            StepId::Basemap => vec![format!("{area}.mbtiles")],
+            StepId::Routes => vec![format!("{area}_routes.mbtiles")],
+            StepId::TerrainRgb => vec![format!("{area}_terrain.mbtiles")],
+            StepId::Hillshade => vec![format!("{area}_hillshade.mbtiles")],
+            StepId::ValhallaPackage => vec![format!("{area}.vtiles")],
+            StepId::DownloadOsm | StepId::ElevationTiles | StepId::ValhallaTiles => vec![],
+        }
+    }
+
     /// Steps that write into the same planetiler temp tree and therefore must not overlap.
     ///
     /// Two planetiler processes sharing a tmpdir delete each other's sort chunks
@@ -110,6 +127,8 @@ pub enum StepEvent {
     Progress { step: StepId, label: String, percent: u8 },
     Log { step: StepId, line: String },
     Finished { step: StepId, ok: bool, elapsed: Option<String>, outputs: Vec<String> },
+    /// Nothing ran: this step was already built. `reason` is shown as-is.
+    Skipped { step: StepId, reason: String },
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@ pub mod options;
 pub mod planetiler;
 pub mod profile;
 pub mod serve;
+pub mod state;
 pub mod terrain;
 pub mod valhalla;
 

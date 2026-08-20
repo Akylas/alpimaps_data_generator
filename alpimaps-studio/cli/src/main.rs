@@ -54,6 +54,8 @@ enum Command {
     Serve(steps::serve::Args),
     /// Show the options a build step accepts.
     Options(steps::options::Args),
+    /// Show or clear what is already built for an area.
+    State(steps::state::Args),
 }
 
 #[tokio::main]
@@ -72,5 +74,6 @@ async fn main() -> Result<()> {
         Command::Profile(args) => steps::profile::run(args),
         Command::Serve(args) => steps::serve::run(&settings, args).await,
         Command::Options(args) => steps::options::run(args),
+        Command::State(args) => steps::state::run(&settings, args),
     }
 }

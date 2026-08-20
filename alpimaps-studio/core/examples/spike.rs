@@ -76,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
             StepEvent::Finished { ok, elapsed, outputs, .. } => {
                 println!("FINISHED ok={ok} elapsed={elapsed:?} outputs={outputs:?}");
             }
+            StepEvent::Skipped { reason, .. } => println!("SKIPPED {reason}"),
             StepEvent::Log { .. } => {}
         }
     }
