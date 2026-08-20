@@ -4,6 +4,9 @@
 # tag push takes the version already written down, the release is created as a draft, the
 # platform builds attach their bundles, and a failure takes the draft and the tag back out again.
 #
+# The release carries three things: the app bundles, and the `cairn` command line packaged on
+# its own per platform - same binary, without the app around it.
+#
 # What is different is underneath. The app links Valhalla, so it is built from the submodule
 # before Tauri runs and cached against its commit SHA - that build is tens of minutes and it
 # rarely moves. The Planetiler jar is *not* built here: it is published by its own workflow and
@@ -258,6 +261,37 @@ jobs:
         env:
           VALHALLA_DIR: ${{ github.workspace }}/valhalla
         run: cargo test -p cairn-core
+
+      # ---------------------------------------------------------------- CLI
+      #
+      # The command line is released on its own, for anyone who wants the pipeline without the
+      # app. It is packaged *before* the bundle is built on purpose: `bundle_resources.sh`
+      # rewrites the same binary for the layout inside the .app, and a binary can only point at
+      # its libraries one way at a time.
+      - name: Build the CLI
+        working-directory: cairn
+        env:
+          VALHALLA_DIR: ${{ github.workspace }}/valhalla
+        run: cargo build --release -p cairn-cli
+
+      - name: Package the CLI standalone
+        env:
+          VERSION: ${{ needs.create-release.outputs.RELEASE_TAG }}
+        run: ./scripts/package_cli.sh "${VERSION#v}" dist
+
+      # Attached to the same draft release the bundles go to, so one release carries the app and
+      # the tool it is a front end for.
+      - name: Attach the CLI to the release
+        uses: ncipollo/release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ needs.create-release.outputs.RELEASE_TAG }}
+          artifacts: 'dist/*.tar.gz,dist/*.sha256'
+          allowUpdates: true
+          draft: true
+          omitBodyDuringUpdate: true
+          omitNameDuringUpdate: true
+          omitPrereleaseDuringUpdate: true
 
       # macOS needs its Homebrew libraries carried into the bundle before anything is signed.
       #

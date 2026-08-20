@@ -31,6 +31,13 @@ from it needs a token even when the package is public - which an installed app d
 that build is tens of minutes), the jar fetched from the release above rather than rebuilt per
 platform, then Tauri, then `verify_bundle.sh` before the release keeps anything.
 
+The same release carries the command line on its own -
+`cairn-<version>-<target>.tar.gz`, with a sha256 next to it - for anyone who wants the pipeline
+without the app. On macOS that archive carries Valhalla's libraries in `lib/` and the binary is
+rewritten to load from there; `scripts/package_cli.sh` builds it, then unpacks the archive
+somewhere else and runs it, because an archive that only works where it was staged is the
+failure worth catching.
+
 
 ## Layout
 
