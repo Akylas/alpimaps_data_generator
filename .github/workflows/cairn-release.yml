@@ -37,7 +37,7 @@ jobs:
       contents: write
     outputs:
       RELEASE_UPLOAD_ID: ${{ steps.create_release.outputs.id }}
-      RELEASE_TAG: v${{ steps.changelog_reader.outputs.version }}
+      RELEASE_TAG: v${{ steps.tag_name.outputs.current_version }}
       # SHA before standard-version ran; the cleanup job resets to it on failure
       PRE_BUMP_SHA: ${{ steps.pre_bump.outputs.sha }}
 
@@ -95,8 +95,10 @@ jobs:
           case "$GITHUB_REF" in
             # a tag push says so itself
             refs/tags/v*) version="${GITHUB_REF#refs/tags/v}" ;;
-            # otherwise it is the tag the step above just wrote
-            *) version=$(git describe --tags --abbrev=0) ;;
+            # otherwise it is the tag the step above just wrote. `--match` matters: the
+            # planetiler jar has its own tags in this repository, and `planetiler-latest` moves,
+            # so an unfiltered describe can hand back a tag that is not a release of the app.
+            *) version=$(git describe --tags --abbrev=0 --match 'v[0-9]*') ;;
           esac
           version="${version#v}"
           if [ -z "$version" ]; then
@@ -106,21 +108,30 @@ jobs:
           echo "releasing $version"
           echo "current_version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Get Changelog Entry
-        id: changelog_reader
-        uses: mindsers/changelog-reader-action@v2
-        with:
-          version: ${{ steps.tag_name.outputs.current_version }}
-          path: ./CHANGELOG.md
+      # Not mindsers/changelog-reader-action: that reads Keep a Changelog (`## [0.1.1] - date`)
+      # and standard-version writes its own shapes (`### [0.1.1](compare-url) (date)`), so the
+      # release failed on a changelog it had just written itself.
+      - name: Get the changelog entry
+        id: changelog
+        env:
+          VERSION: ${{ steps.tag_name.outputs.current_version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "changes<<CHANGELOG_EOF"
+            ./scripts/changelog_entry.sh "$VERSION"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: create release
         id: create_release
         uses: ncipollo/release-action@v1
         with:
-          tag: v${{ steps.changelog_reader.outputs.version }}
-          name: v${{ steps.changelog_reader.outputs.version }}
-          body: ${{ steps.changelog_reader.outputs.changes }}
-          prerelease: ${{ steps.changelog_reader.outputs.status == 'prereleased' }}
+          tag: v${{ steps.tag_name.outputs.current_version }}
+          name: v${{ steps.tag_name.outputs.current_version }}
+          body: ${{ steps.changelog.outputs.changes }}
+          # a version with a dash in it is a prerelease: 0.2.0-rc.1, and nothing else
+          prerelease: ${{ contains(steps.tag_name.outputs.current_version, '-') }}
           # created as a draft; published once every platform has succeeded
           draft: true
           allowUpdates: true

@@ -56,21 +56,12 @@ jobs:
           git fetch origin "$REF"
           git checkout FETCH_HEAD
 
-      - name: Describe what is being built
+      - name: Note the revision being built
         id: describe
         working-directory: planetiler
         run: |
           set -euo pipefail
-          sha="$(git rev-parse --short HEAD)"
-          # the fork tracks upstream tags, so `describe` gives something like v0.10.2-173-gabc1234
-          described="$(git describe --tags --always)"
-          version="${described#v}"
-          {
-            echo "sha=$sha"
-            echo "version=$version"
-            echo "tag=planetiler-$version"
-          } >> "$GITHUB_OUTPUT"
-          echo "building planetiler $version ($sha)"
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-java@v4
         with:
@@ -82,14 +73,32 @@ jobs:
         working-directory: planetiler
         run: ./mvnw -B -DskipTests clean package
 
-      # The fat jar carries native libraries for every platform at once. This one is downloaded by
-      # apps on any platform, so nothing is stripped here - stripping belongs to the bundle, where
-      # the platform is known.
+      # Two things here.
+      #
+      # The version comes off the jar Maven produced, not from `git describe`: a checkout only has
+      # the tags it happened to fetch, and the first run of this published a jar built from 0.10.3
+      # under a tag that said 0.5.0.
+      #
+      # And nothing is stripped: this jar is downloaded by apps on every platform, so it keeps the
+      # native libraries for all of them. Stripping belongs to the bundle, where the platform is
+      # known.
       - name: Collect the jar
         id: jar
+        env:
+          SHA: ${{ steps.describe.outputs.sha }}
         run: |
           set -euo pipefail
           built="$(ls -1 planetiler/planetiler-dist/target/*-with-deps.jar | sort | tail -1)"
+          base="$(basename "$built")"
+          # planetiler-dist-0.10.3-SNAPSHOT-with-deps.jar -> 0.10.3-SNAPSHOT
+          maven="${base#planetiler-dist-}"
+          maven="${maven%-with-deps.jar}"
+          version="${maven}-g${SHA}"
+          {
+            echo "version=$version"
+            echo "tag=planetiler-$version"
+          } >> "$GITHUB_OUTPUT"
+          echo "planetiler $version"
           mkdir -p dist
           # a stable name, because the download URL is written into the app's settings
           cp "$built" dist/planetiler-with-deps.jar
@@ -113,8 +122,8 @@ jobs:
       - name: Publish the versioned release
         uses: ncipollo/release-action@v1
         with:
-          tag: ${{ steps.describe.outputs.tag }}
-          name: planetiler ${{ steps.describe.outputs.version }}
+          tag: ${{ steps.jar.outputs.tag }}
+          name: planetiler ${{ steps.jar.outputs.version }}
           body: |
             Planetiler jar built from [`${{ steps.describe.outputs.sha }}`](https://github.com/farfromrefug/planetiler/commit/${{ steps.describe.outputs.sha }}) of the fork.
 
@@ -137,7 +146,7 @@ jobs:
           name: planetiler (latest)
           body: |
             Always the newest planetiler jar Cairn was built against — currently
-            **${{ steps.describe.outputs.version }}** (`${{ steps.describe.outputs.sha }}`).
+            **${{ steps.jar.outputs.version }}** (`${{ steps.describe.outputs.sha }}`).
 
             The app fetches it from here when it has none:
 
