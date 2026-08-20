@@ -7,6 +7,7 @@
   import { onMount } from "svelte";
   import Section from "./Section.svelte";
   import Cli from "./Cli.svelte";
+  import Reference from "./Reference.svelte";
   import { MAP_MODES, TERRAIN_MODE_HELP } from "./modes.js";
 
   let steps = $state([]);
@@ -57,57 +58,43 @@
   </ul>
 </Section>
 
-<Section title="Steps" open={true}>
-  <table>
-    <thead>
-      <tr><th>Step</th><th>Writes</th><th>From a terminal</th></tr>
-    </thead>
-    <tbody>
-      {#each steps as s}
-        <tr>
-          <td>
-            <strong>{s.label}</strong>
-            <p class="note">{s.summary}</p>
-            <p class="note">
-              Needs {s.reads}{#if s.deps?.length}, after {s.deps.map((d) => label(d)).join(", ")}{/if}.
-            </p>
-          </td>
-          <td>
-            {#each s.writes ?? [] as w}<code>{w}</code>{/each}
-            {#if !(s.writes ?? []).length}<code>—</code>{/if}
-          </td>
-          <td><code>alpimaps {s.command} --area &lt;area&gt;</code></td>
-        </tr>
-      {/each}
-      {#if !steps.length}
-        <tr><td colspan="3" class="muted">step list unavailable</td></tr>
-      {/if}
-    </tbody>
-  </table>
+<Section title="Steps" open={true} subtitle="click one for what it does">
+  <Reference
+    items={steps.map((s) => ({
+      id: s.id,
+      name: s.label,
+      about: s.summary.split(". ")[0] + ".",
+      detail: s.summary,
+      facts: [
+        ["Needs", s.reads],
+        ["After", s.deps?.length ? s.deps.map(label).join(", ") : null],
+        ["Writes", s.writes?.length ? s.writes : null],
+        ["Options", s.option_count ? `${s.option_count} in the Build tab` : "none"],
+        ["Terminal", [`alpimaps ${s.command} --area <area>`]],
+      ],
+    }))}
+    empty="step list unavailable" />
 </Section>
 
-<Section title="Map view" open={false}>
-  <table>
-    <tbody>
-      {#each MAP_MODES as m}
-        <tr>
-          <td><strong>{m.label}</strong></td>
-          <td>
-            <p class="note">{m.summary}</p>
-            {#if m.needs}<p class="note">Needs {m.needs}.</p>{/if}
-          </td>
-        </tr>
-      {/each}
-    </tbody>
-  </table>
+<Section title="Map view" open={false} subtitle="click a mode for what it does">
+  <Reference
+    items={MAP_MODES.map((m) => ({
+      id: m.id,
+      name: m.label,
+      about: m.hint,
+      detail: m.summary,
+      facts: [["Needs", m.needs ?? "nothing beyond a layer to look at"]],
+    }))} />
+
   <h4>Drawing a terrain archive</h4>
-  <table>
-    <tbody>
-      {#each Object.entries(TERRAIN_MODE_HELP) as [mode, what]}
-        <tr><td><code>{mode === "terrain3d" ? "3D" : mode}</code></td><td class="muted">{what}</td></tr>
-      {/each}
-    </tbody>
-  </table>
+  <Reference
+    items={Object.entries(TERRAIN_MODE_HELP).map(([mode, what]) => ({
+      id: mode,
+      name: mode === "terrain3d" ? "3D" : mode,
+      about: what.split(" - ")[0],
+      detail: what,
+    }))} />
+
   <p class="note">
     Grid draws tile boundaries with their z/x/y. Both side panels collapse, and the right one
     holds the layers of the comparison map - add layers there, then Compare swipes between them.
@@ -177,9 +164,6 @@
   ul { margin: 0; padding-left: 18px; color: var(--text-2); }
   li { margin-bottom: 5px; line-height: 1.5; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th { text-align: left; color: var(--muted-2); font-weight: 500; font-size: 11px;
-       text-transform: uppercase; letter-spacing: .05em; padding: 6px 8px;
-       border-bottom: 1px solid var(--line-2); }
   td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
   /* break at spaces, not mid-flag: `--ar ea` is worse than a slightly wider column */
   td code { color: var(--text-3); overflow-wrap: break-word; }

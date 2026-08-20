@@ -19,7 +19,8 @@ use studio_core::settings::Settings;
 /// a window was last configured to do.
 pub fn settings_for(cli: &crate::Cli) -> Result<Settings> {
     let repo = cli.repo.canonicalize().unwrap_or_else(|_| cli.repo.clone());
-    let mut settings = Settings::for_repo(repo);
+    // `--repo .` from inside the workspace should still find the checkout above it
+    let mut settings = Settings::for_repo(Settings::locate_repo(&repo));
     // when this binary ships inside the app bundle, the jar and valhalla.json sit beside it;
     // in a checkout there is nothing there and the repository paths take over
     settings.resource_dir = std::env::current_exe().ok().and_then(|exe| {

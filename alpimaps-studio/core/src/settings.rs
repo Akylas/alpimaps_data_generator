@@ -78,6 +78,27 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// Find the repository from a starting directory, climbing a few levels.
+    ///
+    /// The app's working directory is wherever it was launched from - for `tauri dev` that is
+    /// `alpimaps-studio/`, one level below the checkout, so a jar sitting in
+    /// `planetiler/planetiler-dist/target` was invisible. A packaged install finds nothing here
+    /// and falls back to its bundled resources, which is the point.
+    pub fn locate_repo(start: &Path) -> PathBuf {
+        let mut dir = start.to_path_buf();
+        for _ in 0..4 {
+            // markers a checkout has and nothing else does
+            if dir.join("valhalla.json").is_file() || dir.join("planetiler").is_dir() {
+                return dir;
+            }
+            match dir.parent() {
+                Some(parent) => dir = parent.to_path_buf(),
+                None => break,
+            }
+        }
+        start.to_path_buf()
+    }
+
     /// Defaults matching this repository's actual layout.
     pub fn for_repo(repo_root: PathBuf) -> Self {
         Self {
@@ -219,5 +240,45 @@ mod tests {
         let s = Settings::load_or_default(&path, "/repo".into()).unwrap();
         assert_eq!(s.heap_mb, 4096);
         assert_eq!(s.log_interval, "1s", "unspecified fields fall back to defaults");
+    }
+
+    /// The app is launched from wherever, and `tauri dev` launches it one level inside the
+    /// checkout. Climbing is what makes the submodule jar visible from there.
+    #[test]
+    fn locate_repo_climbs_to_the_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("checkout");
+        let inner = repo.join("alpimaps-studio/src-tauri");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(repo.join("valhalla.json"), b"{}").unwrap();
+        assert_eq!(Settings::locate_repo(&inner), repo);
+    }
+
+    /// A packaged install has no checkout above it; inventing one would point every path at a
+    /// directory the user never chose.
+    #[test]
+    fn locate_repo_gives_up_rather_than_guessing() {
+        let dir = tempfile::tempdir().unwrap();
+        let deep = dir.path().join("a/b/c");
+        std::fs::create_dir_all(&deep).unwrap();
+        assert_eq!(Settings::locate_repo(&deep), deep);
+    }
+
+    /// The jar shipped with the app is found without a checkout - which is the only way a
+    /// packaged install can find one at all.
+    #[test]
+    fn the_bundled_jar_is_found_without_a_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let resources = dir.path().join("Resources");
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("planetiler-dist-0.10.3-with-deps.jar"), b"x").unwrap();
+
+        let mut settings = Settings::for_repo(dir.path().join("nowhere"));
+        assert_eq!(settings.planetiler_jar_path(), None);
+        settings.resource_dir = Some(resources.clone());
+        assert_eq!(
+            settings.planetiler_jar_path(),
+            Some(resources.join("planetiler-dist-0.10.3-with-deps.jar"))
+        );
     }
 }

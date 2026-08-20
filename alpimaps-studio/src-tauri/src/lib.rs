@@ -35,9 +35,11 @@ impl Config {
     fn load(app: &AppHandle) -> Self {
         let dir = app.path().app_config_dir().unwrap_or_else(|_| PathBuf::from("."));
         let path = dir.join("settings.json");
-        // cwd is the least-wrong default for the repo root; the user retargets it in Settings
+        // launched from anywhere: climb to a checkout if there is one above us, otherwise the
+        // bundled resources below take over
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let mut settings = Settings::load_or_default(&path, cwd).unwrap_or_default();
+        let repo = Settings::locate_repo(&cwd);
+        let mut settings = Settings::load_or_default(&path, repo).unwrap_or_default();
         // the bundle's own files - the planetiler jar, valhalla.json, the Valhalla binaries.
         // A packaged install has no repository to fall back on, and this path moves with the
         // app, so it is discovered every launch rather than stored.
@@ -104,9 +106,14 @@ fn save_settings(config: State<'_, Config>, settings: Settings) -> Result<Settin
     config.set(settings)
 }
 
-/// Scan the configured output root. Cheap - reads metadata only, never the tiles table.
+/// Scan the configured output root. Reads metadata only, never the tiles table.
+///
+/// `async` on purpose, and the same goes for every other command here that touches the disk or
+/// spawns a process: Tauri runs a synchronous command on the main thread, which is the thread
+/// the window draws on. A synchronous `discover` over a 1.4 GB output root freezes the whole app
+/// until it finishes - which is exactly what it looked like.
 #[tauri::command]
-fn list_areas(config: State<'_, Config>) -> Result<Vec<Area>, String> {
+async fn list_areas(config: State<'_, Config>) -> Result<Vec<Area>, String> {
     let settings = config.get()?;
     catalog::discover(&settings.output_root).map_err(|e| e.to_string())
 }
@@ -414,10 +421,13 @@ async fn valhalla_route(
 }
 
 #[tauri::command]
-fn list_steps(config: State<'_, Config>, area: Option<String>) -> Vec<StepInfo> {
-    let settings = config.get().unwrap_or_default();
+async fn list_steps(
+    config: State<'_, Config>,
+    area: Option<String>,
+) -> Result<Vec<StepInfo>, String> {
+    let settings = config.get()?;
     let area = area.unwrap_or_else(|| "<area>".to_string());
-    ALL_STEPS
+    let steps = ALL_STEPS
         .iter()
         .map(|s| StepInfo {
             id: *s,
@@ -433,7 +443,8 @@ fn list_steps(config: State<'_, Config>, area: Option<String>) -> Vec<StepInfo> 
             command: s.command(),
             option_count: step_options(*s).len(),
         })
-        .collect()
+        .collect::<Vec<_>>();
+    Ok(steps)
 }
 
 #[tauri::command]
@@ -459,7 +470,7 @@ fn presets_path(config: &Config) -> PathBuf {
 }
 
 #[tauri::command]
-fn list_presets(config: State<'_, Config>) -> Result<Vec<Preset>, String> {
+async fn list_presets(config: State<'_, Config>) -> Result<Vec<Preset>, String> {
     let mut store = PresetStore::load_or_default(&presets_path(&config)).map_err(|e| e.to_string())?;
     // built-ins are merged in rather than written to disk, so they keep improving with the app
     // while a user preset of the same name still wins
@@ -560,14 +571,14 @@ fn human_elapsed(d: std::time::Duration) -> String {
 }
 
 /// One `alpimaps` subcommand, as the binary itself describes it.
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct CliCommand {
     name: String,
     about: String,
     help: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Default)]
 struct CliReference {
     /// Where the binary was found, if it was.
     path: Option<String>,
@@ -613,18 +624,19 @@ fn run_help(program: &Path, args: &[&str]) -> Option<String> {
 /// Nothing here is written down twice: the command list, every flag and every default come from
 /// `alpimaps --help`, which is generated from the same argument definitions the CLI parses with.
 #[tauri::command]
-fn cli_reference(app: AppHandle) -> CliReference {
+async fn cli_reference(app: AppHandle, cached: State<'_, CliRef>) -> Result<CliReference, String> {
+    // one `--help` per subcommand means sixteen processes; reading them once per launch is
+    // enough, and the alternative is paying for it every time the docs tab is opened
+    if let Some(ready) = cached.0.lock().map_err(|_| "cli lock poisoned")?.clone() {
+        return Ok(ready);
+    }
     // a packaged build ships it; a checkout has to build it
     let hint = "it ships with a packaged build; from a checkout, `cargo build --release -p \
                 alpimaps-cli`, or put `alpimaps` on PATH"
         .to_string();
     let Some(path) = find_cli(&app) else {
-        return CliReference {
-            path: None,
-            usage: String::new(),
-            commands: Vec::new(),
-            hint,
-        };
+        // not cached: the binary may appear later, and the next visit should find it
+        return Ok(CliReference { path: None, usage: String::new(), commands: Vec::new(), hint });
     };
     let usage = run_help(&path, &["--help"]).unwrap_or_default();
     let commands = command_lines(&usage)
@@ -636,8 +648,16 @@ fn cli_reference(app: AppHandle) -> CliReference {
         })
         .collect();
 
-    CliReference { path: Some(path.display().to_string()), usage, commands, hint }
+    let reference = CliReference { path: Some(path.display().to_string()), usage, commands, hint };
+    if let Ok(mut slot) = cached.0.lock() {
+        *slot = Some(reference.clone());
+    }
+    Ok(reference)
 }
+
+/// The CLI reference, read once per launch.
+#[derive(Default)]
+struct CliRef(Mutex<Option<CliReference>>);
 
 /// Pull `(name, description)` out of the Commands block of clap's top-level help.
 ///
@@ -730,7 +750,7 @@ mod tests {
 /// Selecting matters: these are multi-hundred-megabyte mbtiles, and "opening" one hands it to
 /// whatever the OS thinks owns `.mbtiles`.
 #[tauri::command]
-fn reveal(path: String) -> Result<(), String> {
+async fn reveal(path: String) -> Result<(), String> {
     let path = PathBuf::from(&path);
     if !path.exists() {
         return Err(format!("{} is not there", path.display()));
@@ -768,7 +788,7 @@ struct ResolvedDefaults {
 }
 
 #[tauri::command]
-fn resolved_defaults(config: State<'_, Config>) -> Result<ResolvedDefaults, String> {
+async fn resolved_defaults(config: State<'_, Config>) -> Result<ResolvedDefaults, String> {
     let settings = config.get()?;
     let mut areas: Vec<String> = catalog::discover(&settings.output_root)
         .unwrap_or_default()
@@ -809,7 +829,7 @@ fn resolved_defaults(config: State<'_, Config>) -> Result<ResolvedDefaults, Stri
 /// Takes the current option values so a step whose options were edited since it ran reports as
 /// changed rather than as done - skipping it would silently ignore the edit.
 #[tauri::command]
-fn build_state(
+async fn build_state(
     config: State<'_, Config>,
     area: String,
     values: Option<BTreeMap<StepId, BTreeMap<String, serde_json::Value>>>,
@@ -824,7 +844,7 @@ fn build_state(
 /// Only the second makes the step run again: "built" is decided by the files, so forgetting the
 /// record alone leaves the output in place and the step still skippable.
 #[tauri::command]
-fn clear_build_state(
+async fn clear_build_state(
     config: State<'_, Config>,
     area: String,
     step: Option<StepId>,
@@ -1397,6 +1417,7 @@ pub fn run() {
         .manage(Running::default())
         .manage(Tiles::default())
         .manage(Routing::default())
+        .manage(CliRef::default())
         .setup(|app| {
             app.manage(Config::load(&app.handle().clone()));
             Ok(())
