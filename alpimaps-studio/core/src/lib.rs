@@ -6,6 +6,7 @@
 
 pub mod catalog;
 pub mod elevation;
+pub mod poly;
 pub mod presets;
 pub mod progress;
 pub mod settings;

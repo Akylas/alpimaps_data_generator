@@ -87,6 +87,13 @@ pub struct TerrainOptions {
     /// Distance over which a higher-priority source fades in at its coverage boundary, in
     /// metres. Matches the generator's `--blur`, whose default is also 1000.
     pub blur_m: f64,
+    /// Elevation written where no source covers the pixel.
+    ///
+    /// Only reachable inside a tile that is covered somewhere - a tile no source touches at all
+    /// is skipped rather than written flat. `build_terrain_rgb.py` used -10 so that uncovered
+    /// pixels read as sea rather than as ground; 0 is kept as the default here because it is
+    /// what every archive in this repository was built with.
+    pub nodata_elevation: f64,
 }
 
 impl Default for TerrainOptions {
@@ -96,6 +103,7 @@ impl Default for TerrainOptions {
             minzoom: 5,
             maxzoom: 13,
             tile_size: 512,
+            nodata_elevation: 0.0,
             round_digits: 8,
             max_round_digits: 15,
             blur_m: 1000.0,
@@ -134,7 +142,7 @@ pub fn render_tile(source: &mut CompositeSource, z: u8, x: u32, y: u32, opts: &T
                     covered = true;
                     e
                 }
-                None => 0.0,
+                None => opts.nodata_elevation as f32,
             };
             let packed = encode(opts.encoding, elevation, step);
             let at = ((py * size + px) * 3) as usize;
@@ -151,6 +159,32 @@ pub fn to_webp(rgb: &[u8], size: u32) -> Result<Vec<u8>> {
         .encode(rgb, size, size, image::ExtendedColorType::Rgb8)
         .context("encoding webp")?;
     Ok(out)
+}
+
+/// Encode an RGB buffer as PNG.
+///
+/// Bigger than lossless WebP for this data, but some tools still will not read WebP - which is
+/// why `build_terrain_rgb.py` had `-f png` and this does too.
+pub fn to_png(rgb: &[u8], size: u32) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    // the encoder trait has to be in scope for `write_image`; webp's inherent method does not
+    // need it, which is why only this one imports it
+    use image::ImageEncoder;
+    image::codecs::png::PngEncoder::new(&mut out)
+        .write_image(rgb, size, size, image::ExtendedColorType::Rgb8)
+        .context("encoding png")?;
+    Ok(out)
+}
+
+/// Lon/lat box of a web-mercator tile, for deciding whether a shape touches it.
+pub fn tile_bounds(z: u8, x: u32, y: u32) -> (f64, f64, f64, f64) {
+    let n = (1u64 << z) as f64;
+    let lon = |x: f64| x / n * 360.0 - 180.0;
+    let lat = |y: f64| {
+        let t = std::f64::consts::PI * (1.0 - 2.0 * y / n);
+        t.sinh().atan().to_degrees()
+    };
+    (lon(x as f64), lat(y as f64 + 1.0), lon(x as f64 + 1.0), lat(y as f64))
 }
 
 /// Tile range covering a lon/lat bounding box at a zoom.

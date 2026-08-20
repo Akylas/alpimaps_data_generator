@@ -50,6 +50,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "rayon",
  "serde_json",
  "studio-core",
  "tokio",

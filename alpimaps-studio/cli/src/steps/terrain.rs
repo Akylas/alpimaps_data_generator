@@ -39,9 +39,28 @@ pub struct Args {
     pub bounds: Option<String>,
     #[arg(long)]
     pub output: Option<PathBuf>,
-    /// Rebuild even if this step is recorded as already built for the area.
+    /// Osmosis .poly limiting which tiles are written, as in build_terrain_rgb.py.
     #[arg(long)]
-    pub force: bool,
+    pub poly_shape: Option<PathBuf>,
+    /// Ring of extra tiles around the shape. 3D renderers backfill a tile's 1px border from its
+    /// neighbours, so a ring removes the seam at the edge of the covered area.
+    #[arg(long, default_value_t = 0)]
+    pub tile_buffer: u32,
+    /// Tile encoding on disk.
+    #[arg(long, short = 'f', default_value = "webp", value_parser = ["webp", "png"])]
+    pub format: String,
+    /// Worker threads. Defaults to the number of cores.
+    #[arg(long, short = 'j')]
+    pub workers: Option<usize>,
+    /// Elevation written where no source covers a pixel. build_terrain_rgb.py used -10.
+    #[arg(long, default_value_t = 0.0)]
+    pub nodata_elevation: f64,
+    /// Stop if the output is already there, instead of replacing it.
+    #[arg(long)]
+    pub skip_existing: bool,
+    /// Print what would be built, and stop.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// The option values this run is defined by, for the build record.
@@ -57,10 +76,30 @@ fn terrain_options(args: &Args) -> std::collections::BTreeMap<String, serde_json
     values.insert("max_round_digits".into(), args.max_round_digits.into());
     values.insert("blur".into(), args.blur.into());
     values.insert("tile_size".into(), args.tile_size.into());
+    values.insert("format".into(), args.format.clone().into());
+    values.insert("tile_buffer".into(), args.tile_buffer.into());
+    values.insert("nodata_elevation".into(), args.nodata_elevation.into());
+    if let Some(poly) = &args.poly_shape {
+        values.insert("poly_shape".into(), poly.display().to_string().into());
+    }
     if let Some(bounds) = &args.bounds {
         values.insert("bounds".into(), bounds.clone().into());
     }
     values
+}
+
+/// Whether a tile is inside the shape, or within `buffer` tiles of it.
+///
+/// The buffer is measured in tiles at this zoom, so the ring is the same width everywhere on the
+/// pyramid rather than a fixed distance that means different things at z5 and z13.
+fn touches(shape: &studio_core::poly::Polygon, z: u8, x: u32, y: u32, buffer: u32) -> bool {
+    let (w, s, e, n) = render::tile_bounds(z, x, y);
+    if buffer == 0 {
+        return shape.intersects_rect(w, s, e, n);
+    }
+    let dx = (e - w) * buffer as f64;
+    let dy = (n - s) * buffer as f64;
+    shape.intersects_rect(w - dx, s - dy, e + dx, n + dy)
 }
 
 fn parse_bounds(raw: &str) -> Result<(f64, f64, f64, f64)> {
@@ -71,15 +110,18 @@ fn parse_bounds(raw: &str) -> Result<(f64, f64, f64, f64)> {
     }
 }
 
-pub fn run(settings: &Settings, args: Args) -> Result<()> {
+pub fn run(settings: &Settings, args: Args, hillshade: bool) -> Result<()> {
     let area_dir = settings.area_dir(&args.area);
     let recorded = terrain_options(&args);
-    if !args.force && state::status(settings, &args.area, StepId::TerrainRgb, &recorded).is_fresh() {
-        println!("Terrain RGB is already built for {} - pass --force to rebuild", args.area);
-        return Ok(());
-    }
-    let encoding = Encoding::parse(&args.encoding)
-        .ok_or_else(|| anyhow!("unknown encoding `{}`", args.encoding))?;
+    // `_hillshade` is this pipeline's older mapbox-packed terrain; same renderer, different
+    // packing and name, which is all the hillshade step ever was
+    let encoding = if hillshade && args.encoding == "terrarium" {
+        Encoding::Mapbox
+    } else {
+        Encoding::parse(&args.encoding)
+            .ok_or_else(|| anyhow!("unknown encoding `{}`", args.encoding))?
+    };
+    let suffix = if hillshade { "hillshade" } else { "terrain" };
     let sources_path = args.sources.unwrap_or_else(|| settings.sources_json.clone());
     let specs = source::read_specs(&sources_path)?;
     let (mut composite, skipped) = source::CompositeSource::open(&specs)?;
@@ -92,9 +134,17 @@ pub fn run(settings: &Settings, args: Args) -> Result<()> {
     }
 
     // the basemap's bounds keep terrain and vector coverage identical
-    let bounds = match &args.bounds {
-        Some(raw) => parse_bounds(raw)?,
-        None => studio_core::catalog::discover(&settings.output_root)?
+    // the shape, when given, is both the clip and the default extent
+    let shape = args
+        .poly_shape
+        .as_ref()
+        .map(|p| studio_core::poly::Polygon::parse(p))
+        .transpose()?;
+
+    let bounds = match (&args.bounds, &shape) {
+        (Some(raw), _) => parse_bounds(raw)?,
+        (None, Some(shape)) => shape.bounds(),
+        (None, None) => studio_core::catalog::discover(&settings.output_root)?
             .into_iter()
             .find(|a| a.name == args.area)
             .and_then(|a| {
@@ -107,7 +157,9 @@ pub fn run(settings: &Settings, args: Args) -> Result<()> {
             .as_deref()
             .map(parse_bounds)
             .transpose()?
-            .ok_or_else(|| anyhow!("no --bounds given and no basemap to take them from"))?,
+            .ok_or_else(|| {
+                anyhow!("no --bounds or --poly-shape given, and no basemap to take them from")
+            })?,
     };
 
     let opts = render::TerrainOptions {
@@ -118,17 +170,39 @@ pub fn run(settings: &Settings, args: Args) -> Result<()> {
         round_digits: args.round_digits,
         max_round_digits: args.max_round_digits,
         blur_m: args.blur,
+        nodata_elevation: args.nodata_elevation,
     };
     let output = args
         .output
-        .unwrap_or_else(|| settings.area_dir(&args.area).join(format!("{}_terrain.mbtiles", args.area)));
+        .clone()
+        .unwrap_or_else(|| area_dir.join(format!("{}_{suffix}.mbtiles", args.area)));
+    if args.skip_existing && output.is_file() {
+        println!("{} is already there", output.display());
+        return Ok(());
+    }
+    if let Some(workers) = args.workers {
+        // best effort: a second build in the same process would keep the first pool
+        let _ = rayon::ThreadPoolBuilder::new().num_threads(workers).build_global();
+    }
+    if args.dry_run {
+        let mut tiles = 0u64;
+        for zoom in opts.minzoom..=opts.maxzoom {
+            let (x0, y0, x1, y1) = render::tile_range(zoom, bounds);
+            tiles += ((x1 - x0 + 1) as u64) * ((y1 - y0 + 1) as u64);
+        }
+        println!(
+            "z{}-{} over {:.4},{:.4},{:.4},{:.4}: up to {tiles} tiles -> {}",
+            opts.minzoom, opts.maxzoom, bounds.0, bounds.1, bounds.2, bounds.3, output.display()
+        );
+        return Ok(());
+    }
 
     println!(
         "bounds {:.4},{:.4},{:.4},{:.4}  z{}-{}  -> {}",
         bounds.0, bounds.1, bounds.2, bounds.3, opts.minzoom, opts.maxzoom, output.display()
     );
 
-    let conn = render::create_archive(&output, &format!("{}_terrain", args.area), &opts, bounds)?;
+    let conn = render::create_archive(&output, &format!("{}_{suffix}", args.area), &opts, bounds)?;
     let mut stmt = conn.prepare("INSERT INTO tiles VALUES (?, ?, ?, ?)")?;
     let started = std::time::Instant::now();
     let mut written = 0u64;
@@ -141,8 +215,17 @@ pub fn run(settings: &Settings, args: Args) -> Result<()> {
         for x in x0..=x1 {
             for y in y0..=y1 {
                 done += 1;
+                if let Some(shape) = &shape {
+                    if !touches(shape, zoom, x, y, args.tile_buffer) {
+                        continue;
+                    }
+                }
                 if let Some(rgb) = render::render_tile(&mut composite, zoom, x, y, &opts) {
-                    let webp = render::to_webp(&rgb, opts.tile_size)?;
+                    let webp = if args.format == "png" {
+                        render::to_png(&rgb, opts.tile_size)?
+                    } else {
+                        render::to_webp(&rgb, opts.tile_size)?
+                    };
                     // mbtiles rows count up from the south
                     stmt.execute((zoom, x, (1u32 << zoom) - 1 - y, &webp))?;
                     written += 1;

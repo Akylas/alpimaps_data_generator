@@ -74,16 +74,25 @@ async fn fetch_index() -> Result<serde_json::Value> {
 ///
 /// Writes through a `.part` file so an interrupted download cannot be mistaken for a finished
 /// one - which matters here, because a step is considered built from the file being there.
-pub async fn fetch<F>(data_dir: &Path, area: &str, mut progress: F) -> Result<PathBuf>
+pub async fn fetch<F>(data_dir: &Path, area: &str, progress: F) -> Result<PathBuf>
 where
     F: FnMut(u64, Option<u64>),
 {
     let url = resolve_url(area).await?;
-    std::fs::create_dir_all(data_dir)?;
-    let target = extract_path(data_dir, area);
+    fetch_url(&url, &extract_path(data_dir, area), progress).await
+}
+
+/// Download one URL to one path, reporting `(done, total)` bytes as it goes.
+pub async fn fetch_url<F>(url: &str, target: &Path, mut progress: F) -> Result<PathBuf>
+where
+    F: FnMut(u64, Option<u64>),
+{
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let part = target.with_extension("pbf.part");
 
-    let response = reqwest::get(&url).await.with_context(|| format!("downloading {url}"))?;
+    let response = reqwest::get(url).await.with_context(|| format!("downloading {url}"))?;
     if !response.status().is_success() {
         return Err(anyhow!("{url} returned {}", response.status()));
     }
@@ -100,8 +109,8 @@ where
     }
     tokio::io::AsyncWriteExt::flush(&mut file).await?;
     drop(file);
-    std::fs::rename(&part, &target)?;
-    Ok(target)
+    std::fs::rename(&part, target)?;
+    Ok(target.to_path_buf())
 }
 
 #[cfg(test)]

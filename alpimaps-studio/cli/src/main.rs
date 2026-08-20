@@ -19,14 +19,37 @@ use std::path::PathBuf;
     about = "Build, inspect and serve AlpiMaps tile output",
     version
 )]
-struct Cli {
+pub struct Cli {
     /// Repository root. Every other path defaults from it.
     #[arg(long, global = true, default_value = ".")]
-    repo: PathBuf,
+    pub repo: PathBuf,
 
-    /// Output root. Defaults to <repo>/alpimaps_mbtiles.
+    /// Output root. Defaults to <repo>/alpimaps_mbtiles. Per-step `--output` names one file.
+    ///
+    /// The field name is the clap id, and a global shares its id with any subcommand arg of the
+    /// same name - which is how `terrain --output <file>` silently became the output *root*.
     #[arg(long, global = true)]
-    output: Option<PathBuf>,
+    pub output_root: Option<PathBuf>,
+
+    /// Where OSM extracts live. Defaults to <repo>/data/sources.
+    #[arg(long, global = true)]
+    pub data_dir: Option<PathBuf>,
+
+    /// Where .hgt elevation tiles live. Defaults to <repo>/elevation_tiles.
+    #[arg(long, global = true)]
+    pub elevation_dir: Option<PathBuf>,
+
+    /// sources.json for the terrain step. Defaults to <repo>/sources.json.
+    #[arg(long, global = true)]
+    pub sources_json: Option<PathBuf>,
+
+    /// Directory holding the Valhalla binaries. Defaults to <repo>/valhalla/build, then PATH.
+    #[arg(long, global = true)]
+    pub valhalla_bin: Option<PathBuf>,
+
+    /// valhalla.json used by the routing steps. Defaults to <repo>/valhalla.json.
+    #[arg(long, global = true)]
+    pub valhalla_config: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Command,
@@ -42,6 +65,8 @@ enum Command {
     Elevation(steps::tools::ToolArgs),
     /// Build the Valhalla routing graph from the OSM extract.
     ValhallaTiles(steps::tools::ToolArgs),
+    /// Build terrain-RGB tiles with the older mapbox packing, named _hillshade.
+    Hillshade(steps::terrain::Args),
     /// Build the basemap vector tiles.
     Basemap(steps::planetiler::Args),
     /// Build the routes vector tiles.
@@ -67,7 +92,7 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let settings = steps::settings_for(&cli.repo, cli.output.clone())?;
+    let settings = steps::settings_for(&cli)?;
 
     match cli.command {
         Command::Catalog(args) => steps::catalog::run(&settings, args),
@@ -76,7 +101,8 @@ async fn main() -> Result<()> {
         Command::ValhallaTiles(args) => steps::tools::valhalla_tiles(&settings, args).await,
         Command::Basemap(args) => steps::planetiler::run(&settings, args, false).await,
         Command::Routes(args) => steps::planetiler::run(&settings, args, true).await,
-        Command::Terrain(args) => steps::terrain::run(&settings, args),
+        Command::Terrain(args) => steps::terrain::run(&settings, args, false),
+        Command::Hillshade(args) => steps::terrain::run(&settings, args, true),
         Command::Package(args) => steps::valhalla::package(&settings, args),
         Command::Unpack(args) => steps::valhalla::unpack(args),
         Command::Route(args) => steps::valhalla::route(&settings, args),

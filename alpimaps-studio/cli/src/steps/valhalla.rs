@@ -8,24 +8,42 @@ use studio_core::steps::{state, StepId};
 use studio_core::valhalla::package::{self, Compression, PackageOptions};
 use studio_core::valhalla::routing;
 
+/// Mirrors `scripts/build_valhalla_package.py`, which took its tile list from a `.poly`.
 #[derive(ClapArgs)]
 pub struct PackageArgs {
+    /// Package id, and the default name for the output.
     #[arg(long)]
     pub area: String,
     /// Valhalla tile directory. Defaults to <repo>/valhalla_tiles.
     #[arg(long)]
     pub tiles: Option<PathBuf>,
-    /// Take the tile list from an existing package rather than a tilemask.
+    /// Osmosis .poly to select tiles from. This is the usual way to build a new package.
+    #[arg(long)]
+    pub poly: Option<PathBuf>,
+    /// Hierarchy levels to include. Valhalla has three; all of them by default.
+    #[arg(long, value_delimiter = ',', default_value = "0,1,2")]
+    pub levels: Vec<u8>,
+    /// Base64 quadtree tilemask, as the Python script emitted.
+    #[arg(long)]
+    pub tilemask: Option<String>,
+    /// Zoom to expand `--tilemask` to.
+    #[arg(long, default_value_t = 11)]
+    pub polymaxzoom: u8,
+    /// Take the tile list from an existing package.
     #[arg(long)]
     pub like: Option<PathBuf>,
     /// zopfli is ~3% smaller than zlib and much slower; both emit ordinary gzip.
     #[arg(long, default_value = "zopfli")]
     pub compression: String,
+    /// Output .vtiles. Defaults to <output>/<area>/<area>.vtiles.
     #[arg(long)]
     pub output: Option<PathBuf>,
-    /// Rebuild even if this step is recorded as already built for the area.
+    /// List the tiles that would be packed, and stop.
     #[arg(long)]
-    pub force: bool,
+    pub dry_run: bool,
+    /// Skip the build when the output is already there.
+    #[arg(long)]
+    pub skip_existing: bool,
 }
 
 #[derive(ClapArgs)]
@@ -54,28 +72,82 @@ pub struct RouteArgs {
     pub json: bool,
 }
 
+/// Work out which graph tiles to pack.
+///
+/// In order of directness: the shape itself, a tilemask string, an existing package. The shape
+/// is the one that can describe an area nothing has covered yet, which is what the Python script
+/// was needed for.
+fn tiles_for(args: &PackageArgs, output: &std::path::Path) -> Result<Vec<studio_core::valhalla::GraphTile>> {
+    use studio_core::poly::Polygon;
+    use studio_core::valhalla::{tilemask, tiles_covering, GraphTile, TILE_SIZES, BOUNDS};
+
+    if let Some(poly) = &args.poly {
+        let shape = Polygon::parse(poly)?;
+        return Ok(tiles_covering(&shape, &args.levels));
+    }
+    if let Some(mask) = &args.tilemask {
+        // the mask is a web-mercator quadtree; every graph tile a mercator tile overlaps counts
+        let mut tiles: Vec<GraphTile> = Vec::new();
+        for quad in tilemask::tiles(mask, args.polymaxzoom)? {
+            let (west, south, east, north) = mercator_bounds(quad);
+            for level in &args.levels {
+                let size = TILE_SIZES[(*level).min(2) as usize];
+                let x0 = ((west - BOUNDS.0) / size).floor() as u32;
+                let x1 = ((east - BOUNDS.0) / size).ceil() as u32;
+                let y0 = ((south - BOUNDS.1) / size).floor() as u32;
+                let y1 = ((north - BOUNDS.1) / size).ceil() as u32;
+                for y in y0..y1.max(y0 + 1) {
+                    for x in x0..x1.max(x0 + 1) {
+                        tiles.push(GraphTile::new(x, y, *level));
+                    }
+                }
+            }
+        }
+        tiles.sort();
+        tiles.dedup();
+        return Ok(tiles);
+    }
+    let reference = args.like.clone().unwrap_or_else(|| output.to_path_buf());
+    package::tiles_in(&reference).map_err(|_| {
+        anyhow!(
+            "no tile list: pass --poly <area.poly>, --tilemask <mask>, or --like <existing.vtiles>"
+        )
+    })
+}
+
+/// Lon/lat box of a web-mercator tile.
+fn mercator_bounds(tile: studio_core::valhalla::tilemask::QuadTile) -> (f64, f64, f64, f64) {
+    let n = 2f64.powi(tile.z as i32);
+    let lon = |x: f64| x / n * 360.0 - 180.0;
+    let lat = |y: f64| {
+        let t = std::f64::consts::PI * (1.0 - 2.0 * y / n);
+        t.sinh().atan().to_degrees()
+    };
+    (lon(tile.x as f64), lat(tile.y as f64 + 1.0), lon(tile.x as f64 + 1.0), lat(tile.y as f64))
+}
+
 pub fn package(settings: &Settings, args: PackageArgs) -> Result<()> {
     let area_dir = settings.area_dir(&args.area);
     let recorded: std::collections::BTreeMap<String, serde_json::Value> =
         [("compression".to_string(), args.compression.clone().into())].into_iter().collect();
-    if !args.force && state::status(settings, &args.area, StepId::ValhallaPackage, &recorded).is_fresh() {
-        println!("Valhalla package is already built for {} - pass --force to rebuild", args.area);
-        return Ok(());
-    }
-    let tile_dir = args.tiles.unwrap_or_else(|| settings.repo_root.join("valhalla_tiles"));
+    let tile_dir = args.tiles.clone().unwrap_or_else(|| settings.repo_root.join("valhalla_tiles"));
     let output = args
         .output
+        .clone()
         .unwrap_or_else(|| settings.area_dir(&args.area).join(format!("{}.vtiles", args.area)));
+    if args.skip_existing && output.is_file() {
+        println!("{} is already there", output.display());
+        return Ok(());
+    }
 
-    // Selecting tiles from a .poly tilemask is still the Python script's job; taking the list
-    // from an existing package covers rebuilding one, which is what this is mostly for.
-    let reference = args.like.clone().unwrap_or_else(|| output.clone());
-    let tiles = package::tiles_in(&reference).map_err(|_| {
-        anyhow!(
-            "no tile list: pass --like <existing.vtiles>, or generate one with \
-             scripts/build_valhalla_package.py first"
-        )
-    })?;
+    let tiles = tiles_for(&args, &output)?;
+    if args.dry_run {
+        println!("{} tiles from {}", tiles.len(), tile_dir.display());
+        for tile in &tiles {
+            println!("  {}", tile.path());
+        }
+        return Ok(());
+    }
 
     let compression = match args.compression.as_str() {
         "zopfli" => Compression::Zopfli,
@@ -86,7 +158,12 @@ pub fn package(settings: &Settings, args: PackageArgs) -> Result<()> {
     println!("packing {} tiles from {}", tiles.len(), tile_dir.display());
     let started = std::time::Instant::now();
     let report = package::build(
-        &PackageOptions { package_id: args.area.clone(), tile_dir, output: output.clone(), compression },
+        &PackageOptions {
+            package_id: args.area.clone(),
+            tile_dir,
+            output: output.clone(),
+            compression,
+        },
         &tiles,
         |done, total| {
             if done % 10 == 0 || done == total {

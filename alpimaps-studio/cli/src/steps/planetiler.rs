@@ -37,9 +37,25 @@ pub struct Args {
     /// Print the command that would run, and stop.
     #[arg(long)]
     pub dry_run: bool,
-    /// Rebuild even if this step is recorded as already built for the area.
+    /// Output mbtiles. Defaults to <output>/<area>/<area>[_routes].mbtiles.
     #[arg(long)]
-    pub force: bool,
+    pub output: Option<PathBuf>,
+    /// Planetiler's scratch directory. One per run by default, since two runs sharing one
+    /// delete each other's sort chunks.
+    #[arg(long)]
+    pub tmp_dir: Option<PathBuf>,
+    /// Java binary to run. Defaults to JAVA_HOME, then PATH.
+    #[arg(long)]
+    pub java: Option<PathBuf>,
+    /// How often planetiler reports progress.
+    #[arg(long, default_value = "1s")]
+    pub log_interval: String,
+    /// Use the OSM extract already on disk instead of letting planetiler download one.
+    #[arg(long)]
+    pub no_download: bool,
+    /// Stop if the output is already there, instead of rebuilding it.
+    #[arg(long)]
+    pub skip_existing: bool,
     /// Stream planetiler's own output.
     #[arg(short, long)]
     pub verbose: bool,
@@ -131,18 +147,27 @@ pub async fn run(settings: &Settings, args: Args, routes: bool) -> Result<()> {
 
     let jar = args
         .jar
+        .clone()
         .or_else(|| settings.planetiler_jar_path())
         .ok_or_else(|| anyhow!("no planetiler jar found; pass --jar"))?;
-    let java = toolchain::find(None, &settings.repo_root.join(".jre"))
-        .await
-        .ok_or_else(|| anyhow!("no Java {}+ found", toolchain::MIN_JAVA))?;
+    let java = match &args.java {
+        // an explicit --java is taken at its word: the point of the flag is to run a JDK this
+        // probe would not have picked
+        Some(path) => studio_core::toolchain::JavaInstall {
+            path: path.clone(),
+            version: toolchain::MIN_JAVA,
+            source: studio_core::toolchain::JavaSource::Configured,
+        },
+        None => toolchain::find(None, &settings.repo_root.join(".jre"))
+            .await
+            .ok_or_else(|| anyhow!("no Java {}+ found", toolchain::MIN_JAVA))?,
+    };
 
     let suffix = if routes { "_routes" } else { "" };
-    let mut extra = vec![
-        "--download".to_string(),
-        format!("--area={}", args.area),
-        "--force".to_string(),
-    ];
+    let mut extra = vec![format!("--area={}", args.area), "--force".to_string()];
+    if !args.no_download {
+        extra.push("--download".to_string());
+    }
     if let Some(polygon) = &args.polygon {
         extra.push(format!("--polygon={}", polygon.display()));
     }
@@ -159,14 +184,17 @@ pub async fn run(settings: &Settings, args: Args, routes: bool) -> Result<()> {
             None => Schema::OpenMapTiles,
         },
         heap_mb: args.heap_mb,
-        output: settings
-            .area_dir(&args.area)
-            .join(format!("{}{suffix}.mbtiles", args.area)),
+        output: args
+            .output
+            .clone()
+            .unwrap_or_else(|| settings.area_dir(&args.area).join(format!("{}{suffix}.mbtiles", args.area))),
         // its own directory: two planetiler runs sharing one delete each other's sort chunks
-        tmp_dir: settings.run_tmp_dir(&format!("{}-{}", args.area, if routes { "routes" } else { "basemap" })),
+        tmp_dir: args.tmp_dir.clone().unwrap_or_else(|| {
+            settings.run_tmp_dir(&format!("{}-{}", args.area, if routes { "routes" } else { "basemap" }))
+        }),
         extra_args: extra,
         working_dir: settings.repo_root.clone(),
-        log_interval: settings.log_interval.clone(),
+        log_interval: args.log_interval.clone(),
     };
 
     if args.dry_run {
@@ -174,19 +202,12 @@ pub async fn run(settings: &Settings, args: Args, routes: bool) -> Result<()> {
         return Ok(());
     }
 
-    // the record is shared with the app, so a step built there is not rebuilt here
+    // a command line runs what it says; only --skip-existing turns that into a no-op, so this
+    // behaves like the shell script it replaces rather than like the app's plan
     let area_dir = settings.area_dir(&args.area);
-    if !args.force {
-        let status = state::status(settings, &args.area, step, &values);
-        if status.is_fresh() {
-            println!(
-                "{} is already built for {} ({}) - pass --force to rebuild",
-                step.label(),
-                args.area,
-                describe(&status)
-            );
-            return Ok(());
-        }
+    if args.skip_existing && job.output.is_file() {
+        println!("{} is already there", job.output.display());
+        return Ok(());
     }
     let started = std::time::Instant::now();
 
