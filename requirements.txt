@@ -25,3 +25,4 @@ tabulate==0.9.0
 tornado==6.5.8
 geojson==3.3.0
 pyproj==3.7.2
+zopfli==0.2.3.post1

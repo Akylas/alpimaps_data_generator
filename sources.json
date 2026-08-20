@@ -1,0 +1,13 @@
+[
+    {
+        "name": "tilezen",
+        "type": "valhalla",
+        "path": "./elevation_tiles",
+        "clamp_min": -10
+    },
+    {
+    "name": "ignrge5",
+    "type": "raster",
+    "path": "work_france_ign/out/france_metropole_corse_rgealti5m_EPSG_2154.tif"
+}
+]

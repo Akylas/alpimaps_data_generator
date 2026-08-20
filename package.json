@@ -1,0 +1,14 @@
+{
+  "name": "alpimaps-data-generator",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Release tooling for Cairn. The app itself lives in cairn/.",
+  "scripts": {
+    "release": "standard-version --commit-all",
+    "release:dry": "standard-version --commit-all --dry-run"
+  },
+  "devDependencies": {
+    "@tauri-apps/toml": "^2.2.4",
+    "standard-version": "^9.5.0"
+  }
+}
