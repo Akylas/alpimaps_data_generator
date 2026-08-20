@@ -27,9 +27,14 @@ writing an mbtiles needs.
 GitHub Packages would have been the other home for it. It is a Maven repository, and downloading
 from it needs a token even when the package is public - which an installed app does not have.
 
-`cairn-release.yml` builds the app: Valhalla from the submodule (cached against its SHA, since
-that build is tens of minutes), the jar fetched from the release above rather than rebuilt per
-platform, then Tauri, then `verify_bundle.sh` before the release keeps anything.
+`cairn-build.yml` is the build itself: Valhalla from the submodule (cached against its SHA,
+since that build is tens of minutes), the jar fetched from the release above rather than rebuilt
+per platform, then Tauri, then `verify_bundle.sh`. Run it on its own - **Actions → Cairn build →
+Run workflow** - to get the bundles as workflow artifacts from any branch, with no tag, no
+release and no version bump.
+
+`cairn-release.yml` calls that same build with a tag and a draft release to attach to, so a
+release and a test build cannot drift apart.
 
 The same release carries the command line on its own -
 `cairn-<version>-<target>.tar.gz`, with a sha256 next to it - for anyone who wants the pipeline
