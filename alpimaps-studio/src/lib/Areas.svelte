@@ -197,37 +197,42 @@
 <style>
   .head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
   .tabs { display: flex; gap: 4px; flex: 1; flex-wrap: wrap; }
-  .tabs button { background: #1a1f27; border: 1px solid #262d38; color: #9aa5b1; padding: 6px 12px; }
-  .tabs button.active { background: #2d5f4a; border-color: #2d5f4a; color: #fff; }
-  .size { color: #6b7684; margin-left: 8px; font-size: 12px; }
-  .tabs button.active .size { color: #b9dcc9; }
+  .tabs button { background: var(--card); border: 1px solid var(--line-2); color: var(--text-2);
+                 padding: 6px 12px; }
+  .tabs button:hover:not(.active) { background: var(--hover); color: var(--text); }
+  .tabs button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .size { color: var(--muted-2); margin-left: 8px; font-size: 12px; }
+  .tabs button.active .size { color: var(--accent-fg); }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th { text-align: left; color: #6b7684; font-weight: 500; font-size: 11px;
-       text-transform: uppercase; letter-spacing: .05em; padding: 6px 8px; border-bottom: 1px solid #262d38; }
-  td { padding: 7px 8px; border-bottom: 1px solid #1e242d; vertical-align: top; }
+  th { text-align: left; color: var(--muted-2); font-weight: 500; font-size: 11px;
+       text-transform: uppercase; letter-spacing: .05em; padding: 7px 8px;
+       border-bottom: 1px solid var(--line-2); position: sticky; top: 0; background: var(--bg);
+       z-index: 1; }
+  td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tbody tr:not(.detail):hover td { background: var(--surface-2); }
   .num { text-align: right; font-variant-numeric: tabular-nums; }
-  tr.variant code { color: #8a94a2; }
-  tr.detail td { background: #161b22; padding: 10px 12px; }
+  tr.variant code { color: var(--text-3); }
+  tr.detail td { background: var(--surface); padding: 10px 12px; }
   .tag { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 3px;
-         background: #262d38; color: #9aa5b1; font-size: 11px; }
-  .tag.err { background: #4a2d2d; color: #d99a5b; }
+         background: var(--line-2); color: var(--text-2); font-size: 11px; }
+  .tag.err { background: #4a2d2d; color: var(--warn); }
   .zoombars { display: flex; flex-direction: column; gap: 2px; }
   .zoomrow { display: grid; grid-template-columns: 34px 1fr 74px 64px; gap: 8px; align-items: center;
              font-size: 12px; font-variant-numeric: tabular-nums; }
-  .z { color: #7c8896; }
-  .bar { background: #1e242d; height: 8px; border-radius: 2px; overflow: hidden; }
-  .bar i { display: block; height: 100%; background: #3d7a5f; }
+  .z { color: var(--muted); }
+  .bar { background: var(--line); height: 8px; border-radius: 2px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent-hi); }
   .v { text-align: right; }
-  .n { text-align: right; color: #6b7684; }
-  .compare { margin-top: 22px; border-top: 1px solid #262d38; padding-top: 16px; }
-  h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: #7c8896; margin: 0 0 12px; }
-  h4 { font-size: 12px; color: #7c8896; margin: 16px 0 6px; }
+  .n { text-align: right; color: var(--muted-2); }
+  .compare { margin-top: 22px; border-top: 1px solid var(--line-2); padding-top: 16px; }
+  h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; }
+  h4 { font-size: 12px; color: var(--muted); margin: 16px 0 6px; }
   .row { display: flex; gap: 8px; margin-bottom: 12px; }
-  select { flex: 1; padding: 7px 9px; background: #12151a; border: 1px solid #303845;
-           border-radius: 5px; color: #dde3ea; font: inherit; }
+  select { flex: 1; padding: 7px 9px; background: var(--bg); border: 1px solid var(--border);
+           border-radius: 5px; color: var(--text); font: inherit; }
   .cmp { margin-top: 8px; }
-  .muted { color: #6b7684; }
-  .ok { color: #7cc9a0; }
-  .warn { color: #d99a5b; }
+  .muted { color: var(--muted-2); }
+  .ok { color: var(--ok); }
+  .warn { color: var(--warn); }
   p { margin: 4px 0; }
 </style>

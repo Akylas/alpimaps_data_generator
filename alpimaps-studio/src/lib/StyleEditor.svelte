@@ -90,11 +90,11 @@
   .editor { display: flex; flex-direction: column; gap: 6px; height: 100%; }
   .row { display: flex; gap: 6px; align-items: center; }
   .spacer { flex: 1; }
-  select { padding: 5px 8px; background: #12151a; border: 1px solid #303845; border-radius: 5px;
-           color: #dde3ea; font: inherit; font-size: 12px; max-width: 220px; }
-  textarea { flex: 1; min-height: 220px; background: #12151a; border: 1px solid #303845;
-             border-radius: 6px; color: #dde3ea; padding: 8px; font-family: ui-monospace, monospace;
+  select { padding: 5px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
+           color: var(--text); font: inherit; font-size: 12px; max-width: 220px; }
+  textarea { flex: 1; min-height: 220px; background: var(--bg); border: 1px solid var(--border);
+             border-radius: 6px; color: var(--text); padding: 8px; font-family: ui-monospace, monospace;
              font-size: 11px; line-height: 1.45; resize: vertical; }
-  .hint { color: #5d6673; font-size: 11px; margin: 0; }
-  .warn { color: #d99a5b; font-size: 12px; margin: 0; }
+  .hint { color: var(--faint); font-size: 11px; margin: 0; }
+  .warn { color: var(--warn); font-size: 12px; margin: 0; }
 </style>

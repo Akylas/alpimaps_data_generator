@@ -53,15 +53,15 @@
   .stats { display: flex; gap: 14px; align-items: baseline; font-size: 13px;
            font-variant-numeric: tabular-nums; margin-bottom: 6px; flex-wrap: wrap; }
   .stats b { font-size: 15px; }
-  .up { color: #7cc9a0; }
-  .down { color: #d9915b; }
-  .muted { color: #6b7684; font-size: 12px; }
-  .warn { color: #d99a5b; }
+  .up { color: var(--ok); }
+  .down { color: var(--warn); }
+  .muted { color: var(--muted-2); font-size: 12px; }
+  .warn { color: var(--warn); }
   svg { width: 100%; height: 190px; display: block; }
-  .grid { stroke: #262d38; stroke-width: 1; }
-  .axis { fill: #6b7684; font-size: 10px; text-anchor: end; }
+  .grid { stroke: var(--line-2); stroke-width: 1; }
+  .axis { fill: var(--muted-2); font-size: 10px; text-anchor: end; }
   .axis.start { text-anchor: start; }
   .axis.end { text-anchor: end; }
-  .fill { fill: #2d5f4a; opacity: 0.35; }
-  .line { fill: none; stroke: #7cc9a0; stroke-width: 1.6; }
+  .fill { fill: var(--accent); opacity: 0.35; }
+  .line { fill: none; stroke: var(--ok); stroke-width: 1.6; }
 </style>

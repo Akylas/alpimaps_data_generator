@@ -27,6 +27,9 @@
   let percent = $state(0);
   let lines = $state([]);
   let results = $state([]);
+  /** Per-step live state, keyed by step id: what is running, what finished, how it went. */
+  let status = $state({});
+  let runningStep = $state(null);
 
   onMount(async () => {
     await detect();
@@ -104,20 +107,52 @@
     values = { ...values, [step]: next };
   }
 
+  let logCopied = $state(false);
+  async function copyLog() {
+    try {
+      await navigator.clipboard.writeText(lines.join("\n"));
+      logCopied = true;
+      setTimeout(() => (logCopied = false), 1200);
+    } catch {}
+  }
+
+  let summaryLine = $derived.by(() => {
+    if (!results.length) return "";
+    const bad = results.filter((r) => !r.ok).length;
+    return bad ? `${bad} of ${results.length} failed` : `${results.length} finished`;
+  });
+
+  function mark(step, patch) {
+    status = { ...status, [step]: { ...(status[step] ?? {}), ...patch } };
+  }
+
   function onEvent(ev) {
     switch (ev.event) {
-      case "started": running = true; phase = "starting"; break;
-      case "phase": phase = ev.name; break;
-      case "progress": label = ev.label; percent = ev.percent; break;
+      case "started":
+        running = true; phase = "starting"; runningStep = ev.step;
+        mark(ev.step, { state: "running", percent: 0, phase: "starting" });
+        break;
+      case "phase":
+        phase = ev.name;
+        mark(ev.step, { phase: ev.name });
+        break;
+      case "progress":
+        label = ev.label; percent = ev.percent;
+        mark(ev.step, { percent: ev.percent, label: ev.label });
+        break;
       case "log": lines = [...lines.slice(-400), ev.line]; break;
       case "finished":
         results = [...results, ev];
+        runningStep = null;
+        mark(ev.step, { state: ev.ok ? "done" : "failed", elapsed: ev.elapsed, percent: 100 });
         break;
     }
   }
 
   async function run() {
     running = true; lines = []; results = []; percent = 0;
+    // queued up front, so the list reads as a plan rather than filling in as it goes
+    status = Object.fromEntries(planned.map((id) => [id, { state: "queued" }]));
     try {
       await invoke("run_steps", {
         req: {
@@ -183,23 +218,44 @@
 </Section>
 
 <Section title="2 · Steps" subtitle={planned.length ? `${planned.length} to run` : "nothing selected"}>
-  <div class="steps">
+  <ul class="steplist">
     {#each steps as s}
-      <button class="step" class:on={selected.has(s.id)} class:todo={!s.implemented}
-              onclick={() => toggle(s.id)}>
-        {s.label}
+      {@const st = status[s.id] ?? {}}
+      {@const auto = !selected.has(s.id) && planned.includes(s.id)}
+      <li class="steprow" class:on={selected.has(s.id)} class:auto>
+        <button class="pick" onclick={() => toggle(s.id)} disabled={running}
+                title={s.implemented ? "include this step" : "not wired up yet"}>
+          <span class="box" class:checked={selected.has(s.id)} class:auto>
+            {#if selected.has(s.id)}✓{:else if auto}+{/if}
+          </span>
+          <span class="sname">{s.label}</span>
+        </button>
         {#if !s.implemented}<span class="tag">not wired</span>{/if}
-      </button>
+        {#if auto}<span class="tag soft">dependency</span>{/if}
+        {#if st.state === "running"}
+          <span class="stat run">{st.phase ?? "running"} {st.percent ?? 0}%</span>
+        {:else if st.state === "done"}
+          <span class="stat ok">done{#if st.elapsed} · {st.elapsed}{/if}</span>
+        {:else if st.state === "failed"}
+          <span class="stat bad">failed</span>
+        {:else if st.state === "queued"}
+          <span class="stat">queued</span>
+        {/if}
+        {#if st.state === "running"}
+          <div class="bar"><div class="fill" style="width:{st.percent ?? 0}%"></div></div>
+        {/if}
+      </li>
     {/each}
-  </div>
-  {#if planned.length}
-    <p class="muted">
-      Plan: {planned.map((p) => steps.find((s) => s.id === p)?.label ?? p).join(" → ")}
-    </p>
-  {/if}
-  <div class="row">
-    <button onclick={run} disabled={!ready}>Run {planned.length || ""}</button>
+  </ul>
+
+  <div class="runbar">
+    <button onclick={run} disabled={!ready}>
+      {running ? "Running…" : `Run ${planned.length || ""}`}
+    </button>
     <button class="ghost" onclick={() => invoke("cancel_run")} disabled={!running}>Cancel</button>
+    {#if planned.length}
+      <span class="plan">{planned.map(labelFor).join(" → ")}</span>
+    {/if}
   </div>
 </Section>
 
@@ -254,59 +310,88 @@
 {/each}
 
 {#if running || lines.length || results.length}
-  <Section title="4 · Progress" subtitle={phase}>
-    <p class="phase">{phase}</p>
-    <progress max="100" value={percent}></progress>
-    <p class="muted">{label} {percent}%</p>
-    {#each results as r}
-      <p class={r.ok ? "ok" : "warn"}>
-        {r.step}: {r.ok ? "finished" : "failed"}{#if r.elapsed} in {r.elapsed}{/if}
-      </p>
-    {/each}
-    <details class="group">
-      <summary>Log</summary>
+  <Section title="4 · Progress"
+           subtitle={running ? `${labelFor(runningStep) || ""} · ${phase}` : summaryLine}>
+    <div class="prog">
+      <div class="bar big"><div class="fill" style="width:{percent}%"></div></div>
+      <span class="pct">{percent}%</span>
+    </div>
+    <p class="muted small">{label || phase}</p>
+    <details class="group" open={results.some((r) => !r.ok)}>
+      <summary>
+        Log
+        <button class="ghost tiny" onclick={(e) => { e.preventDefault(); copyLog(); }}>
+          {logCopied ? "copied" : "copy"}
+        </button>
+      </summary>
       <pre>{lines.slice(-150).join("\n")}</pre>
     </details>
   </Section>
 {/if}
 
 <style>
-  .group { border-top: 1px solid #222932; }
+  .group { border-top: 1px solid var(--line); }
   .group summary { cursor: pointer; padding: 8px 0; font-size: 11px; text-transform: uppercase;
-                   letter-spacing: .05em; color: #7c8896; list-style: none; display: flex;
+                   letter-spacing: .05em; color: var(--muted); list-style: none; display: flex;
                    align-items: center; gap: 8px; }
   .group summary::-webkit-details-marker { display: none; }
-  .group summary::before { content: "›"; color: #5d6673; display: inline-block; }
+  .group summary::before { content: "›"; color: var(--faint); display: inline-block; }
   .group[open] summary::before { transform: rotate(90deg); }
-  .count { background: #2d5f4a; color: #cfe8db; font-size: 10px; padding: 0 6px;
+  .count { background: var(--accent); color: var(--accent-fg); font-size: 10px; padding: 0 6px;
            border-radius: 8px; }
-  label { display: block; color: #9aa5b1; font-size: 13px; }
-  input, select { display: block; width: 100%; margin-top: 4px; padding: 6px 9px; background: #12151a;
-          border: 1px solid #303845; border-radius: 5px; color: #dde3ea; font: inherit;
+  label { display: block; color: var(--text-2); font-size: 13px; }
+  input, select { display: block; width: 100%; margin-top: 4px; padding: 6px 9px; background: var(--bg);
+          border: 1px solid var(--border); border-radius: 5px; color: var(--text); font: inherit;
           font-size: 13px; box-sizing: border-box; }
   input[type="checkbox"] { width: auto; }
   .pair { display: flex; gap: 8px; margin-top: 10px; }
   .pair label { flex: 1; }
-  .row { display: flex; gap: 8px; margin-top: 12px; }
-  .steps { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
-  .step { background: #12151a; border: 1px solid #303845; color: #9aa5b1; padding: 6px 12px; }
-  .step.on { background: #2d5f4a; border-color: #2d5f4a; color: #fff; }
-  .step.todo { opacity: .6; }
+  .steplist { list-style: none; margin: 0 0 12px; padding: 0; display: flex;
+              flex-direction: column; gap: 2px; }
+  .steprow { display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+             border-radius: var(--r); position: relative; }
+  .steprow:hover { background: var(--surface-2); }
+  .steprow.on { background: var(--surface-2); }
+  .pick { display: flex; align-items: center; gap: 9px; background: none; border: 0; padding: 0;
+          color: var(--text-2); font: inherit; font-size: 13px; cursor: pointer; flex: 1;
+          text-align: left; }
+  .steprow.on .pick { color: var(--text); }
+  .pick:disabled { cursor: not-allowed; }
+  .box { width: 16px; height: 16px; flex: none; border-radius: var(--r-sm);
+         border: 1px solid var(--border); display: grid; place-items: center; font-size: 11px;
+         color: transparent; }
+  .box.checked { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .box.auto { border-style: dashed; color: var(--faint); }
+  .stat { font-size: 11px; color: var(--muted-2); font-variant-numeric: tabular-nums; }
+  .stat.run { color: var(--ok); }
+  .stat.ok { color: var(--ok); }
+  .stat.bad { color: var(--danger); }
+  .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--line-2);
+         border-radius: 2px; overflow: hidden; }
+  .fill { height: 100%; background: var(--accent-hi); transition: width .2s ease; }
+  .runbar { display: flex; gap: 8px; align-items: center; }
+  .plan { font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis;
+          white-space: nowrap; }
+  .tag.soft { background: var(--line-2); color: var(--muted-2); }
   .presets { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
   .presets input { width: 160px; margin: 0; }
-  .opt { padding: 8px 10px; border-left: 2px solid #262d38; margin-bottom: 8px; }
-  .opt.set { border-left-color: #2d5f4a; background: #171c24; }
+  .opt { padding: 8px 10px; border-left: 2px solid var(--line-2); margin-bottom: 8px; }
+  .opt.set { border-left-color: var(--accent); background: var(--surface-2); }
   .opthead { display: flex; justify-content: space-between; align-items: baseline; }
-  .clear { background: none; color: #6b7684; font-size: 11px; padding: 0; }
-  .help { color: #7c8896; font-size: 12px; margin: 6px 0 0; }
-  .hint { color: #5d6673; font-size: 11px; margin: 2px 0 0; font-style: italic; }
-  .tag { background: #3a3020; color: #d9a95b; font-size: 10px; padding: 1px 5px;
+  .clear { background: none; color: var(--muted-2); font-size: 11px; padding: 0; }
+  .help { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+  .hint { color: var(--faint); font-size: 11px; margin: 2px 0 0; font-style: italic; }
+  .tag { background: #3a3020; color: var(--warn); font-size: 10px; padding: 1px 5px;
          border-radius: 3px; margin-left: 6px; }
-  progress { width: 100%; height: 6px; }
-  .phase { font-weight: 600; margin: 0 0 6px; }
-  .muted { color: #6b7684; margin: 6px 0 0; }
-  .ok { color: #7cc9a0; }
-  .warn { color: #d99a5b; }
-  pre { margin: 8px 0 0; max-height: 220px; overflow: auto; font-size: 12px; color: #98a3b0;
+  .prog { display: flex; align-items: center; gap: 10px; }
+  .prog .bar { position: static; flex: 1; height: 6px; }
+  .pct { font-size: 12px; color: var(--muted-2); font-variant-numeric: tabular-nums; width: 38px;
+         text-align: right; }
+  .small { font-size: 12px; }
+  .tiny { padding: 1px 7px; font-size: 10px; margin-left: auto; }
+  .muted { color: var(--muted-2); margin: 6px 0 0; }
+  .ok { color: var(--ok); }
+  .warn { color: var(--warn); }
+  pre { margin: 8px 0 0; max-height: 220px; overflow: auto; font-size: 12px; color: var(--text-2);
         white-space: pre-wrap; word-break: break-all; }
 </style>

@@ -36,7 +36,9 @@
 <div class="panel" class:collapsed>
   <header>
     <h4>{title}</h4>
-    <button class="add" onclick={() => (adding = !adding)} title="add a layer">+</button>
+    {#if sources.length}<span class="count">{sources.length}</span>{/if}
+    <button class="add" class:open={adding} onclick={() => (adding = !adding)}
+            title="add a layer" aria-label="add a layer">+</button>
   </header>
 
   {#if adding}
@@ -54,8 +56,11 @@
     </div>
   {/if}
 
-  {#if !sources.length}
-    <p class="empty">{emptyHint}</p>
+  {#if !sources.length && !adding}
+    <div class="blank">
+      <p class="empty">{emptyHint}</p>
+      <button class="ghost wide" onclick={() => (adding = true)}>Add a layer</button>
+    </div>
   {/if}
 
   {#each sources as source, index (source.id)}
@@ -121,47 +126,59 @@
 <style>
   .panel { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
   .panel.collapsed { display: none; }
-  header { display: flex; align-items: center; justify-content: space-between; }
-  h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #6b7684; margin: 0; }
-  .add { background: #262d38; color: #9aa5b1; border: 0; border-radius: 4px; width: 20px;
-         height: 20px; line-height: 1; padding: 0; cursor: pointer; font-size: 14px; }
-  .adder { background: #12151a; border: 1px solid #303845; border-radius: 6px; padding: 6px;
+  header { display: flex; align-items: center; gap: 7px; position: sticky; top: 0; z-index: 2;
+           background: var(--bg); padding: 2px 0 6px; }
+  h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted-2);
+       margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .count { font-size: 10px; color: var(--faint); background: var(--line-2); border-radius: 8px;
+           padding: 0 6px; }
+  .add { margin-left: auto; background: var(--line-2); color: var(--text-2); border: 0;
+         border-radius: var(--r-sm); width: 22px; height: 22px; line-height: 1; padding: 0;
+         cursor: pointer; font-size: 15px; transition: transform .12s, background .12s; }
+  .add:hover { background: var(--border); color: var(--text); }
+  .add.open { transform: rotate(45deg); background: var(--accent); color: #fff; }
+  .blank { border: 1px dashed var(--line-2); border-radius: var(--r); padding: 12px;
+           text-align: center; }
+  .wide { width: 100%; }
+  .adder { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px;
            max-height: 230px; overflow: auto; }
-  .group { font-size: 10px; text-transform: uppercase; color: #5d6673; margin: 4px 0 2px; }
+  .group { font-size: 10px; text-transform: uppercase; color: var(--faint); margin: 4px 0 2px; }
   .option { display: block; width: 100%; text-align: left; background: none; border: 0;
-            color: #dde3ea; font: inherit; font-size: 12px; padding: 3px 4px; border-radius: 3px;
+            color: var(--text); font: inherit; font-size: 12px; padding: 3px 4px; border-radius: 3px;
             cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .option:hover { background: #1f2630; }
-  .empty { color: #5d6673; font-size: 12px; margin: 4px 0; }
-  .source { background: #161b22; border: 1px solid #262d38; border-radius: 6px; padding: 7px 8px; }
-  .source.off { opacity: .5; }
+  .option:hover { background: var(--hover); }
+  .empty { color: var(--faint); font-size: 12px; margin: 0 0 9px; line-height: 1.45; }
+  .source { background: var(--surface); border: 1px solid var(--line-2);
+            border-radius: var(--r); padding: 8px 9px; transition: border-color .12s; }
+  .source:hover { border-color: var(--border); }
+  .source.off { opacity: .45; }
   .head { display: flex; align-items: center; gap: 6px; }
-  .name { flex: 1; background: none; border: 0; color: #dde3ea; font: inherit; font-size: 12px;
+  .name { flex: 1; background: none; border: 0; color: var(--text); font: inherit; font-size: 12px;
           text-align: left; padding: 0; cursor: pointer; overflow: hidden;
           text-overflow: ellipsis; white-space: nowrap; }
   .actions { display: flex; gap: 1px; opacity: .55; }
   .source:hover .actions { opacity: 1; }
-  .icon { background: none; border: 0; color: #7c8896; font-size: 12px; padding: 0 3px;
+  .icon { background: none; border: 0; color: var(--muted); font-size: 12px; padding: 0 3px;
           cursor: pointer; line-height: 1; }
-  .icon.danger:hover { color: #e6584d; }
+  .icon.danger:hover { color: var(--danger); }
   .icon:disabled { opacity: .3; cursor: default; }
   .meta { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
-  .badge { background: #262d38; color: #8a94a2; font-size: 10px; padding: 1px 5px; border-radius: 3px; }
-  .link { background: none; border: 0; color: #7c8896; font: inherit; font-size: 11px;
+  .badge { background: var(--line-2); color: var(--text-3); font-size: 10px; padding: 1px 5px; border-radius: 3px; }
+  .link { background: none; border: 0; color: var(--muted); font: inherit; font-size: 11px;
           padding: 0; cursor: pointer; text-decoration: underline; }
   .opacity { flex: 1; height: 3px; min-width: 40px; }
   .modes { display: flex; gap: 1px; margin-top: 6px; }
-  .modes button { flex: 1; background: #12151a; border: 1px solid #303845; color: #8a94a2;
+  .modes button { flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text-3);
                   font-size: 10px; padding: 3px 0; cursor: pointer; }
   .modes button:first-child { border-radius: 4px 0 0 4px; }
   .modes button:last-child { border-radius: 0 4px 4px 0; }
-  .modes button.on { background: #2d5f4a; border-color: #2d5f4a; color: #fff; }
+  .modes button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   .bulk { display: flex; gap: 8px; margin-top: 6px; }
   .layers { margin-top: 4px; max-height: 210px; overflow: auto; display: flex;
             flex-direction: column; gap: 1px; }
-  .layer { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #9aa5b1; }
+  .layer { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-2); }
   .swatch { width: 9px; height: 9px; border-radius: 2px; flex: none; }
   .lname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .z { color: #5d6673; font-size: 10px; }
+  .z { color: var(--faint); font-size: 10px; }
   input[type="checkbox"] { margin: 0; }
 </style>

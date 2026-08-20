@@ -100,18 +100,18 @@
 {/if}
 
 <style>
-  h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #7c8896;
+  h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
        margin: 20px 0 10px; }
   h3:first-child { margin-top: 0; }
-  label { display: block; margin-bottom: 10px; color: #9aa5b1; font-size: 13px; }
-  .hint { color: #5d6673; font-size: 11px; }
-  input { display: block; width: 100%; margin-top: 4px; padding: 7px 9px; background: #12151a;
-          border: 1px solid #303845; border-radius: 5px; color: #dde3ea; font: inherit;
+  label { display: block; margin-bottom: 10px; color: var(--text-2); font-size: 13px; }
+  .hint { color: var(--faint); font-size: 11px; }
+  input { display: block; width: 100%; margin-top: 4px; padding: 7px 9px; background: var(--bg);
+          border: 1px solid var(--border); border-radius: 5px; color: var(--text); font: inherit;
           box-sizing: border-box; }
   .pair { display: flex; gap: 8px; align-items: flex-end; }
   .pair label { flex: 1; }
   .row { display: flex; gap: 8px; align-items: center; }
   .save { margin-top: 18px; }
-  .ok { color: #7cc9a0; font-size: 13px; }
-  .warn { color: #d99a5b; }
+  .ok { color: var(--ok); font-size: 13px; }
+  .warn { color: var(--warn); }
 </style>

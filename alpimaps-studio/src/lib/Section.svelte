@@ -22,15 +22,15 @@
 </section>
 
 <style>
-  .card { background: #1a1f27; border: 1px solid #262d38; border-radius: 8px; margin-bottom: 10px; }
+  .card { background: var(--card); border: 1px solid var(--line-2); border-radius: 8px; margin-bottom: 10px; }
   .head { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: 0;
           padding: 11px 14px; cursor: pointer; text-align: left; color: inherit; }
-  .chev { color: #6b7684; transition: transform .12s; display: inline-block; font-size: 14px; }
+  .chev { color: var(--muted-2); transition: transform .12s; display: inline-block; font-size: 14px; }
   .chev.open { transform: rotate(90deg); }
-  h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #9aa5b1;
+  h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-2);
        margin: 0; font-weight: 600; }
-  .badge { background: #2d5f4a; color: #cfe8db; font-size: 10px; padding: 1px 7px; border-radius: 10px; }
-  .subtitle { color: #5d6673; font-size: 12px; margin-left: auto; overflow: hidden;
+  .badge { background: var(--accent); color: var(--accent-fg); font-size: 10px; padding: 1px 7px; border-radius: 10px; }
+  .subtitle { color: var(--faint); font-size: 12px; margin-left: auto; overflow: hidden;
               text-overflow: ellipsis; white-space: nowrap; }
   .body { padding: 0 14px 14px; }
 </style>

@@ -25,6 +25,8 @@
   let leftOpen = $state(true);
   let rightOpen = $state(false);
   let showTileGrid = $state(false);
+  let drawerOpen = $state(true);
+  let view = $state({ lng: 5.7, lat: 45.4, zoom: 8 });
   let styleApplied = $state(false);
 
   let mainSources = $state([]);
@@ -121,6 +123,10 @@
     secondaryMap = newMap(secondaryEl);
     mainMap.on("click", onMapClick);
     mainMap.on("moveend", refreshTileGrid);
+    mainMap.on("move", () => {
+      const c = mainMap.getCenter();
+      view = { lng: c.lng, lat: c.lat, zoom: mainMap.getZoom() };
+    });
 
     // The map has to follow the window, not a fixed height: the shell is flex and the panels
     // collapse, so the container changes size without the window ever being resized.
@@ -168,19 +174,20 @@
    * Coalesce resizes to one per frame.
    *
    * A drag of the window edge delivers a stream of ResizeObserver callbacks, and every
-   * `resize()` reallocates the GL drawing buffer and repaints - which is what the flicker
-   * during a resize actually is. One resize per frame keeps the canvas in step with the box
-   * without churning the buffer several times inside a single paint.
+   * `resize()` reallocates the GL drawing buffer and clears it - the blink. Even one per frame
+   * blinks, because the clear and the repaint are not the same frame.
+   *
+   * So the resize waits for the drag to settle, and the CSS below stretches the last good frame
+   * to the new box in the meantime. The map is briefly scaled rather than blank, and it snaps
+   * back to a crisp render once the pointer stops.
    */
-  let resizePending = false;
+  let resizeTimer = null;
   function scheduleResize() {
-    if (resizePending) return;
-    resizePending = true;
-    requestAnimationFrame(() => {
-      resizePending = false;
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
       mainMap?.resize();
       secondaryMap?.resize();
-    });
+    }, 140);
   }
 
   /**
@@ -554,6 +561,34 @@
     setBackdrop(backdrop);
   }
 
+  let copied = $state(false);
+  async function copy(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      copied = true;
+      setTimeout(() => (copied = false), 1200);
+    } catch (err) {
+      error = String(err);
+    }
+  }
+
+  /**
+   * Keep select-all inside the dump.
+   *
+   * A `pre` is not a text control, so the browser hands ctrl/cmd-A to the document and selects
+   * the whole app. Focused, it selects its own contents instead - which is what someone
+   * pressing it over a wall of JSON meant.
+   */
+  function selectAllInside(event) {
+    if (event.key !== "a" || !(event.metaKey || event.ctrlKey)) return;
+    event.preventDefault();
+    const range = document.createRange();
+    range.selectNodeContents(event.currentTarget);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
   /**
    * Switch modes, undoing anything the old one left behind.
    *
@@ -567,6 +602,15 @@
     relayout();
   }
 
+  /** One line saying what the mode is for, so the drawer is not an unlabelled box of controls. */
+  const DRAWER_HINT = {
+    inspect: "click a feature to read its properties",
+    route: "click waypoints, pick a costing model, route",
+    profile: "click a line, sample elevation from the terrain archive",
+    tiles: "click to dump that tile's contents as JSON",
+    style: "point a MapLibre style at an archive and edit it live",
+  };
+
   const MODES = [
     ["inspect", "Inspect", () => true],
     ["route", "Route", () => canRoute],
@@ -578,37 +622,52 @@
 
 <div class="shell" bind:this={shellEl}>
   <div class="toolbar">
-    <select value={areaName} onchange={(e) => (areaName = e.target.value)} title="area">
-      {#each areas as a}<option value={a.name}>{a.name}</option>{/each}
-    </select>
+    <div class="cluster">
+      <span class="lbl">Area</span>
+      <select value={areaName} onchange={(e) => (areaName = e.target.value)} title="area">
+        {#each areas as a}<option value={a.name}>{a.name}</option>{/each}
+      </select>
+    </div>
 
-    <div class="tabs" role="group" aria-label="mode">
+    <div class="rule"></div>
+
+    <div class="seg" role="group" aria-label="mode">
       {#each MODES as [id, label, enabled]}
         <button class:on={mode === id} disabled={!enabled()}
-                title={enabled() ? "" : id === "route"
+                title={enabled() ? `${label} mode` : id === "route"
                   ? (valhallaBuilt ? "this area has no routing package" : "this build has no Valhalla linked")
                   : "this area has no terrain archive"}
                 onclick={() => { leaveMode(id); }}>{label}</button>
       {/each}
     </div>
 
-    <div class="seg" role="group" aria-label="geometry filter">
-      {#each [["all", "All"], ["polygons", "Poly"], ["lines", "Lines"], ["points", "Pts"]] as [id, label]}
-        <button class:on={geomFilter === id} onclick={() => (geomFilter = id)}>{label}</button>
-      {/each}
+    <div class="rule"></div>
+
+    <div class="cluster">
+      <span class="lbl">Show</span>
+      <div class="seg" role="group" aria-label="geometry filter">
+        {#each [["all", "All"], ["polygons", "Poly"], ["lines", "Lines"], ["points", "Pts"]] as [id, label]}
+          <button class:on={geomFilter === id} onclick={() => (geomFilter = id)}>{label}</button>
+        {/each}
+      </div>
     </div>
 
-    <select value={backdrop} onchange={(e) => setBackdrop(e.target.value)} title="backdrop">
-      <option value="">no backdrop</option>
-      {#each Object.entries(BACKDROPS) as [key, b]}<option value={key}>{b.label}</option>{/each}
-    </select>
-
-    <button class:on={showTileGrid} onclick={() => (showTileGrid = !showTileGrid)} title="tile boundaries">
-      Grid
-    </button>
+    <div class="cluster">
+      <select value={backdrop} onchange={(e) => setBackdrop(e.target.value)} title="backdrop">
+        <option value="">no backdrop</option>
+        {#each Object.entries(BACKDROPS) as [key, b]}<option value={key}>{b.label}</option>{/each}
+      </select>
+      <button class="tgl" class:on={showTileGrid} onclick={() => (showTileGrid = !showTileGrid)}
+              title="tile boundaries with z/x/y">Grid</button>
+    </div>
 
     <div class="spacer"></div>
-    <button class:on={comparing} onclick={toggleCompare} disabled={!secondarySources.length && !comparing}
+
+    <span class="readout" title="centre and zoom">
+      {view.lat.toFixed(4)}, {view.lng.toFixed(4)} <span class="z">z{view.zoom.toFixed(1)}</span>
+    </span>
+    <button class="tgl" class:on={comparing} onclick={toggleCompare}
+            disabled={!secondarySources.length && !comparing}
             title={secondarySources.length || comparing
               ? "swipe between the two maps"
               : "open the right panel and add layers to the comparison map first"}>
@@ -616,7 +675,12 @@
     </button>
   </div>
 
-  {#if error}<p class="warn bar-error">{error} <button class="link" onclick={() => (error = "")}>dismiss</button></p>{/if}
+  {#if error}
+    <p class="bar-error">
+      <span class="dot"></span>{error}
+      <button class="link" onclick={() => (error = "")}>dismiss</button>
+    </p>
+  {/if}
 
   <div class="body">
     <div class="side left" class:closed={!leftOpen}>
@@ -651,8 +715,18 @@
     </div>
   </div>
 
-  <div class="drawer" class:tall={mode === "style"}>
-    {#if mode === "style"}
+  <div class="drawer" class:tall={mode === "style"} class:shut={!drawerOpen}>
+    <div class="drawer-head">
+      <button class="chev" onclick={() => { drawerOpen = !drawerOpen; relayout(); }}
+              title={drawerOpen ? "collapse" : "expand"} aria-expanded={drawerOpen}>
+        {drawerOpen ? "▾" : "▸"}
+      </button>
+      <h4>{MODES.find(([id]) => id === mode)?.[1] ?? mode}</h4>
+      <span class="what">{DRAWER_HINT[mode]}</span>
+    </div>
+    {#if !drawerOpen}
+      <!-- collapsed: the head is the whole drawer -->
+    {:else if mode === "style"}
       <StyleEditor sources={mainSources} {base} applied={styleApplied}
                    onApply={applyCustomStyle} onClear={clearCustomStyle} />
     {:else if mode === "route"}
@@ -720,7 +794,15 @@
           {:else}<span class="muted">— {(tileDump.bytes / 1024).toFixed(1)} KB</span>{/if}
         </p>
         {#if tileDump.layers}
-          <pre>{JSON.stringify(tileDump.layers, null, 1)}</pre>
+          {@const json = JSON.stringify(tileDump.layers, null, 1)}
+          <div class="dumphead">
+            <button class="ghost small" onclick={() => copy(json)}>
+              {copied ? "copied" : "Copy JSON"}
+            </button>
+            <span class="muted tiny">⌘A / Ctrl+A selects this block</span>
+          </div>
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+          <pre class="dump" tabindex="0" onkeydown={selectAllInside}>{json}</pre>
         {/if}
       {:else}
         <p class="muted hint">Click the map to read that tile's contents as JSON.</p>
@@ -747,55 +829,89 @@
   .shell { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 8px;
            /* outside the flex shell (browser dev, or a tab that is not full-height) fall back */
            height: 100%; }
-  .toolbar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; flex: none; }
-  .toolbar select { padding: 6px 8px; background: #12151a; border: 1px solid #303845;
-                    border-radius: 5px; color: #dde3ea; font: inherit; font-size: 12px; max-width: 180px; }
-  .toolbar button { background: #262d38; color: #9aa5b1; padding: 6px 11px; font-size: 12px; }
-  .toolbar button.on { background: #2d5f4a; color: #fff; }
-  .toolbar button:disabled { opacity: .45; cursor: not-allowed; }
-  .tabs { display: flex; gap: 2px; }
-  .seg { display: flex; gap: 1px; }
-  .seg button { border-radius: 0; padding: 6px 9px; }
-  .seg button:first-child { border-radius: 5px 0 0 5px; }
-  .seg button:last-child { border-radius: 0 5px 5px 0; }
+  .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; flex: none;
+             background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--r-lg);
+             padding: 6px 8px; }
+  .toolbar select { padding: 5px 8px; background: var(--bg); border: 1px solid var(--border);
+                    border-radius: var(--r); color: var(--text); font: inherit; font-size: 12px;
+                    max-width: 190px; }
+  .cluster { display: flex; align-items: center; gap: 6px; }
+  .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--faint); }
+  .rule { width: 1px; align-self: stretch; background: var(--line-2); margin: 2px 2px; }
+  .toolbar button { background: transparent; color: var(--text-2); padding: 5px 11px;
+                    font-size: 12px; border-radius: var(--r); }
+  .toolbar button:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+  .toolbar button.on { background: var(--accent); color: #fff; }
+  .toolbar button.on:hover { background: var(--accent-hi); }
+  .toolbar button:disabled { background: transparent; color: var(--faint); cursor: not-allowed; }
+  .tgl { border: 1px solid var(--line-2); }
+  /* one recessed track, buttons ride inside it - reads as a choice, not four separate actions */
+  .seg { display: flex; gap: 2px; background: var(--bg); border: 1px solid var(--line-2);
+         border-radius: var(--r); padding: 2px; }
   .spacer { flex: 1; }
-  .bar-error { margin: 0; flex: none; }
+  .readout { font-size: 11px; color: var(--muted-2); font-variant-numeric: tabular-nums;
+             font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .readout .z { color: var(--faint); }
+  .bar-error { margin: 0; flex: none; display: flex; align-items: center; gap: 8px;
+               background: #2a1c1a; border: 1px solid #4a2d2d; border-radius: var(--r);
+               color: #e8b4ae; font-size: 12px; padding: 7px 10px; }
+  .bar-error .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--danger);
+                    flex: none; }
 
   .body { display: flex; gap: 0; flex: 1; min-height: 0; }
-  .side { width: 250px; flex: none; overflow: auto; padding-right: 8px; }
+  .side { width: 264px; flex: none; overflow: auto; padding-right: 8px; }
   .side.right { padding-right: 0; padding-left: 8px; }
   .side.closed { width: 0; padding: 0; overflow: hidden; }
-  .grip { flex: none; width: 14px; background: #161b22; border: 1px solid #262d38; color: #6b7684;
-          cursor: pointer; padding: 0; font-size: 11px; border-radius: 4px; margin: 0 2px; }
-  .grip:hover { color: #dde3ea; }
-  .grip.hot { color: #7cc9a0; border-color: #2d5f4a; }
+  .grip { flex: none; width: 13px; background: var(--surface); border: 1px solid var(--line-2);
+          color: var(--muted-2); cursor: pointer; padding: 0; font-size: 11px;
+          border-radius: var(--r-sm); margin: 0 2px; transition: background .12s, color .12s; }
+  .grip:hover { color: var(--text); background: var(--hover); }
+  .grip.hot { color: var(--ok); border-color: var(--accent); }
 
-  .maps { position: relative; flex: 1; min-width: 0; border-radius: 8px; overflow: hidden;
-          border: 1px solid #262d38; }
+  .maps { position: relative; flex: 1; min-width: 0; border-radius: var(--r-lg); overflow: hidden;
+          border: 1px solid var(--line-2); background: var(--bg-sunken); }
   .map { position: absolute; inset: 0; }
+  /* the canvas keeps its own pixel size between resizes; stretching it to the box means a drag
+     shows a scaled frame instead of a cleared one */
+  .maps :global(.maplibregl-canvas) { width: 100% !important; height: 100% !important; }
   .maps:not(.comparing) .map:first-child { visibility: hidden; }
   :global(body.swiping) { user-select: none; }
 
-  .drawer { flex: none; max-height: 240px; overflow: auto; }
-  .drawer.tall { max-height: 420px; }
+  .drawer { flex: none; max-height: 240px; overflow: auto; background: var(--surface);
+            border: 1px solid var(--line-2); border-radius: var(--r-lg); padding: 10px 12px; }
+  .drawer.tall { max-height: 440px; }
+  .drawer-head { display: flex; align-items: center; gap: 8px; margin: -2px 0 8px; }
+  .drawer.shut { max-height: none; }
+  .drawer.shut .drawer-head { margin-bottom: -2px; }
+  .chev { background: none; border: 0; color: var(--muted-2); font-size: 10px; padding: 0 2px;
+          cursor: pointer; line-height: 1; }
+  .chev:hover { color: var(--text); background: none; }
+  .drawer-head h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .07em;
+                    color: var(--muted-2); margin: 0; }
+  .drawer-head .what { font-size: 11px; color: var(--faint); }
   .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
-  .row select { padding: 6px 8px; background: #12151a; border: 1px solid #303845;
-                border-radius: 5px; color: #dde3ea; font: inherit; font-size: 12px; }
+  .row select { padding: 6px 8px; background: var(--bg); border: 1px solid var(--border);
+                border-radius: 5px; color: var(--text); font: inherit; font-size: 12px; }
   .summary { margin: 4px 0; font-size: 14px; }
   .src { font-size: 11px; margin: 6px 0 0; }
-  .maneuvers { margin: 8px 0 0; padding-left: 0; list-style: none; font-size: 12px; color: #9aa5b1; }
-  .maneuvers li { padding: 2px 0; border-bottom: 1px solid #1e242d; }
-  .km { display: inline-block; width: 62px; text-align: right; color: #6b7684;
+  .maneuvers { margin: 8px 0 0; padding-left: 0; list-style: none; font-size: 12px; color: var(--text-2); }
+  .maneuvers li { padding: 2px 0; border-bottom: 1px solid var(--line); }
+  .km { display: inline-block; width: 62px; text-align: right; color: var(--muted-2);
         font-variant-numeric: tabular-nums; margin-right: 8px; }
-  .feat { border-top: 1px solid #262d38; padding-top: 8px; margin-top: 8px; }
+  .feat { border-top: 1px solid var(--line-2); padding-top: 8px; margin-top: 8px; }
   h4 { margin: 0 0 4px; font-size: 13px; }
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
   td { padding: 2px 6px 2px 0; vertical-align: top; }
-  td:first-child { color: #6b7684; width: 34%; }
-  pre { margin: 0; font-size: 11px; color: #98a3b0; white-space: pre-wrap; word-break: break-all; }
-  .muted { color: #6b7684; }
+  td:first-child { color: var(--muted-2); width: 34%; }
+  pre { margin: 0; font-size: 11px; color: var(--text-2); white-space: pre-wrap; word-break: break-all; }
+  .dump { user-select: text; cursor: text; max-height: 260px; overflow: auto; padding: 8px;
+          background: var(--bg); border: 1px solid var(--line-2); border-radius: 6px; }
+  .dump:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+  .dumphead { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  .small { padding: 3px 9px; font-size: 11px; }
+  .tiny { font-size: 11px; }
+  .muted { color: var(--muted-2); }
   .hint { font-size: 13px; }
-  .warn { color: #d99a5b; }
-  .link { background: none; border: 0; color: #7c8896; font: inherit; font-size: 11px;
+  .link { background: none; border: 0; color: var(--muted); font: inherit; font-size: 11px;
           text-decoration: underline; cursor: pointer; padding: 0; }
 </style>
