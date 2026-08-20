@@ -26,6 +26,8 @@
   let values = $state({});
   let presets = $state([]);
   let presetName = $state({});
+  /// Free-text arguments per step, for the flags this app has no form for.
+  let extraArgs = $state({});
 
   let running = $state(false);
   let phase = $state("");
@@ -53,7 +55,7 @@
       // output root and nowhere else, which is exactly when this view is needed
       areas = defaults.areas ?? [];
       area = areas[0] ?? settings.areas?.[0]?.name ?? "";
-      steps = await invoke("list_steps");
+      steps = await invoke("list_steps", { area });
       presets = await invoke("list_presets");
       for (const s of steps) {
         optionDefs[s.id] = await invoke("step_options", { step: s.id });
@@ -90,6 +92,8 @@
 
   /** Delete what a step produced. That, not a record, is what makes it run again. */
   async function clearOutputs(step) {
+    confirming = "";
+    clearTimeout(disarmTimer);
     const outputs = (built[step]?.outputs ?? []).map((f) => f.name);
     const what = outputs.length ? outputs.join(", ") : labelFor(step);
     if (!confirm(`Delete ${what}?`)) return;
@@ -151,6 +155,30 @@
     const next = { ...(values[step] ?? {}) };
     delete next[key];
     values = { ...values, [step]: next };
+  }
+
+  /// Deleting is one tap away from destroying an hour of build, so the first tap only arms it.
+  /// A second tap on the armed button deletes; anything else disarms.
+  let confirming = $state("");
+  let disarmTimer = null;
+  function arm(id) {
+    confirming = id;
+    clearTimeout(disarmTimer);
+    disarmTimer = setTimeout(() => (confirming = ""), 4000);
+  }
+
+  async function reveal(path) {
+    try { await invoke("reveal", { path }); }
+    catch (err) { lines = [...lines, `ERROR: ${err}`]; }
+  }
+
+  /// Steps whose description is showing. The prose comes from the backend, so the graph and
+  /// the explanation of it cannot disagree.
+  let explained = $state(new Set());
+  function explain(id) {
+    const next = new Set(explained);
+    next.has(id) ? next.delete(id) : next.add(id);
+    explained = next;
   }
 
   let copiedLine = $state("");
@@ -215,7 +243,7 @@
     try {
       await invoke("run_steps", {
         req: {
-          area, steps: [...selected], values,
+          area, steps: [...selected], values, extraArgs,
           schemaYaml: schemaMode === "yaml" ? schemaYaml : null,
           jar: jar || null,
           force: [...force],
@@ -239,6 +267,22 @@
     }
     return [...by.entries()];
   }
+  /// Steps that take arbitrary tool arguments, and where their documentation lives. Mirroring
+  /// planetiler's whole flag list here would be wrong by its next release; passing them through
+  /// and pointing at the real reference stays right.
+  const PASSTHROUGH = {
+    basemap: {
+      tool: "planetiler",
+      docs: "https://github.com/onthegomap/planetiler/blob/main/PLANET.md",
+      placeholder: "--max-point-buffer=4 --mlt-shared-dict",
+    },
+    routes: {
+      tool: "planetiler",
+      docs: "https://github.com/onthegomap/planetiler/blob/main/PLANET.md",
+      placeholder: "--max-point-buffer=4",
+    },
+  };
+
   const labelFor = (id) => steps.find((s) => s.id === id)?.label ?? id;
   const setCountFor = (step) => Object.keys(values[step] ?? {}).length;
 
@@ -253,6 +297,7 @@
     buildConfig.steps = optionSteps;
     buildConfig.values = values;
     buildConfig.defs = optionDefs;
+    buildConfig.extra = extraArgs;
   });
   let ready = $derived(java && (jar || jarDefault) && area && selected.size && !running);
 </script>
@@ -344,17 +389,50 @@
           <button class="mini" class:on={force.has(s.id)} disabled={running}
                   title="run this step even though its output is there"
                   onclick={() => toggleForce(s.id)}>force</button>
+          {#if (s.writes ?? []).length}
+            <button class="mini" title={`show ${s.writes[0]} in the file manager`}
+                    onclick={() => reveal(s.writes[0])}>show</button>
+          {/if}
           {#if files.length}
-            <button class="mini danger" disabled={running}
-                    title="delete the output, so the step runs again"
-                    onclick={() => clearOutputs(s.id)}>delete</button>
+            {#if confirming === s.id}
+              <button class="mini danger armed" disabled={running}
+                      title={`delete ${files.map((f) => f.name).join(", ")}`}
+                      onclick={() => clearOutputs(s.id)}>delete {fmtSize(files.reduce((n, f) => n + f.bytes, 0))}?</button>
+              <button class="mini" onclick={() => (confirming = "")}>cancel</button>
+            {:else}
+              <button class="mini danger" disabled={running}
+                      title="delete the output, so the step runs again"
+                      onclick={() => arm(s.id)}>delete</button>
+            {/if}
           {/if}
         {/if}
+
+        <button class="mini info" class:on={explained.has(s.id)}
+                title="what this step does" aria-label="what this step does"
+                onclick={() => explain(s.id)}>?</button>
 
         {#if st.state === "running"}
           <div class="bar"><div class="fill" style="width:{st.percent ?? 0}%"></div></div>
         {/if}
       </li>
+
+      {#if explained.has(s.id)}
+        <li class="about">
+          <p>{s.summary}</p>
+          <dl>
+            <dt>Needs</dt><dd>{s.reads}</dd>
+            {#if s.deps?.length}
+              <dt>After</dt><dd>{s.deps.map(labelFor).join(", ")}</dd>
+            {/if}
+            {#if s.writes?.length}
+              <dt>Writes</dt>
+              <dd>{#each s.writes as w}<code>{w}</code>{/each}</dd>
+            {/if}
+            <dt>Terminal</dt>
+            <dd><code>alpimaps {s.command} --area {area || "<area>"}</code></dd>
+          </dl>
+        </li>
+      {/if}
     {/each}
   </ul>
 
@@ -375,14 +453,27 @@
 {#each optionSteps as step, i}
   <Section title={`3.${i + 1} · ${labelFor(step)}`} open={false}
            subtitle={setCountFor(step) ? `${setCountFor(step)} set` : "defaults"}>
-    {#if commandFor(step, area, values[step] ?? {}, optionDefs[step] ?? [])}
-      {@const line = commandFor(step, area, values[step] ?? {}, optionDefs[step] ?? [])}
+    {#if commandFor(step, area, values[step] ?? {}, optionDefs[step] ?? [], extraArgs[step])}
+      {@const line = commandFor(step, area, values[step] ?? {}, optionDefs[step] ?? [], extraArgs[step])}
       <div class="asline">
         <code>{line}</code>
         <button class="ghost tiny" onclick={() => copy(line)}>
           {copiedLine === line ? "copied" : "copy"}
         </button>
       </div>
+    {/if}
+
+    {#if PASSTHROUGH[step]}
+      <label class="extra">
+        Extra {PASSTHROUGH[step].tool} arguments
+        <input value={extraArgs[step] ?? ""} spellcheck="false"
+               placeholder={PASSTHROUGH[step].placeholder}
+               oninput={(e) => (extraArgs = { ...extraArgs, [step]: e.target.value })} />
+        <span class="hint">
+          Passed through verbatim, for the flags above do not cover.
+          <a href={PASSTHROUGH[step].docs} target="_blank" rel="noreferrer">{PASSTHROUGH[step].tool} documentation</a>
+        </span>
+      </label>
     {/if}
 
     <div class="presets">
@@ -474,6 +565,16 @@
   .steprow { display: flex; align-items: center; gap: 8px; padding: 6px 8px;
              border-radius: var(--r); position: relative; }
   .steprow:hover { background: var(--surface-2); }
+  .about { padding: 2px 10px 10px 34px; }
+  .about p { color: var(--text-2); font-size: 12.5px; line-height: 1.55; margin: 0 0 8px;
+             max-width: 78ch; }
+  .about dl { display: grid; grid-template-columns: 74px 1fr; gap: 3px 10px; margin: 0;
+              font-size: 12px; }
+  .about dt { color: var(--faint); text-transform: uppercase; font-size: 10px;
+              letter-spacing: .06em; padding-top: 2px; }
+  .about dd { margin: 0; color: var(--text-2); }
+  .about code { display: block; color: var(--text-3); font-size: 11px; }
+  .info { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .steprow.on { background: var(--surface-2); }
   .pick { display: flex; align-items: center; gap: 9px; background: none; border: 0; padding: 0;
           color: var(--text-2); font: inherit; font-size: 13px; cursor: pointer; flex: 1;
@@ -489,12 +590,17 @@
   .stat.run { color: var(--ok); }
   .stat.ok { color: var(--ok); }
   .stat.bad { color: var(--danger); }
+  .mini.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+  .mini.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 18%, transparent);
+                                      color: var(--danger); }
+  /* armed: the destructive state looks destructive, and says what it will destroy */
+  .mini.danger.armed { background: var(--danger); border-color: var(--danger); color: #fff; }
+  .mini.danger.armed:hover:not(:disabled) { background: var(--danger); color: #fff; }
   .stat.warnish { color: var(--warn); }
   .mini { background: var(--line-2); color: var(--muted-2); font-size: 10px; padding: 2px 7px;
-          border-radius: var(--r-sm); }
+          border-radius: var(--r-sm); border: 1px solid transparent; }
   .mini:hover:not(:disabled) { background: var(--border); color: var(--text); }
   .mini.on { background: var(--accent); color: #fff; }
-  .mini.danger:hover:not(:disabled) { background: #4a2d2d; color: #e8b4ae; }
   .forceall { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted-2);
               white-space: nowrap; }
   .forceall input { width: auto; margin: 0; }
@@ -505,6 +611,10 @@
   .plan { font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis;
           white-space: nowrap; }
   .tag.soft { background: var(--line-2); color: var(--muted-2); }
+  .extra { display: block; margin-bottom: 10px; }
+  .extra input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .extra .hint { display: block; font-style: normal; margin-top: 4px; }
+  .extra a { color: var(--ok); }
   .asline { display: flex; align-items: center; gap: 8px; background: var(--bg);
             border: 1px solid var(--line-2); border-radius: var(--r); padding: 7px 9px;
             margin-bottom: 10px; }

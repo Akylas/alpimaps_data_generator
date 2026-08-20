@@ -14,6 +14,7 @@
   import StyleEditor from "./StyleEditor.svelte";
   import Profile from "./Profile.svelte";
   import { COSTING_MODELS, readTrip, tripToGeoJson, formatDuration } from "./valhalla.js";
+  import { MAP_MODES, TERRAIN_MODE_HELP } from "./modes.js";
 
   let base = $state("");
   let areas = $state([]);
@@ -26,6 +27,7 @@
   let rightOpen = $state(false);
   let showTileGrid = $state(false);
   let drawerOpen = $state(true);
+  let showHelp = $state(false);
   let view = $state({ lng: 5.7, lat: 45.4, zoom: 8 });
   let styleApplied = $state(false);
 
@@ -602,22 +604,29 @@
     relayout();
   }
 
-  /** One line saying what the mode is for, so the drawer is not an unlabelled box of controls. */
-  const DRAWER_HINT = {
-    inspect: "click a feature to read its properties",
-    route: "click waypoints, pick a costing model, route",
-    profile: "click a line, sample elevation from the terrain archive",
-    tiles: "click to dump that tile's contents as JSON",
-    style: "point a MapLibre style at an archive and edit it live",
+  // the mode list, its prose and the terrain-mode help live in modes.js so the docs tab shows
+  // the same thing; only availability is decided here, because it depends on the area's data
+  const ENABLED = {
+    inspect: () => true,
+    route: () => canRoute,
+    profile: () => canProfile,
+    tiles: () => true,
+    style: () => true,
   };
+  let modes = $derived(
+    MAP_MODES.map((m) => ({ ...m, enabled: ENABLED[m.id](), })),
+  );
+  let currentMode = $derived(modes.find((m) => m.id === mode));
 
-  const MODES = [
-    ["inspect", "Inspect", () => true],
-    ["route", "Route", () => canRoute],
-    ["profile", "Profile", () => canProfile],
-    ["tiles", "Tiles", () => true],
-    ["style", "Style", () => true],
-  ];
+  function whyDisabled(id) {
+    if (id === "route") {
+      return valhallaBuilt
+        ? "this area has no routing package"
+        : "this build has no Valhalla linked";
+    }
+    return "this area has no terrain archive";
+  }
+
 </script>
 
 <div class="shell" bind:this={shellEl}>
@@ -632,12 +641,10 @@
     <div class="rule"></div>
 
     <div class="seg" role="group" aria-label="mode">
-      {#each MODES as [id, label, enabled]}
-        <button class:on={mode === id} disabled={!enabled()}
-                title={enabled() ? `${label} mode` : id === "route"
-                  ? (valhallaBuilt ? "this area has no routing package" : "this build has no Valhalla linked")
-                  : "this area has no terrain archive"}
-                onclick={() => { leaveMode(id); }}>{label}</button>
+      {#each modes as m}
+        <button class:on={mode === m.id} disabled={!m.enabled}
+                title={m.enabled ? m.hint : `${m.label} needs ${m.needs} - ${whyDisabled(m.id)}`}
+                onclick={() => { leaveMode(m.id); }}>{m.label}</button>
       {/each}
     </div>
 
@@ -721,9 +728,18 @@
               title={drawerOpen ? "collapse" : "expand"} aria-expanded={drawerOpen}>
         {drawerOpen ? "▾" : "▸"}
       </button>
-      <h4>{MODES.find(([id]) => id === mode)?.[1] ?? mode}</h4>
-      <span class="what">{DRAWER_HINT[mode]}</span>
+      <h4>{currentMode?.label ?? mode}</h4>
+      <span class="what">{currentMode?.hint ?? ""}</span>
+      <button class="info" class:on={showHelp} title="what this mode is for"
+              aria-label="what this mode is for"
+              onclick={() => (showHelp = !showHelp)}>?</button>
     </div>
+    {#if drawerOpen && showHelp && currentMode}
+      <p class="modehelp">
+        {currentMode.summary}
+        {#if currentMode.needs}<span class="needs">Needs {currentMode.needs}.</span>{/if}
+      </p>
+    {/if}
     {#if !drawerOpen}
       <!-- collapsed: the head is the whole drawer -->
     {:else if mode === "style"}
@@ -889,6 +905,13 @@
   .drawer-head h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .07em;
                     color: var(--muted-2); margin: 0; }
   .drawer-head .what { font-size: 11px; color: var(--faint); }
+  .info { margin-left: auto; background: var(--line-2); color: var(--muted-2); border: 0;
+          width: 18px; height: 18px; border-radius: 50%; font-size: 11px; line-height: 1;
+          padding: 0; cursor: pointer; }
+  .info:hover, .info.on { background: var(--accent); color: #fff; }
+  .modehelp { font-size: 12.5px; color: var(--text-2); line-height: 1.55; margin: 0 0 10px;
+              max-width: 80ch; border-left: 2px solid var(--accent); padding-left: 10px; }
+  .modehelp .needs { color: var(--warn); }
   .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
   .row select { padding: 6px 8px; background: var(--bg); border: 1px solid var(--border);
                 border-radius: 5px; color: var(--text); font: inherit; font-size: 12px; }

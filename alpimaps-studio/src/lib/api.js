@@ -21,10 +21,15 @@ async function devInvoke(cmd, args) {
       if (!res.ok) throw new Error(`catalog ${res.status}`);
       return res.json();
     }
-    case "list_steps":
-      return (await fetch(`${DEV_BASE}/steps`)).json();
+    case "list_steps": {
+      const url = new URL(`${DEV_BASE}/steps`);
+      if (args?.area) url.searchParams.set("area", args.area);
+      return (await fetch(url)).json();
+    }
     case "step_options":
       return (await fetch(`${DEV_BASE}/step-options/${args.step}`)).json();
+    case "reveal":
+      throw new Error("the file manager is only reachable from the app");
     case "cli_reference":
       // the browser cannot run a binary; the app reads the real --help
       return { path: null, usage: "", commands: [], hint: "available inside the app" };

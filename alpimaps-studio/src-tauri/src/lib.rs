@@ -37,12 +37,25 @@ impl Config {
         let path = dir.join("settings.json");
         // cwd is the least-wrong default for the repo root; the user retargets it in Settings
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let settings = Settings::load_or_default(&path, cwd).unwrap_or_default();
+        let mut settings = Settings::load_or_default(&path, cwd).unwrap_or_default();
+        // the bundle's own files - the planetiler jar, valhalla.json, the Valhalla binaries.
+        // A packaged install has no repository to fall back on, and this path moves with the
+        // app, so it is discovered every launch rather than stored.
+        settings.resource_dir = app.path().resource_dir().ok();
         Self { path, settings: Mutex::new(settings) }
     }
 
     fn get(&self) -> Result<Settings, String> {
         Ok(self.settings.lock().map_err(|_| "settings lock poisoned")?.clone())
+    }
+
+    /// Keep the discovered resource directory across a save: it is not part of what the user
+    /// edits, and `save_settings` round-trips through JSON where it is skipped.
+    fn set(&self, mut next: Settings) -> Result<Settings, String> {
+        let mut slot = self.settings.lock().map_err(|_| "settings lock poisoned")?;
+        next.resource_dir = slot.resource_dir.clone();
+        *slot = next.clone();
+        Ok(next)
     }
 }
 
@@ -88,9 +101,7 @@ fn get_settings(config: State<'_, Config>) -> Result<Settings, String> {
 #[tauri::command]
 fn save_settings(config: State<'_, Config>, settings: Settings) -> Result<Settings, String> {
     settings.save(&config.path).map_err(|e| e.to_string())?;
-    let mut slot = config.settings.lock().map_err(|_| "settings lock poisoned")?;
-    *slot = settings.clone();
-    Ok(settings)
+    config.set(settings)
 }
 
 /// Scan the configured output root. Cheap - reads metadata only, never the tiles table.
@@ -232,6 +243,17 @@ struct StepInfo {
     label: &'static str,
     deps: Vec<StepId>,
     implemented: bool,
+    /// What the step does. Comes from the graph, not from the UI, so one description serves
+    /// the Build view, the docs and anything added later.
+    summary: &'static str,
+    /// What it needs beyond its dependencies.
+    reads: &'static str,
+    /// Where it writes, resolved for the area being looked at rather than as a template.
+    writes: Vec<String>,
+    /// The `alpimaps` subcommand that runs it.
+    command: &'static str,
+    /// How many options its form offers.
+    option_count: usize,
 }
 
 /// A routing actor, kept alive between requests along with the tile directory it was opened on.
@@ -392,16 +414,24 @@ async fn valhalla_route(
 }
 
 #[tauri::command]
-fn list_steps() -> Vec<StepInfo> {
+fn list_steps(config: State<'_, Config>, area: Option<String>) -> Vec<StepInfo> {
+    let settings = config.get().unwrap_or_default();
+    let area = area.unwrap_or_else(|| "<area>".to_string());
     ALL_STEPS
         .iter()
         .map(|s| StepInfo {
             id: *s,
             label: s.label(),
             deps: s.deps().to_vec(),
-            // hillshade, the OSM download and valhalla_build_tiles are still shell scripts;
-            // the runner says so rather than pretending to have run them
             implemented: s.is_implemented(),
+            summary: s.summary(),
+            reads: s.reads(),
+            writes: build_state::outputs_for(&settings, &area, *s)
+                .into_iter()
+                .map(|p| p.display().to_string())
+                .collect(),
+            command: s.command(),
+            option_count: step_options(*s).len(),
         })
         .collect()
 }
@@ -477,6 +507,45 @@ struct RunRequest {
     /// Rebuild everything in the plan, ignoring what is recorded.
     #[serde(default)]
     force_all: bool,
+    /// Anything the option schema does not cover, per step, passed to the tool verbatim.
+    ///
+    /// Planetiler has far more flags than this app has a form for, and its own documentation is
+    /// the reference for them. Rather than mirroring the whole list - which would be wrong by
+    /// the next release - whatever is typed here goes through untouched.
+    #[serde(default)]
+    extra_args: BTreeMap<StepId, String>,
+}
+
+/// Split a typed argument string the way a shell would, honouring quotes.
+///
+/// `--polygon='/tmp/my area.poly'` has to arrive as one argument, and splitting on whitespace
+/// alone would hand planetiler two broken ones.
+fn split_args(raw: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut any = false;
+    for ch in raw.chars() {
+        match quote {
+            Some(q) if ch == q => quote = None,
+            Some(_) => current.push(ch),
+            None if ch == '\'' || ch == '"' => {
+                quote = Some(ch);
+                any = true;
+            }
+            None if ch.is_whitespace() => {
+                if any || !current.is_empty() {
+                    out.push(std::mem::take(&mut current));
+                    any = false;
+                }
+            }
+            None => current.push(ch),
+        }
+    }
+    if any || !current.is_empty() {
+        out.push(current);
+    }
+    out
 }
 
 fn human_elapsed(d: std::time::Duration) -> String {
@@ -545,7 +614,9 @@ fn run_help(program: &Path, args: &[&str]) -> Option<String> {
 /// `alpimaps --help`, which is generated from the same argument definitions the CLI parses with.
 #[tauri::command]
 fn cli_reference(app: AppHandle) -> CliReference {
-    let hint = "build it with `cargo build --release -p alpimaps-cli`, or put `alpimaps` on PATH"
+    // a packaged build ships it; a checkout has to build it
+    let hint = "it ships with a packaged build; from a checkout, `cargo build --release -p \
+                alpimaps-cli`, or put `alpimaps` on PATH"
         .to_string();
     let Some(path) = find_cli(&app) else {
         return CliReference {
@@ -603,6 +674,18 @@ fn command_lines(usage: &str) -> Vec<(String, String)> {
 mod tests {
     use super::*;
 
+    /// A quoted path is one argument, not two. Getting this wrong turns `--polygon='/tmp/my
+    /// area.poly'` into a flag planetiler rejects and a file name it never sees.
+    #[test]
+    fn quoted_arguments_stay_whole() {
+        assert_eq!(
+            split_args("--max-point-buffer=4  --polygon='/tmp/my area.poly'"),
+            vec!["--max-point-buffer=4", "--polygon=/tmp/my area.poly"]
+        );
+        assert_eq!(split_args("   "), Vec::<String>::new());
+        assert_eq!(split_args("--a \"b c\" --d"), vec!["--a", "b c", "--d"]);
+    }
+
     /// Real `alpimaps --help` output, trimmed. The parser has to stop at the blank line rather
     /// than reading the Options block as more commands.
     #[test]
@@ -642,11 +725,44 @@ mod tests {
     }
 }
 
+/// Show a file in the system file manager, selected rather than opened.
+///
+/// Selecting matters: these are multi-hundred-megabyte mbtiles, and "opening" one hands it to
+/// whatever the OS thinks owns `.mbtiles`.
+#[tauri::command]
+fn reveal(path: String) -> Result<(), String> {
+    let path = PathBuf::from(&path);
+    if !path.exists() {
+        return Err(format!("{} is not there", path.display()));
+    }
+    let result = if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg("-R").arg(&path).spawn()
+    } else if cfg!(target_os = "windows") {
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{}", path.display()))
+            .spawn()
+    } else {
+        // no portable "select this file" on Linux; the containing directory is the honest
+        // fallback rather than launching a viewer for a 300 MB archive
+        let dir = if path.is_dir() {
+            path.clone()
+        } else {
+            path.parent().ok_or("no containing directory")?.to_path_buf()
+        };
+        std::process::Command::new("xdg-open").arg(dir).spawn()
+    };
+    result.map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// Paths the app resolves for itself, so the UI can show what will actually be used.
 #[derive(Serialize)]
 struct ResolvedDefaults {
     planetiler_jar: Option<String>,
     valhalla_config: Option<String>,
+    /// The Valhalla binaries, where they were actually found.
+    valhalla_tools: Vec<(String, Option<String>)>,
+    /// The app's own bundled files, when it is a packaged build.
+    resource_dir: Option<String>,
     /// Areas found in the output root, which is where a half-finished build shows up.
     areas: Vec<String>,
 }
@@ -665,12 +781,25 @@ fn resolved_defaults(config: State<'_, Config>) -> Result<ResolvedDefaults, Stri
         }
     }
     areas.sort();
+    let bin_dirs = settings.valhalla_bin_dirs();
+    let valhalla_tools = ["valhalla_build_tiles", "valhalla_build_elevation"]
+        .iter()
+        .map(|name| {
+            let found =
+                studio_core::steps::external::find_tool(bin_dirs.iter().map(|p| p.as_path()), name)
+                    .map(|p| p.display().to_string());
+            (name.to_string(), found)
+        })
+        .collect();
+
     Ok(ResolvedDefaults {
         planetiler_jar: settings.planetiler_jar_path().map(|p| p.display().to_string()),
         valhalla_config: settings
             .valhalla_config_path()
             .is_file()
             .then(|| settings.valhalla_config_path().display().to_string()),
+        valhalla_tools,
+        resource_dir: settings.resource_dir.as_ref().map(|p| p.display().to_string()),
         areas,
     })
 }
@@ -867,6 +996,7 @@ async fn run_steps(
         };
         let mut extra = vec!["--download".into(), format!("--area={}", req.area), "--force".into()];
         extra.extend(options::to_args(&defs, &values));
+        extra.extend(req.extra_args.get(&step).map(|raw| split_args(raw)).unwrap_or_default());
 
         let suffix = if step == StepId::Routes { "_routes" } else { "" };
         let job = PlanetilerJob {
@@ -975,7 +1105,7 @@ async fn run_valhalla_tool(
 ) -> Result<bool, String> {
     use studio_core::steps::external::{self, ToolJob};
 
-    let bin_dir = settings.valhalla_bin_dir.clone();
+    let bin_dirs = settings.valhalla_bin_dirs();
     let config = settings.valhalla_config_path();
     if !config.is_file() {
         return Err(format!("no Valhalla config at {} - set one in Settings", config.display()));
@@ -1010,8 +1140,15 @@ async fn run_valhalla_tool(
         }
     };
 
-    let program = external::find_tool(bin_dir.as_deref(), name)
-        .ok_or_else(|| format!("{name} not found - build the Valhalla submodule"))?;
+    let program = external::find_tool(bin_dirs.iter().map(|p| p.as_path()), name).ok_or_else(
+        || {
+            format!(
+                "{name} not found - looked in {}, and on PATH. Set the binary directory in \
+                 Settings.",
+                bin_dirs.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+            )
+        },
+    )?;
     let job = ToolJob {
         step,
         area: area.to_string(),
@@ -1285,6 +1422,7 @@ pub fn run() {
             clear_build_state,
             resolved_defaults,
             cli_reference,
+            reveal,
             save_preset,
             delete_preset,
             run_steps

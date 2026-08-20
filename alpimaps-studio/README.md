@@ -173,11 +173,42 @@ shared between areas (the elevation tiles, the raw Valhalla graph) are never del
 
 ### Paths it finds for itself
 
-The planetiler jar is discovered in `planetiler/planetiler-dist/target` when Settings has none,
-and the newest `-with-deps.jar` wins. The area list comes from the output root rather than the
-config, because a half-finished build is in the output root and nowhere else. `valhalla.json` is
-a setting, defaulting to `<repo>/valhalla.json` - the embedded router validates the whole
-document, so a hand-written stub is not enough.
+A published app has no repository, no submodules and no scripts, so everything the pipeline
+reaches for at run time is either bundled with it or configured. Each tool resolves in the same
+order: **what Settings names, then the copy inside the app bundle, then a repository checkout,
+then `PATH`.**
+
+| Needed | Bundled as | In a checkout |
+| --- | --- | --- |
+| planetiler jar | `resources/*-with-deps.jar` | `planetiler/planetiler-dist/target` |
+| `valhalla.json` | `resources/valhalla.json` | `<repo>/valhalla.json` |
+| `valhalla_build_tiles`, `valhalla_build_elevation` | `resources/valhalla/` | `valhalla/build`, then `PATH` |
+| `alpimaps` | `resources/alpimaps` | the workspace target dir |
+
+`scripts/bundle_resources.sh` collects them; Tauri runs it as `beforeBundleCommand`. The OSM
+extracts, the elevation tiles and the Valhalla graph are deliberately **not** bundled - they are
+gigabytes, they are per-area, and they belong in the user's own directories. Docs → *Where things
+live* shows what each one resolved to on this machine, and says so when one is missing.
+
+The resource directory is discovered every launch and never written to `settings.json`: a
+packaged app's resources move with it, and a stored path would outlive an update.
+
+The area list comes from the output root rather than the config, because a half-finished build is
+in the output root and nowhere else.
+
+### Flags this app has no form for
+
+The option schema covers what the pipeline tunes. Planetiler has far more, and mirroring its
+whole flag list would be wrong by its next release - so each planetiler step has a free-text
+field whose contents are passed through verbatim, and the docs link to planetiler's own
+reference. The CLI takes the same thing after `--`:
+
+```bash
+alpimaps basemap --area rhone-alpes -- --max-point-buffer=4 --mlt-shared-dict
+```
+
+Quoted arguments survive: `--polygon='/tmp/my area.poly'` arrives as one argument rather than
+two broken ones.
 
 ### Options
 
@@ -327,16 +358,18 @@ passed. The build record is written for the app's benefit and never read back to
 Every path is a flag. `--repo` only supplies defaults:
 
 ```
---repo             everything else defaults from it (default: .)
---output-root      where areas are written        (default: <repo>/alpimaps_mbtiles)
---data-dir         OSM extracts                   (default: <repo>/data/sources)
---elevation-dir    .hgt tiles                     (default: <repo>/elevation_tiles)
---sources-json     terrain sources                (default: <repo>/sources.json)
---valhalla-bin     valhalla binaries              (default: <repo>/valhalla/build, then PATH)
---valhalla-config  valhalla.json                  (default: <repo>/valhalla.json)
+--repo         everything else defaults from it (default: .)
+--output-root  where areas are written          (default: <repo>/alpimaps_mbtiles)
+--data-dir     OSM extracts                     (default: <repo>/data/sources)
 ```
 
-Each step also takes `--output` for the one file it writes.
+The rest belong to the steps that use them, not to every command: `--sources` and
+`--elevation-dir` on `terrain`, `--config` and `--bin-dir` on `elevation` and `valhalla-tiles`.
+`basemap --help` used to list the Valhalla paths, which read as a dependency it does not have.
+
+Each step also takes `--output` for the one file it writes. When the binary ships inside the app
+bundle it finds the jar and `valhalla.json` beside itself, so a packaged install needs no
+checkout either.
 
 ```bash
 alpimaps download --area rhone-alpes                     # or --url ... --output ...

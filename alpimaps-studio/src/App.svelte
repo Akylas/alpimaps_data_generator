@@ -5,7 +5,7 @@
   import Settings from "./lib/Settings.svelte";
   import Docs from "./lib/Docs.svelte";
 
-  let tab = $state("areas");
+  let tab = $state("build"); // TEMP
   let areasRef = $state(null);
 
   const TABS = [

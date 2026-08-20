@@ -46,6 +46,83 @@ impl StepId {
         }
     }
 
+    /// What the step does, in the words someone debugging a build would want.
+    ///
+    /// The prose lives next to the graph rather than in the UI: the app, the docs tab and any
+    /// later front end all read it from here, so there is one description of a step and not
+    /// three that drift apart.
+    pub fn summary(self) -> &'static str {
+        match self {
+            StepId::DownloadOsm => {
+                "Fetches the area's OSM extract, resolved through Geofabrik's index rather than \
+                 a guessed URL - their ids are what the area name has to match (`rhone-alpes`, \
+                 `france`). One copy feeds the basemap, the routes and the Valhalla graph, which \
+                 is why it is a step of its own rather than planetiler's `--download`."
+            }
+            StepId::ElevationTiles => {
+                "Runs `valhalla_build_elevation` with `-d`, so the .hgt tiles land decompressed. \
+                 The Valhalla graph bakes elevation in during its own build, so these have to \
+                 exist before the tiles are built - and the terrain step reads the same files \
+                 afterwards."
+            }
+            StepId::Basemap => {
+                "Planetiler over the OSM extract, with the bundled OpenMapTiles fork or a YAML \
+                 schema. The top zoom dominates the size: z14 is about 71% of a rhone-alpes \
+                 basemap."
+            }
+            StepId::Routes => {
+                "The same planetiler run restricted to the route layer - hiking and cycling \
+                 relations, which is why it comes out a fraction of the basemap's size. It is \
+                 separate because the mobile app ships and updates it separately."
+            }
+            StepId::TerrainRgb => {
+                "Terrarium-packed elevation from the sources in sources.json, lowest priority \
+                 first, blended over `blur` metres at each source's coverage edge. The map draws \
+                 hillshade and 3D terrain from these; there is no contour archive any more."
+            }
+            StepId::Hillshade => {
+                "The same renderer packed the mapbox way (0.1 m per step instead of 1 m). It \
+                 exists because older archives are named `_hillshade` and are still read."
+            }
+            StepId::ValhallaTiles => {
+                "`valhalla_build_tiles` over the OSM extract, using the configured valhalla.json. \
+                 Slow, and shared between areas: it is usually built once for a parent area \
+                 covering everything you route in, so routes do not stop at a border."
+            }
+            StepId::ValhallaPackage => {
+                "Packs the graph tiles covering one area into the .vtiles archive the phone \
+                 downloads. The tile list comes from a .poly, from a tilemask, or from an \
+                 existing package."
+            }
+        }
+    }
+
+    /// What the step needs before it can run, beyond the steps it depends on.
+    pub fn reads(self) -> &'static str {
+        match self {
+            StepId::DownloadOsm => "the network",
+            StepId::ElevationTiles => "valhalla.json, for the bounds to cover",
+            StepId::Basemap | StepId::Routes => "the OSM extract, the planetiler jar, Java 21+",
+            StepId::TerrainRgb | StepId::Hillshade => "sources.json and the elevation tiles",
+            StepId::ValhallaTiles => "the OSM extract, valhalla.json, the elevation tiles",
+            StepId::ValhallaPackage => "the Valhalla graph, and a shape or tile list",
+        }
+    }
+
+    /// The `alpimaps` subcommand that runs this step.
+    pub fn command(self) -> &'static str {
+        match self {
+            StepId::DownloadOsm => "download",
+            StepId::ElevationTiles => "elevation",
+            StepId::Basemap => "basemap",
+            StepId::Routes => "routes",
+            StepId::TerrainRgb => "terrain",
+            StepId::Hillshade => "hillshade",
+            StepId::ValhallaTiles => "valhalla-tiles",
+            StepId::ValhallaPackage => "package",
+        }
+    }
+
     /// What must have run first.
     pub fn deps(self) -> &'static [StepId] {
         match self {

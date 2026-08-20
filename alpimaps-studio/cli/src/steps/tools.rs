@@ -126,9 +126,17 @@ pub async fn elevation(settings: &Settings, args: ToolArgs) -> Result<()> {
 }
 
 fn bin(args: &ToolArgs, settings: &Settings, name: &str) -> Result<std::path::PathBuf> {
-    let dir = args.bin_dir.clone().or_else(|| settings.valhalla_bin_dir.clone());
-    external::find_tool(dir.as_deref(), name)
-        .ok_or_else(|| anyhow!("{name} not found; build the Valhalla submodule or pass --bin-dir"))
+    let mut dirs = Vec::new();
+    if let Some(dir) = &args.bin_dir {
+        dirs.push(dir.clone());
+    }
+    dirs.extend(settings.valhalla_bin_dirs());
+    external::find_tool(dirs.iter().map(|p| p.as_path()), name).ok_or_else(|| {
+        anyhow!(
+            "{name} not found; looked in {}, and on PATH. Pass --bin-dir.",
+            dirs.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+        )
+    })
 }
 
 /// `valhalla_build_tiles` - the routing graph itself.

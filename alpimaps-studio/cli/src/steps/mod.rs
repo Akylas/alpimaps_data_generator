@@ -20,23 +20,16 @@ use studio_core::settings::Settings;
 pub fn settings_for(cli: &crate::Cli) -> Result<Settings> {
     let repo = cli.repo.canonicalize().unwrap_or_else(|_| cli.repo.clone());
     let mut settings = Settings::for_repo(repo);
+    // when this binary ships inside the app bundle, the jar and valhalla.json sit beside it;
+    // in a checkout there is nothing there and the repository paths take over
+    settings.resource_dir = std::env::current_exe().ok().and_then(|exe| {
+        exe.parent().map(|dir| dir.to_path_buf())
+    });
     if let Some(path) = cli.output_root.clone() {
         settings.output_root = path;
     }
     if let Some(path) = cli.data_dir.clone() {
         settings.data_dir = path;
-    }
-    if let Some(path) = cli.elevation_dir.clone() {
-        settings.elevation_tiles_dir = path;
-    }
-    if let Some(path) = cli.sources_json.clone() {
-        settings.sources_json = path;
-    }
-    if let Some(path) = cli.valhalla_bin.clone() {
-        settings.valhalla_bin_dir = Some(path);
-    }
-    if let Some(path) = cli.valhalla_config.clone() {
-        settings.valhalla_config = Some(path);
     }
     Ok(settings)
 }

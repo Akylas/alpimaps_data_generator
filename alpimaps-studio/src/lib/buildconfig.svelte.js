@@ -8,4 +8,6 @@ export const buildConfig = $state({
   values: {},
   /** step id -> option definitions, for the flag names */
   defs: {},
+  /** step id -> free-text tool arguments the form has no field for */
+  extra: {},
 });

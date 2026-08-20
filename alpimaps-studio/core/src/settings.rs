@@ -47,6 +47,28 @@ pub struct Settings {
     /// progress lines for a one-minute build - far too coarse to drive a progress bar.
     pub log_interval: String,
     pub areas: Vec<AreaConfig>,
+    /// Where the front end's own bundled files live: the planetiler jar, valhalla.json, the
+    /// Valhalla binaries.
+    ///
+    /// Discovered at run time, never stored - a packaged app's resource directory moves with
+    /// the app, and a stale path written into settings.json would outlive an update. A packaged
+    /// build has no repository to fall back on, which is why every tool lookup consults this
+    /// first.
+    #[serde(skip)]
+    pub resource_dir: Option<PathBuf>,
+}
+
+/// The newest `-with-deps.jar` in a directory. Several versions can sit side by side in a
+/// submodule build; the highest name is the most recent.
+fn newest_jar(dir: &Path) -> Option<PathBuf> {
+    let mut jars: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.to_string_lossy().ends_with("-with-deps.jar"))
+        .collect();
+    jars.sort();
+    jars.pop()
 }
 
 impl Default for Settings {
@@ -71,6 +93,7 @@ impl Settings {
             heap_mb: 12288,
             log_interval: "1s".into(),
             areas: Vec::new(),
+            resource_dir: None,
             repo_root,
         }
     }
@@ -105,33 +128,50 @@ impl Settings {
 
     /// The planetiler jar to run.
     ///
-    /// Configured first, then the one built in the submodule - which is where it lands after
-    /// `mvn package`, and the only copy most checkouts have. Finding it beats making every
-    /// caller paste the same path.
+    /// Configured first, then the copy shipped with the app, then the one the submodule builds.
+    /// A packaged install has no submodule, so the bundled jar is the only one it will find -
+    /// and a developer checkout finds the freshly built one without configuring anything.
     pub fn planetiler_jar_path(&self) -> Option<PathBuf> {
         if let Some(jar) = &self.planetiler_jar {
             if jar.is_file() {
                 return Some(jar.clone());
             }
         }
-        let dir = self.repo_root.join("planetiler/planetiler-dist/target");
-        let mut jars: Vec<PathBuf> = std::fs::read_dir(dir)
-            .ok()?
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.to_string_lossy().ends_with("-with-deps.jar"))
-            .collect();
-        // several versions can sit side by side; the newest name wins, which is the one the
-        // submodule most recently built
-        jars.sort();
-        jars.pop()
+        if let Some(jar) = self.resource_dir.as_ref().and_then(|dir| newest_jar(dir)) {
+            return Some(jar);
+        }
+        newest_jar(&self.repo_root.join("planetiler/planetiler-dist/target"))
     }
 
-    /// Where the Valhalla config template lives. Falls back to the repo checkout.
+    /// Where the Valhalla config template lives.
+    ///
+    /// The embedded router validates the whole document, so this cannot be a stub: it is either
+    /// the one configured, the one shipped with the app, or the repository's.
     pub fn valhalla_config_path(&self) -> PathBuf {
-        self.valhalla_config
-            .clone()
-            .unwrap_or_else(|| self.repo_root.join("valhalla.json"))
+        if let Some(path) = &self.valhalla_config {
+            return path.clone();
+        }
+        if let Some(bundled) = self.resource_dir.as_ref().map(|dir| dir.join("valhalla.json")) {
+            if bundled.is_file() {
+                return bundled;
+            }
+        }
+        self.repo_root.join("valhalla.json")
+    }
+
+    /// Where to look for `valhalla_build_tiles` and friends, in order. `PATH` is searched after
+    /// all of these by the tool lookup itself.
+    pub fn valhalla_bin_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        if let Some(dir) = &self.valhalla_bin_dir {
+            dirs.push(dir.clone());
+        }
+        if let Some(dir) = &self.resource_dir {
+            dirs.push(dir.join("valhalla"));
+            dirs.push(dir.clone());
+        }
+        dirs.push(self.repo_root.join("valhalla/build"));
+        dirs
     }
 
     pub fn area(&self, name: &str) -> Option<&AreaConfig> {

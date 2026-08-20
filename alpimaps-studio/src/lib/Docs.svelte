@@ -7,62 +7,23 @@
   import { onMount } from "svelte";
   import Section from "./Section.svelte";
   import Cli from "./Cli.svelte";
+  import { MAP_MODES, TERRAIN_MODE_HELP } from "./modes.js";
 
   let steps = $state([]);
   let paths = $state(null);
+  let resolved = $state(null);
+
+  const label = (id) => steps.find((s) => s.id === id)?.label ?? id;
 
   onMount(async () => {
     try {
       steps = await invoke("list_steps");
       paths = await invoke("get_settings");
+      resolved = await invoke("resolved_defaults");
     } catch {
       // docs are readable without a backend; the generated bits just stay empty
     }
   });
-
-  /// What each step reads and writes, in the words someone debugging a build would want.
-  const STEP_NOTES = {
-    download_osm: {
-      cli: "alpimaps download --area <area>",
-      writes: "data/sources/<area_with_underscores>.osm.pbf",
-      note: "Resolves the extract through Geofabrik's index, so the area id is theirs (`rhone-alpes`, `france`). One copy feeds the basemap, the routes and the Valhalla graph.",
-    },
-    elevation_tiles: {
-      cli: "alpimaps elevation --area <area>",
-      writes: "elevation_tiles/ (shared between areas)",
-      note: "Runs valhalla_build_elevation with -d, so the .hgt land decompressed - the terrain step reads the same files later.",
-    },
-    basemap: {
-      cli: "alpimaps basemap --area <area>",
-      writes: "<area>/<area>.mbtiles",
-      note: "Planetiler with the bundled OpenMapTiles fork, or a YAML schema. Options are the ones under 3 · Basemap; -o key=value from the CLI.",
-    },
-    routes: {
-      cli: "alpimaps routes --area <area>",
-      writes: "<area>/<area>_routes.mbtiles",
-      note: "The same planetiler run restricted to the route layer. Hiking and cycling relations only, which is why it is a fraction of the basemap's size.",
-    },
-    terrain_rgb: {
-      cli: "alpimaps terrain --area <area> --poly-shape <area>.poly",
-      writes: "<area>/<area>_terrain.mbtiles",
-      note: "Terrarium-packed elevation from the sources in sources.json, lowest priority first. The map view draws hillshade from these; there is no contour archive any more.",
-    },
-    hillshade: {
-      cli: "alpimaps hillshade --area <area>",
-      writes: "<area>/<area>_hillshade.mbtiles",
-      note: "The same renderer packed the mapbox way. It exists because older archives are named this and the app still reads them.",
-    },
-    valhalla_tiles: {
-      cli: "alpimaps valhalla-tiles --area <area>",
-      writes: "valhalla_tiles/ (shared between areas)",
-      note: "valhalla_build_tiles over the OSM extract, using the configured valhalla.json. Slow, and worth building once for a parent area covering everything you route in.",
-    },
-    valhalla_package: {
-      cli: "alpimaps package --area <area> --poly <area>.poly",
-      writes: "<area>/<area>.vtiles",
-      note: "Packs the graph tiles for one area into the archive the phone downloads. --poly picks the tiles from the shape; --like copies another package's list.",
-    },
-  };
 
 </script>
 
@@ -103,14 +64,19 @@
     </thead>
     <tbody>
       {#each steps as s}
-        {@const note = STEP_NOTES[s.id] ?? {}}
         <tr>
           <td>
             <strong>{s.label}</strong>
-            {#if note.note}<p class="note">{note.note}</p>{/if}
+            <p class="note">{s.summary}</p>
+            <p class="note">
+              Needs {s.reads}{#if s.deps?.length}, after {s.deps.map((d) => label(d)).join(", ")}{/if}.
+            </p>
           </td>
-          <td><code>{note.writes ?? "—"}</code></td>
-          <td><code>{note.cli ?? "—"}</code></td>
+          <td>
+            {#each s.writes ?? [] as w}<code>{w}</code>{/each}
+            {#if !(s.writes ?? []).length}<code>—</code>{/if}
+          </td>
+          <td><code>alpimaps {s.command} --area &lt;area&gt;</code></td>
         </tr>
       {/each}
       {#if !steps.length}
@@ -121,17 +87,30 @@
 </Section>
 
 <Section title="Map view" open={false}>
-  <ul>
-    <li><strong>Inspect</strong> — click a feature to read its properties.</li>
-    <li><strong>Route</strong> — needs a <code>.vtiles</code> package and a build with Valhalla linked; the picker chooses which package to route on.</li>
-    <li><strong>Profile</strong> — samples elevation from the area's terrain archive.</li>
-    <li><strong>Tiles</strong> — dumps the clicked tile's contents as JSON, with a copy button.</li>
-    <li><strong>Style</strong> — points a MapLibre style at an archive and re-applies it as you edit. Leaving the mode restores the real style.</li>
-  </ul>
-  <p class="muted">
-    Terrain archives can be drawn as hillshade, as the raw encoded bytes, or as 3D terrain -
-    which is the one that shows tile edges, because a mismatched edge becomes a cliff. Grid
-    draws tile boundaries with their z/x/y.
+  <table>
+    <tbody>
+      {#each MAP_MODES as m}
+        <tr>
+          <td><strong>{m.label}</strong></td>
+          <td>
+            <p class="note">{m.summary}</p>
+            {#if m.needs}<p class="note">Needs {m.needs}.</p>{/if}
+          </td>
+        </tr>
+      {/each}
+    </tbody>
+  </table>
+  <h4>Drawing a terrain archive</h4>
+  <table>
+    <tbody>
+      {#each Object.entries(TERRAIN_MODE_HELP) as [mode, what]}
+        <tr><td><code>{mode === "terrain3d" ? "3D" : mode}</code></td><td class="muted">{what}</td></tr>
+      {/each}
+    </tbody>
+  </table>
+  <p class="note">
+    Grid draws tile boundaries with their z/x/y. Both side panels collapse, and the right one
+    holds the layers of the comparison map - add layers there, then Compare swipes between them.
   </p>
 </Section>
 
@@ -142,18 +121,47 @@
 
 <Section title="Where things live" open={false}>
   {#if paths}
+    <h4>Your data</h4>
     <table>
       <tbody>
-        <tr><td>Repo root</td><td><code>{paths.repo_root}</code></td></tr>
         <tr><td>Output root</td><td><code>{paths.output_root}</code></td></tr>
         <tr><td>OSM downloads</td><td><code>{paths.data_dir}</code></td></tr>
         <tr><td>Elevation tiles</td><td><code>{paths.elevation_tiles_dir}</code></td></tr>
         <tr><td>Elevation sources</td><td><code>{paths.sources_json}</code></td></tr>
-        <tr><td>Valhalla binaries</td><td><code>{paths.valhalla_bin_dir ?? "not set"}</code></td></tr>
-        <tr><td>valhalla.json</td><td><code>{paths.valhalla_config ?? "<repo>/valhalla.json"}</code></td></tr>
+        <tr><td>Scratch</td><td><code>{paths.tmp_dir}</code></td></tr>
       </tbody>
     </table>
-    <p class="muted">All of these are editable in Settings.</p>
+
+    <h4>Tools</h4>
+    <p class="note">
+      Resolved in this order: what Settings names, then the copy shipped inside the app, then a
+      repository checkout, then <code>PATH</code>. A packaged install has no checkout, so what it
+      finds is what was bundled with it.
+    </p>
+    <table>
+      <tbody>
+        <tr>
+          <td>Planetiler jar</td>
+          <td><code class:missing={!resolved?.planetiler_jar}>{resolved?.planetiler_jar ?? "not found"}</code></td>
+        </tr>
+        <tr>
+          <td>valhalla.json</td>
+          <td><code class:missing={!resolved?.valhalla_config}>{resolved?.valhalla_config ?? "not found"}</code></td>
+        </tr>
+        {#each resolved?.valhalla_tools ?? [] as [name, found]}
+          <tr>
+            <td>{name}</td>
+            <td><code class:missing={!found}>{found ?? "not found - that step cannot run"}</code></td>
+          </tr>
+        {/each}
+        <tr>
+          <td>Bundled files</td>
+          <td><code>{resolved?.resource_dir ?? "not a packaged build"}</code></td>
+        </tr>
+        <tr><td>Repository</td><td><code>{paths.repo_root}</code></td></tr>
+      </tbody>
+    </table>
+    <p class="note">All of these are editable in Settings.</p>
   {:else}
     <p class="muted">paths unavailable outside the app</p>
   {/if}
@@ -162,7 +170,10 @@
 <style>
   p { margin: 0 0 8px; line-height: 1.55; }
   .muted { color: var(--muted-2); }
-  .note { color: var(--muted-2); font-size: 12px; margin: 4px 0 0; }
+  .note { color: var(--muted-2); font-size: 12px; margin: 4px 0 0; line-height: 1.5; }
+  .missing { color: var(--warn); }
+  h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted-2);
+       margin: 16px 0 6px; font-weight: 600; }
   ul { margin: 0; padding-left: 18px; color: var(--text-2); }
   li { margin-bottom: 5px; line-height: 1.5; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }

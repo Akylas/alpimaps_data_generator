@@ -260,6 +260,8 @@ async fn build_state_handler(
 /// Step metadata, mirroring what the Tauri command returns so the UI can be driven from a
 /// plain browser without a second definition of the step graph.
 async fn steps_handler() -> Json<serde_json::Value> {
+    // dev mirror of the app's `list_steps`; paths stay templates here because the browser has
+    // no settings to resolve them against
     let steps: Vec<serde_json::Value> = crate::steps::ALL_STEPS
         .iter()
         .map(|s| {
@@ -268,6 +270,11 @@ async fn steps_handler() -> Json<serde_json::Value> {
                 "label": s.label(),
                 "deps": s.deps(),
                 "implemented": s.is_implemented(),
+                "summary": s.summary(),
+                "reads": s.reads(),
+                "command": s.command(),
+                "writes": Vec::<String>::new(),
+                "option_count": 0,
             })
         })
         .collect();

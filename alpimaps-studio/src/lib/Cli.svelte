@@ -28,7 +28,13 @@
 
   let current = $derived(ref?.commands?.find((c) => c.name === picked));
   let script = $derived(
-    scriptFor(buildConfig.steps, buildConfig.area, buildConfig.values, buildConfig.defs),
+    scriptFor(
+      buildConfig.steps,
+      buildConfig.area,
+      buildConfig.values,
+      buildConfig.defs,
+      buildConfig.extra,
+    ),
   );
 </script>
 
@@ -71,7 +77,7 @@
     </button>
     <div class="lines">
       {#each buildConfig.steps as step}
-        {@const line = commandFor(step, buildConfig.area, buildConfig.values[step] ?? {}, buildConfig.defs[step] ?? [])}
+        {@const line = commandFor(step, buildConfig.area, buildConfig.values[step] ?? {}, buildConfig.defs[step] ?? [], buildConfig.extra[step])}
         {#if line}
           <div class="asline">
             <code>{line}</code>

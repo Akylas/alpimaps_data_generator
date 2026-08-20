@@ -35,7 +35,7 @@
   }
 
   const PATHS = [
-    ["repo_root", "Repo root", "everything else defaults from this"],
+    ["repo_root", "Repo root", "only a source of defaults; a packaged install needs none of it"],
     ["output_root", "Output root", "one subdirectory per area"],
     ["data_dir", "Source data", "planetiler downloads"],
     ["tmp_dir", "Temp root", "per-run subdirectories are created under this"],
@@ -43,10 +43,10 @@
     ["sources_json", "sources.json", "terrain raster sources"],
   ];
   const OPTIONAL = [
-    ["planetiler_jar", "Planetiler jar"],
+    ["planetiler_jar", "Planetiler jar", "blank = the one shipped with the app, else a checkout's build"],
     ["java_home", "Java home", "blank = probe JAVA_HOME then PATH"],
-    ["valhalla_bin_dir", "Valhalla binaries"],
-    ["valhalla_config", "valhalla.json", "config template for routing; blank = <repo>/valhalla.json"],
+    ["valhalla_bin_dir", "Valhalla binaries", "blank = shipped with the app, else a checkout, else PATH"],
+    ["valhalla_config", "valhalla.json", "routing config template; blank = the one shipped with the app"],
   ];
 </script>
 

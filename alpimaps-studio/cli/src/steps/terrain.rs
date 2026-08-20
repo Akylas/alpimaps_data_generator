@@ -16,6 +16,9 @@ pub struct Args {
     /// sources.json listing the elevation sources, lowest priority first.
     #[arg(long)]
     pub sources: Option<PathBuf>,
+    /// Where the .hgt elevation tiles are, when sources.json does not name a directory.
+    #[arg(long)]
+    pub elevation_dir: Option<PathBuf>,
     #[arg(long, default_value_t = 5)]
     pub minzoom: u8,
     #[arg(long, default_value_t = 13)]
@@ -122,8 +125,26 @@ pub fn run(settings: &Settings, args: Args, hillshade: bool) -> Result<()> {
             .ok_or_else(|| anyhow!("unknown encoding `{}`", args.encoding))?
     };
     let suffix = if hillshade { "hillshade" } else { "terrain" };
-    let sources_path = args.sources.unwrap_or_else(|| settings.sources_json.clone());
-    let specs = source::read_specs(&sources_path)?;
+    let sources_path = args.sources.clone().unwrap_or_else(|| settings.sources_json.clone());
+    let hgt_dir = args
+        .elevation_dir
+        .clone()
+        .unwrap_or_else(|| settings.elevation_tiles_dir.clone());
+    // sources.json is the pipeline's own list, in priority order; without one, the bare .hgt
+    // directory is a usable source on its own, which is what a fresh install has
+    let specs = match source::read_specs(&sources_path) {
+        Ok(specs) => specs,
+        Err(e) if hgt_dir.is_dir() => {
+            println!("no {} ({e}); reading {}", sources_path.display(), hgt_dir.display());
+            vec![source::SourceSpec {
+                name: "elevation_tiles".into(),
+                kind: "valhalla".into(),
+                path: hgt_dir.clone(),
+                clamp_min: Some(-10.0),
+            }]
+        }
+        Err(e) => return Err(e),
+    };
     let (mut composite, skipped) = source::CompositeSource::open(&specs)?;
     println!("sources, highest priority first: {:?}", composite.names());
     for note in &skipped {

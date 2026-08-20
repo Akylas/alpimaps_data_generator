@@ -22,7 +22,8 @@ pub struct Args {
     /// Option override, repeatable: -o simplify_tolerance=0.7
     #[arg(short = 'o', long = "option", value_name = "KEY=VALUE")]
     pub options: Vec<String>,
-    /// Path to the planetiler jar. Defaults to the built one in the submodule.
+    /// Path to the planetiler jar. Defaults to the one shipped beside this binary, else a
+    /// checkout's `planetiler/planetiler-dist/target`.
     #[arg(long)]
     pub jar: Option<PathBuf>,
     /// YAML schema to run instead of the bundled OpenMapTiles fork.
@@ -59,7 +60,13 @@ pub struct Args {
     /// Stream planetiler's own output.
     #[arg(short, long)]
     pub verbose: bool,
-    /// Extra arguments passed to planetiler verbatim, after `--`.
+    /// Anything else, passed to planetiler verbatim, after `--`.
+    ///
+    /// `-o` only knows the options this app has a schema for. Planetiler has many more, and its
+    /// own documentation is the reference for them: https://github.com/onthegomap/planetiler.
+    /// Everything after `--` goes through untouched.
+    ///
+    ///   alpimaps basemap --area alps -- --max-point-buffer=4 --mlt-shared-dict
     #[arg(last = true)]
     pub passthrough: Vec<String>,
 }

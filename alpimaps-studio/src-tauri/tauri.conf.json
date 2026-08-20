@@ -8,7 +8,7 @@
     "devUrl": "http://localhost:5183",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist",
-    "beforeBundleCommand": "bash -c 'cargo build --release -p alpimaps-cli && mkdir -p src-tauri/resources && cp target/release/alpimaps src-tauri/resources/alpimaps; if [ \"$(uname)\" = Darwin ]; then ../../scripts/bundle_macos_dylibs.sh target/release/alpimaps-studio src-tauri/resources/Frameworks @executable_path/../Resources/Frameworks; fi'"
+    "beforeBundleCommand": "bash -c '../../scripts/bundle_resources.sh'"
   },
   "app": {
     "windows": [

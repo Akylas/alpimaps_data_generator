@@ -28,7 +28,7 @@ export function quote(value) {
  * Returns null for a step with no command. Options left unset emit nothing, exactly as they do
  * in a run - the command shown is as sparse as the form is.
  */
-export function commandFor(step, area, values = {}, defs = []) {
+export function commandFor(step, area, values = {}, defs = [], extra = "") {
   const spec = COMMANDS[step];
   if (!spec) return null;
 
@@ -49,13 +49,16 @@ export function commandFor(step, area, values = {}, defs = []) {
       }
     }
   }
+  // whatever the form could not express goes after `--`, exactly as the CLI takes it
+  const rest = (extra ?? "").trim();
+  if (rest) args.push("--", rest);
   return args.join(" ");
 }
 
 /** Every configured step as one script, in the order they would run. */
-export function scriptFor(steps, area, values = {}, defs = {}) {
+export function scriptFor(steps, area, values = {}, defs = {}, extra = {}) {
   return steps
-    .map((step) => commandFor(step, area, values[step] ?? {}, defs[step] ?? []))
+    .map((step) => commandFor(step, area, values[step] ?? {}, defs[step] ?? [], extra[step] ?? ""))
     .filter(Boolean)
     .join("\n");
 }

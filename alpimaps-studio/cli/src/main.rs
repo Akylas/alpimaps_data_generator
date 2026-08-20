@@ -36,21 +36,6 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub data_dir: Option<PathBuf>,
 
-    /// Where .hgt elevation tiles live. Defaults to <repo>/elevation_tiles.
-    #[arg(long, global = true)]
-    pub elevation_dir: Option<PathBuf>,
-
-    /// sources.json for the terrain step. Defaults to <repo>/sources.json.
-    #[arg(long, global = true)]
-    pub sources_json: Option<PathBuf>,
-
-    /// Directory holding the Valhalla binaries. Defaults to <repo>/valhalla/build, then PATH.
-    #[arg(long, global = true)]
-    pub valhalla_bin: Option<PathBuf>,
-
-    /// valhalla.json used by the routing steps. Defaults to <repo>/valhalla.json.
-    #[arg(long, global = true)]
-    pub valhalla_config: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Command,

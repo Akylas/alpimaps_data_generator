@@ -1,8 +1,9 @@
 //! Running the Valhalla command-line tools as steps.
 //!
 //! `valhalla_build_elevation` and `valhalla_build_tiles` are the two parts of the pipeline that
-//! stay subprocesses. Both are C++ binaries from the submodule build, both take an hour or more
-//! on a large area, and neither has an embeddable form worth the linking. What this module adds
+//! stay subprocesses. Both are C++ binaries shipped with the app or built from the submodule,
+//! both take an hour or more on a large area, and neither has an embeddable form worth the
+//! linking. What this module adds
 //! is what the app needs and a shell does not give: their output as events, and a cancel that
 //! actually kills the process.
 
@@ -35,11 +36,12 @@ impl ToolJob {
     }
 }
 
-/// Find a Valhalla binary, preferring the configured build directory.
+/// Find a Valhalla binary in the given directories, then on `PATH`.
 ///
-/// Falls back to `PATH`, which is how a system install or `env.sh` provides them.
-pub fn find_tool(bin_dir: Option<&Path>, name: &str) -> Option<PathBuf> {
-    if let Some(dir) = bin_dir {
+/// The caller passes them in order of authority - configured, bundled with the app, built in
+/// the submodule - because a packaged install has no submodule and a checkout has no bundle.
+pub fn find_tool<'a>(dirs: impl IntoIterator<Item = &'a Path>, name: &str) -> Option<PathBuf> {
+    for dir in dirs {
         let candidate = dir.join(name);
         if candidate.is_file() {
             return Some(candidate);
@@ -61,7 +63,8 @@ pub async fn run(
     let step = job.step;
     if !job.program.is_file() {
         return Err(anyhow!(
-            "{} not found - build the Valhalla submodule, or set the binary directory in Settings",
+            "{} not found - it ships with a packaged build; otherwise build the Valhalla \
+             submodule or set the binary directory in Settings",
             job.program.display()
         ));
     }

@@ -1,6 +1,7 @@
 <script>
   // Per-source controls: order, visibility, opacity, terrain mode, and layer toggles.
   import { TERRAIN_MODES, layerSummary } from "./sources.js";
+  import { TERRAIN_MODE_HELP } from "./modes.js";
 
   let {
     sources = [], title = "", collapsed = false, emptyHint = "no layers — use + to add one",
@@ -94,7 +95,7 @@
       {#if source.terrain}
         <div class="modes" role="group" aria-label="terrain rendering">
           {#each TERRAIN_MODES as mode}
-            <button class:on={source.terrainMode === mode}
+            <button class:on={source.terrainMode === mode} title={TERRAIN_MODE_HELP[mode]}
                     onclick={() => onTerrainMode(source, mode)}>
               {mode === "terrain3d" ? "3D" : mode}
             </button>
