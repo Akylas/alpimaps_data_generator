@@ -26,6 +26,9 @@ pub fn settings_for(cli: &crate::Cli) -> Result<Settings> {
     settings.resource_dir = std::env::current_exe().ok().and_then(|exe| {
         exe.parent().map(|dir| dir.to_path_buf())
     });
+    // the same place the app downloads a jar to, so the two share one copy rather than each
+    // fetching 89 MB
+    settings.jar_dir = dirs_app_data().map(|dir| dir.join("planetiler"));
     if let Some(path) = cli.output_root.clone() {
         settings.output_root = path;
     }
@@ -33,6 +36,19 @@ pub fn settings_for(cli: &crate::Cli) -> Result<Settings> {
         settings.data_dir = path;
     }
     Ok(settings)
+}
+
+/// The app's data directory, matching what Tauri hands the desktop build.
+fn dirs_app_data() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    #[cfg(target_os = "macos")]
+    let dir = home.join("Library/Application Support/com.alpimaps.studio");
+    #[cfg(not(target_os = "macos"))]
+    let dir = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/share"))
+        .join("com.alpimaps.studio");
+    Some(dir)
 }
 
 /// Format a byte count for a terminal.

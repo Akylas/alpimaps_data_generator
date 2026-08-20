@@ -22,10 +22,13 @@ pub struct Args {
     /// Option override, repeatable: -o simplify_tolerance=0.7
     #[arg(short = 'o', long = "option", value_name = "KEY=VALUE")]
     pub options: Vec<String>,
-    /// Path to the planetiler jar. Defaults to the one shipped beside this binary, else a
-    /// checkout's `planetiler/planetiler-dist/target`.
+    /// Path to the planetiler jar. Defaults to a downloaded one, then the copy shipped beside
+    /// this binary, then a checkout's `planetiler/planetiler-dist/target`.
     #[arg(long)]
     pub jar: Option<PathBuf>,
+    /// Download the jar from this URL if none was found, and keep it for next time.
+    #[arg(long)]
+    pub jar_url: Option<String>,
     /// YAML schema to run instead of the bundled OpenMapTiles fork.
     #[arg(long)]
     pub schema: Option<PathBuf>,
@@ -152,11 +155,44 @@ pub async fn run(settings: &Settings, args: Args, routes: bool) -> Result<()> {
     // explicit -o wins over the preset, so a preset can be used as a starting point
     values.extend(parse_overrides(&defs, &args.options)?);
 
-    let jar = args
-        .jar
-        .clone()
-        .or_else(|| settings.planetiler_jar_path())
-        .ok_or_else(|| anyhow!("no planetiler jar found; pass --jar"))?;
+    let jar = match args.jar.clone().or_else(|| settings.planetiler_jar_path()) {
+        Some(jar) => jar,
+        None => {
+            let url = args
+                .jar_url
+                .clone()
+                .or_else(|| settings.planetiler_jar_url.clone())
+                .filter(|u| !u.trim().is_empty())
+                .ok_or_else(|| {
+                    anyhow!("no planetiler jar found; pass --jar, or --jar-url to fetch one")
+                })?;
+            let dir = settings
+                .jar_dir
+                .clone()
+                .ok_or_else(|| anyhow!("nowhere to keep a downloaded jar"))?;
+            let name = url.rsplit('/').next().unwrap_or("planetiler.jar");
+            let name = if name.ends_with("-with-deps.jar") {
+                name.to_string()
+            } else {
+                format!("{}-with-deps.jar", name.trim_end_matches(".jar"))
+            };
+            println!("fetching {url}");
+            let mut last = u8::MAX;
+            studio_core::steps::download::fetch_url(&url, &dir.join(name), |done, total| {
+                let percent = match total {
+                    Some(total) if total > 0 => ((done * 100) / total).min(100) as u8,
+                    _ => 0,
+                };
+                if percent != last {
+                    last = percent;
+                    print!("\r  {percent:>3}%");
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
+                }
+            })
+            .await?
+        }
+    };
     let java = match &args.java {
         // an explicit --java is taken at its word: the point of the flag is to run a JDK this
         // probe would not have picked

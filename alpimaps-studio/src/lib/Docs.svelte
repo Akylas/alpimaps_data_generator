@@ -121,15 +121,21 @@
 
     <h4>Tools</h4>
     <p class="note">
-      Resolved in this order: what Settings names, then the copy shipped inside the app, then a
-      repository checkout, then <code>PATH</code>. A packaged install has no checkout, so what it
-      finds is what was bundled with it.
+      Resolved in this order: what Settings names, then anything downloaded into the app's data
+      directory, then the copy shipped inside the app, then a repository checkout, then
+      <code>PATH</code>. A packaged install has no checkout, so what it finds is what was bundled
+      with it or fetched since.
     </p>
     <table>
       <tbody>
         <tr>
           <td>Planetiler jar</td>
-          <td><code class:missing={!resolved?.planetiler_jar}>{resolved?.planetiler_jar ?? "not found"}</code></td>
+          <td>
+            <code class:missing={!resolved?.planetiler_jar}>{resolved?.planetiler_jar ?? "not found"}</code>
+            {#if paths?.planetiler_jar_url}
+              <p class="note">fetched from <code>{paths.planetiler_jar_url}</code> when missing</p>
+            {/if}
+          </td>
         </tr>
         <tr>
           <td>valhalla.json</td>

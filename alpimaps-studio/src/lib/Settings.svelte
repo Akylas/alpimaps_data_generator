@@ -43,7 +43,8 @@
     ["sources_json", "sources.json", "terrain raster sources"],
   ];
   const OPTIONAL = [
-    ["planetiler_jar", "Planetiler jar", "blank = the one shipped with the app, else a checkout's build"],
+    ["planetiler_jar", "Planetiler jar", "blank = downloaded, else shipped with the app, else a checkout's build"],
+    ["planetiler_jar_url", "Planetiler jar URL", "where to fetch it when there is none. Must be a build of this pipeline's planetiler fork - an upstream jar builds a different schema"],
     ["java_home", "Java home", "blank = probe JAVA_HOME then PATH"],
     ["valhalla_bin_dir", "Valhalla binaries", "blank = shipped with the app, else a checkout, else PATH"],
     ["valhalla_config", "valhalla.json", "routing config template; blank = the one shipped with the app"],

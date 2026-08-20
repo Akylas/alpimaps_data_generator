@@ -36,6 +36,14 @@ pub struct Settings {
     /// Override for JRE discovery; `None` means probe `$JAVA_HOME` then `$PATH`.
     pub java_home: Option<PathBuf>,
     pub planetiler_jar: Option<PathBuf>,
+    /// Where to fetch the planetiler jar when there is none, so a released app need not carry
+    /// 89 MB it may never use.
+    ///
+    /// This pipeline runs a *fork* of planetiler - the route and landcover layers are not
+    /// upstream - so this cannot default to planetiler's own releases: a jar from there would
+    /// build a different schema without saying so. It stays empty until the fork publishes one.
+    #[serde(default)]
+    pub planetiler_jar_url: Option<String>,
     pub valhalla_bin_dir: Option<PathBuf>,
     /// The `valhalla.json` used as the template for routing. The embedded router validates the
     /// whole document, so a hand-written stub is not enough - this points at the real one.
@@ -56,6 +64,10 @@ pub struct Settings {
     /// first.
     #[serde(skip)]
     pub resource_dir: Option<PathBuf>,
+    /// Where a downloaded jar is kept: the app's data directory, which survives an app update
+    /// and is not inside the bundle. Discovered at run time like `resource_dir`.
+    #[serde(skip)]
+    pub jar_dir: Option<PathBuf>,
 }
 
 /// The newest `-with-deps.jar` in a directory. Several versions can sit side by side in a
@@ -109,12 +121,14 @@ impl Settings {
             sources_json: repo_root.join("sources.json"),
             java_home: None,
             planetiler_jar: None,
+            planetiler_jar_url: None,
             valhalla_bin_dir: Some(repo_root.join("valhalla/build")),
             valhalla_config: Some(repo_root.join("valhalla.json")),
             heap_mb: 12288,
             log_interval: "1s".into(),
             areas: Vec::new(),
             resource_dir: None,
+            jar_dir: None,
             repo_root,
         }
     }
@@ -149,14 +163,17 @@ impl Settings {
 
     /// The planetiler jar to run.
     ///
-    /// Configured first, then the copy shipped with the app, then the one the submodule builds.
-    /// A packaged install has no submodule, so the bundled jar is the only one it will find -
-    /// and a developer checkout finds the freshly built one without configuring anything.
+    /// Configured first, then one downloaded into the app's own data directory, then the copy
+    /// shipped inside the bundle, then the one the submodule builds. A packaged install has no
+    /// submodule; a developer checkout has no bundle; either finds a jar without being told.
     pub fn planetiler_jar_path(&self) -> Option<PathBuf> {
         if let Some(jar) = &self.planetiler_jar {
             if jar.is_file() {
                 return Some(jar.clone());
             }
+        }
+        if let Some(jar) = self.jar_dir.as_ref().and_then(|dir| newest_jar(dir)) {
+            return Some(jar);
         }
         if let Some(jar) = self.resource_dir.as_ref().and_then(|dir| newest_jar(dir)) {
             return Some(jar);

@@ -183,18 +183,32 @@ then `PATH`.**
 
 | Needed | Bundled as | In a checkout |
 | --- | --- | --- |
-| planetiler jar | `resources/*-with-deps.jar` | `planetiler/planetiler-dist/target` |
+| planetiler jar | `resources/*-with-deps.jar`, or downloaded on first use | `planetiler/planetiler-dist/target` |
 | `valhalla.json` | `resources/valhalla.json` | `<repo>/valhalla.json` |
 | `valhalla_build_tiles` | `resources/valhalla/` | `valhalla/build`, then `PATH` |
 | `alpimaps` | `resources/alpimaps` | the workspace target dir |
+| Valhalla's dylibs | `Frameworks/` (next to `resources/`, inside `Contents/Resources`) | Homebrew |
 
-`scripts/bundle_resources.sh` collects them; Tauri runs it as `beforeBundleCommand`. The OSM
+`scripts/bundle_resources.sh` collects them; Tauri runs it as `beforeBundleCommand`. Two knobs:
+`STRIP_JAR=0` keeps the jar's native libraries for every platform (it otherwise keeps only this
+one's, which is 13 MB), and `BUNDLE_JAR=0` leaves the jar out altogether so the app fetches one
+on first use into its data directory. That needs a jar published somewhere to fetch: this
+pipeline runs a **fork** of planetiler, so the URL is a setting rather than a default - a jar
+from planetiler's own releases would build a different schema without saying so. The OSM
 extracts, the elevation tiles and the Valhalla graph are deliberately **not** bundled - they are
 gigabytes, they are per-area, and they belong in the user's own directories. Docs → *Where things
 live* shows what each one resolved to on this machine, and says so when one is missing.
 
 The resource directory is discovered every launch and never written to `settings.json`: a
-packaged app's resources move with it, and a stored path would outlive an update.
+packaged app's resources move with it, and a stored path would outlive an update. A downloaded
+jar goes to the app's *data* directory instead, so it survives an app update.
+
+`scripts/verify_bundle.sh <bundle.app>` follows every library reference in a built bundle to a
+real file and runs the tools that can be run without opening a window. It found the bundled CLI
+still linking Homebrew: it links Valhalla like the app does, so it needed the same rewriting, and
+on the build machine it ran either way. The load commands have to be rewritten before
+the bundle exists, against a layout that is predicted rather than observed - that prediction has
+been wrong twice, and both times every static check passed while nothing could start.
 
 The area list comes from the output root rather than the config, because a half-finished build is
 in the output root and nowhere else.

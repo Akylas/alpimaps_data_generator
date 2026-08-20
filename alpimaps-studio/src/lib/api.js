@@ -28,6 +28,8 @@ async function devInvoke(cmd, args) {
     }
     case "step_options":
       return (await fetch(`${DEV_BASE}/step-options/${args.step}`)).json();
+    case "download_planetiler":
+      throw new Error("downloading is only available inside the app");
     case "reveal":
       throw new Error("the file manager is only reachable from the app");
     case "cli_reference":

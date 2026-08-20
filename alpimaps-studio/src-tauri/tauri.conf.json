@@ -34,7 +34,7 @@
     ],
     "resources": {
       "resources/": "resources/",
-      "resources/Frameworks/": "Frameworks/"
+      "frameworks/": "Frameworks/"
     },
     "macOS": {
       "minimumSystemVersion": "11.0"

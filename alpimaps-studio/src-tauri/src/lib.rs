@@ -43,6 +43,9 @@ impl Config {
         // the bundle's own files - the planetiler jar, valhalla.json, the Valhalla binaries.
         // A packaged install has no repository to fall back on, and this path moves with the
         // app, so it is discovered every launch rather than stored.
+        // a jar downloaded on demand lives in app data, outside the bundle, so it survives an
+        // update and a re-install does not have to fetch it again
+        settings.jar_dir = app.path().app_data_dir().ok().map(|dir| dir.join("planetiler"));
         settings.resource_dir = app.path().resource_dir().ok().map(|dir| {
             // tauri.conf maps `resources/` to `resources/`, so the files land one level inside
             // the resource directory rather than at its root
@@ -753,6 +756,41 @@ mod tests {
         assert!(command_lines("").is_empty());
         assert!(command_lines("Usage: alpimaps\nOptions:\n  --help\n").is_empty());
     }
+}
+
+/// Download the planetiler jar into the app's data directory.
+///
+/// The alternative is carrying it in the bundle, which is 89 MB for something an install that
+/// only inspects tiles never runs. The URL is a setting rather than a constant because this
+/// pipeline runs a fork of planetiler: a jar from planetiler's own releases would quietly build
+/// a different schema.
+#[tauri::command]
+async fn download_planetiler(app: AppHandle, config: State<'_, Config>) -> Result<String, String> {
+    let settings = config.get()?;
+    let url = settings
+        .planetiler_jar_url
+        .clone()
+        .filter(|u| !u.trim().is_empty())
+        .ok_or("no jar URL set - put one in Settings, or point at a jar directly")?;
+    let dir = settings.jar_dir.clone().ok_or("no app data directory")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    let name = url.rsplit('/').next().filter(|n| n.ends_with(".jar")).unwrap_or("planetiler.jar");
+    // the lookup takes the newest `-with-deps.jar`, so the download has to be named like one
+    let name = if name.ends_with("-with-deps.jar") {
+        name.to_string()
+    } else {
+        name.trim_end_matches(".jar").to_string() + "-with-deps.jar"
+    };
+    let target = dir.join(name);
+
+    let emitter = app.clone();
+    studio_core::steps::download::fetch_url(&url, &target, move |done, total| {
+        let _ = emitter.emit("jar-download", DownloadProgress { done, total });
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(target.display().to_string())
 }
 
 /// Show a file in the system file manager, selected rather than opened.
@@ -1582,6 +1620,7 @@ pub fn run() {
             resolved_defaults,
             cli_reference,
             reveal,
+            download_planetiler,
             save_preset,
             delete_preset,
             run_steps

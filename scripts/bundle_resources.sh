@@ -20,26 +20,53 @@ set -euo pipefail
 studio="$(cd "$(dirname "${BASH_SOURCE[0]}")/../alpimaps-studio" && pwd)"
 repo="$(dirname "$studio")"
 resources="$studio/src-tauri/resources"
-mkdir -p "$resources"
+# the dylibs live in their own source directory: mapping one directory to two destinations put
+# 34 MB of them in the bundle twice
+frameworks="$studio/src-tauri/frameworks"
+mkdir -p "$resources" "$frameworks"
 
 say() { printf '  %s\n' "$*"; }
 
 # --- the CLI ---------------------------------------------------------------------------------
 ( cd "$studio" && cargo build --release -p alpimaps-cli )
 cp "$studio/target/release/alpimaps" "$resources/alpimaps"
+# it links Valhalla too, so it needs the same treatment as the app - on the build machine it
+# runs either way, which is exactly why this was missed until a bundle was checked
+if [ "$(uname)" = Darwin ]; then
+  # Contents/Resources/resources -> Contents/Resources/Frameworks
+  "$repo/scripts/bundle_macos_dylibs.sh" \
+    "$resources/alpimaps" \
+    "$frameworks" \
+    "@executable_path/../Frameworks" >/dev/null
+fi
 say "alpimaps"
 
 # --- planetiler ------------------------------------------------------------------------------
-# the newest built jar; PLANETILER_JAR overrides, which is how CI points at a downloaded one
-jar="${PLANETILER_JAR:-}"
-if [ -z "$jar" ]; then
-  jar="$(ls -1 "$repo"/planetiler/planetiler-dist/target/*-with-deps.jar 2>/dev/null | sort | tail -1 || true)"
-fi
-if [ -n "$jar" ] && [ -f "$jar" ]; then
-  cp "$jar" "$resources/$(basename "$jar")"
-  say "$(basename "$jar")"
+# BUNDLE_JAR=0 leaves it out entirely: the app then fetches one on first use into its data
+# directory, from the URL in Settings. That is 89 MB off the download for an install that only
+# inspects tiles - but it needs a jar published somewhere to fetch, and this pipeline runs a
+# *fork* of planetiler, so the URL cannot default to planetiler's own releases: a jar from there
+# builds a different schema without saying so.
+if [ "${BUNDLE_JAR:-1}" = "0" ]; then
+  rm -f "$resources"/*-with-deps.jar
+  say "planetiler jar: not bundled (BUNDLE_JAR=0)"
 else
-  echo "  WARNING: no planetiler jar found; the packaged app will not build basemaps" >&2
+  jar="${PLANETILER_JAR:-}"
+  if [ -z "$jar" ]; then
+    jar="$(ls -1 "$repo"/planetiler/planetiler-dist/target/*-with-deps.jar 2>/dev/null | sort | tail -1 || true)"
+  fi
+  if [ -n "$jar" ] && [ -f "$jar" ]; then
+    # the fat jar carries native libraries for every platform at once; keep this one's
+    if [ "${STRIP_JAR:-1}" = "1" ] && command -v python3 >/dev/null; then
+      python3 "$repo/scripts/strip_jar_natives.py" "$jar" "$resources/$(basename "$jar")"
+    else
+      cp "$jar" "$resources/$(basename "$jar")"
+    fi
+    say "$(basename "$jar")"
+  else
+    echo "  WARNING: no planetiler jar found; the packaged app cannot build basemaps until one" >&2
+    echo "           is fetched from the URL in Settings" >&2
+  fi
 fi
 
 # --- valhalla.json ---------------------------------------------------------------------------
@@ -63,10 +90,13 @@ mkdir -p "$resources/valhalla"
 if [ -x "$repo/valhalla/build/valhalla_build_tiles" ]; then
   cp "$repo/valhalla/build/valhalla_build_tiles" "$resources/valhalla/valhalla_build_tiles"
   if [ "$(uname)" = Darwin ]; then
+    # Tauri's resource map is rooted at Contents/Resources, so `frameworks/ -> Frameworks/`
+    # lands at Contents/Resources/Frameworks. From Contents/Resources/resources/valhalla that is
+    # two levels up.
     "$repo/scripts/bundle_macos_dylibs.sh" \
       "$resources/valhalla/valhalla_build_tiles" \
-      "$resources/Frameworks" \
-      "@executable_path/../Frameworks"
+      "$frameworks" \
+      "@executable_path/../../Frameworks"
   fi
   say "valhalla_build_tiles"
 else
@@ -78,8 +108,9 @@ fi
 # the app links Valhalla, whose dependencies are Homebrew dylibs that will not exist on a user's
 # machine; this rewrites them to load from inside the bundle
 if [ "$(uname)" = Darwin ]; then
+  # Contents/MacOS -> Contents/Resources/Frameworks
   "$repo/scripts/bundle_macos_dylibs.sh" \
     "$studio/target/release/alpimaps-studio" \
-    "$resources/Frameworks" \
+    "$frameworks" \
     "@executable_path/../Resources/Frameworks"
 fi

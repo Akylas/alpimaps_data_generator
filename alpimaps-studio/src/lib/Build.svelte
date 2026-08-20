@@ -14,6 +14,25 @@
   let settings = $state(null);
   let areas = $state([]);
   let jarDefault = $state("");
+  let jarUrl = $state("");
+  let fetching = $state(null);
+
+  async function fetchJar() {
+    fetching = 0;
+    const off = await listen("jar-download", (e) => {
+      const { done, total } = e.payload;
+      fetching = total ? Math.round((done * 100) / total) : 0;
+    });
+    try {
+      jar = await invoke("download_planetiler");
+      jarDefault = jar;
+    } catch (err) {
+      lines = [...lines, `ERROR: ${err}`];
+    } finally {
+      off();
+      fetching = null;
+    }
+  }
   let steps = $state([]);
   let selected = $state(new Set());
   let planned = $state([]);
@@ -49,6 +68,7 @@
       settings = await invoke("get_settings");
       const defaults = await invoke("resolved_defaults");
       jarDefault = defaults.planetiler_jar ?? "";
+      jarUrl = settings.planetiler_jar_url ?? "";
       // the jar the app already found beats making someone paste the same path
       jar = settings.planetiler_jar ?? "";
       // areas come from the output root, not just the config: a half-finished build is in the
@@ -329,7 +349,20 @@
       {/if}
     </label>
     <label>Planetiler jar
-      <input bind:value={jar} placeholder={jarDefault || "not found - build the submodule"} />
+      <input bind:value={jar} placeholder={jarDefault || "none found"} />
+      {#if !jarDefault && !jar}
+        <span class="hint">
+          {#if jarUrl}
+            <button class="ghost tiny" onclick={fetchJar} disabled={!!fetching}>
+              {fetching ? `downloading ${fetching}%` : "Download it"}
+            </button>
+            from <code>{jarUrl}</code>
+          {:else}
+            Nothing to run builds with. Point Settings at a jar, or set a URL there to fetch one -
+            it has to be a build of this pipeline's planetiler fork.
+          {/if}
+        </span>
+      {/if}
     </label>
   </div>
   <div class="pair">
