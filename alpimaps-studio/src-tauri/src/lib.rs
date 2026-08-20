@@ -411,7 +411,11 @@ fn step_options(step: StepId) -> Vec<OptionDef> {
     match step {
         StepId::Routes => options::routes_options(),
         StepId::Basemap => options::basemap_options(),
-        _ => options::planetiler_common(),
+        StepId::TerrainRgb | StepId::Hillshade => options::terrain_options(),
+        StepId::ValhallaPackage => options::package_options(),
+        // the download and the two Valhalla binaries take paths and bounds, which are settings
+        // rather than per-run choices; showing planetiler's options here was simply wrong
+        StepId::DownloadOsm | StepId::ElevationTiles | StepId::ValhallaTiles => Vec::new(),
     }
 }
 
@@ -483,6 +487,158 @@ fn human_elapsed(d: std::time::Duration) -> String {
         format!("{}m{}s", secs / 60, secs % 60)
     } else {
         format!("{secs}s")
+    }
+}
+
+/// One `alpimaps` subcommand, as the binary itself describes it.
+#[derive(Serialize)]
+struct CliCommand {
+    name: String,
+    about: String,
+    help: String,
+}
+
+#[derive(Serialize)]
+struct CliReference {
+    /// Where the binary was found, if it was.
+    path: Option<String>,
+    /// `alpimaps --help`, verbatim.
+    usage: String,
+    commands: Vec<CliCommand>,
+    /// How to get the binary when it is missing.
+    hint: String,
+}
+
+/// Find the `alpimaps` binary: beside the app, then the workspace target dirs, then `PATH`.
+fn find_cli(app: &AppHandle) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("alpimaps"));
+            // in a bundle the CLI sits under Resources, not next to the executable
+            candidates.push(dir.join("../Resources/alpimaps"));
+            // cargo puts both binaries in the same target dir during development
+            candidates.push(dir.join("alpimaps.exe"));
+        }
+    }
+    if let Ok(dir) = app.path().resource_dir() {
+        candidates.push(dir.join("alpimaps"));
+    }
+    for path in candidates {
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).map(|dir| dir.join("alpimaps")).find(|p| p.is_file())
+}
+
+fn run_help(program: &Path, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new(program).args(args).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    (!text.trim().is_empty()).then_some(text)
+}
+
+/// The CLI's own help, read from the binary so the in-app reference cannot drift from it.
+///
+/// Nothing here is written down twice: the command list, every flag and every default come from
+/// `alpimaps --help`, which is generated from the same argument definitions the CLI parses with.
+#[tauri::command]
+fn cli_reference(app: AppHandle) -> CliReference {
+    let hint = "build it with `cargo build --release -p alpimaps-cli`, or put `alpimaps` on PATH"
+        .to_string();
+    let Some(path) = find_cli(&app) else {
+        return CliReference {
+            path: None,
+            usage: String::new(),
+            commands: Vec::new(),
+            hint,
+        };
+    };
+    let usage = run_help(&path, &["--help"]).unwrap_or_default();
+    let commands = command_lines(&usage)
+        .into_iter()
+        .map(|(name, about)| CliCommand {
+            help: run_help(&path, &[&name, "--help"]).unwrap_or_default(),
+            name,
+            about,
+        })
+        .collect();
+
+    CliReference { path: Some(path.display().to_string()), usage, commands, hint }
+}
+
+/// Pull `(name, description)` out of the Commands block of clap's top-level help.
+///
+/// Reading the binary's own help is what keeps the in-app reference from drifting: there is no
+/// second list of commands to forget to update. `help` is dropped - it documents clap, not this
+/// pipeline.
+fn command_lines(usage: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut in_commands = false;
+    for line in usage.lines() {
+        if line.trim_start().starts_with("Commands:") {
+            in_commands = true;
+            continue;
+        }
+        if !in_commands {
+            continue;
+        }
+        // the block ends at the first blank line; a continued description is indented further
+        // than the names and carries no name of its own
+        if line.trim().is_empty() {
+            break;
+        }
+        let mut parts = line.trim().splitn(2, char::is_whitespace);
+        let Some(name) = parts.next() else { continue };
+        if name.is_empty() || name == "help" {
+            continue;
+        }
+        out.push((name.to_string(), parts.next().unwrap_or("").trim().to_string()));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Real `alpimaps --help` output, trimmed. The parser has to stop at the blank line rather
+    /// than reading the Options block as more commands.
+    #[test]
+    fn reads_the_commands_block_and_stops_there() {
+        let usage = concat!(
+            "Build, inspect and serve AlpiMaps tile output\n",
+            "\n",
+            "Usage: alpimaps [OPTIONS] <COMMAND>\n",
+            "\n",
+            "Commands:\n",
+            "  catalog   List generated areas and their artifacts\n",
+            "  download  Download the area's OSM extract from Geofabrik\n",
+            "  help      Print this message\n",
+            "\n",
+            "Options:\n",
+            "      --repo <REPO>  Repository root\n",
+        );
+        let commands = command_lines(usage);
+        assert_eq!(
+            commands,
+            vec![
+                ("catalog".to_string(), "List generated areas and their artifacts".to_string()),
+                (
+                    "download".to_string(),
+                    "Download the area's OSM extract from Geofabrik".to_string()
+                ),
+            ]
+        );
+    }
+
+    /// No Commands block at all - a binary that failed to run, or one that is not clap - must
+    /// give nothing rather than garbage.
+    #[test]
+    fn no_commands_block_is_empty() {
+        assert!(command_lines("").is_empty());
+        assert!(command_lines("Usage: alpimaps\nOptions:\n  --help\n").is_empty());
     }
 }
 
@@ -680,7 +836,7 @@ async fn run_steps(
             continue;
         }
         if step == StepId::TerrainRgb || step == StepId::Hillshade {
-            match run_terrain(&settings, &req.area, step, tx.clone()).await {
+            match run_terrain(&settings, &req.area, step, &values, tx.clone()).await {
                 Ok(()) => {
                     record(true);
                     completed.push(step);
@@ -875,6 +1031,7 @@ async fn run_terrain(
     settings: &Settings,
     area: &str,
     step: StepId,
+    values: &BTreeMap<String, serde_json::Value>,
     tx: mpsc::Sender<StepEvent>,
 ) -> Result<(), String> {
     use studio_core::elevation::Encoding;
@@ -888,10 +1045,37 @@ async fn run_terrain(
     // terrain, kept because the app still reads those archives
     let suffix = if step == StepId::Hillshade { "hillshade" } else { "terrain" };
     let output = settings.area_dir(area).join(format!("{area}_{suffix}.mbtiles"));
-    let opts = render::TerrainOptions {
-        encoding: if step == StepId::Hillshade { Encoding::Mapbox } else { Encoding::Terrarium },
-        ..render::TerrainOptions::default()
+    // the form's values, with the schema's own "unset means the default" rule: an absent key
+    // leaves `TerrainOptions::default()` standing rather than asserting a guess at it
+    let num = |key: &str| values.get(key).and_then(|v| v.as_f64());
+    let text = |key: &str| values.get(key).and_then(|v| v.as_str()).map(str::to_string);
+    let defaults = render::TerrainOptions::default();
+    let encoding = match text("encoding").as_deref() {
+        Some(name) => Encoding::parse(name).ok_or_else(|| format!("unknown encoding `{name}`"))?,
+        None if step == StepId::Hillshade => Encoding::Mapbox,
+        None => defaults.encoding,
     };
+    let opts = render::TerrainOptions {
+        encoding,
+        minzoom: num("minzoom").map(|v| v as u8).unwrap_or(defaults.minzoom),
+        maxzoom: num("maxzoom").map(|v| v as u8).unwrap_or(defaults.maxzoom),
+        tile_size: num("tile_size").map(|v| v as u32).unwrap_or(defaults.tile_size),
+        round_digits: num("round_digits").map(|v| v as u32).unwrap_or(defaults.round_digits),
+        max_round_digits: num("max_round_digits")
+            .map(|v| v as u32)
+            .unwrap_or(defaults.max_round_digits),
+        blur_m: num("blur").unwrap_or(defaults.blur_m),
+        nodata_elevation: num("nodata_elevation").unwrap_or(defaults.nodata_elevation),
+    };
+    let shape = match text("poly_shape") {
+        Some(path) => Some(
+            studio_core::poly::Polygon::parse(std::path::Path::new(&path))
+                .map_err(|e| e.to_string())?,
+        ),
+        None => None,
+    };
+    let tile_buffer = num("tile_buffer").map(|v| v as u32).unwrap_or(0);
+    let as_png = text("format").as_deref() == Some("png");
 
     // bounds come from the area's basemap when there is one, so terrain matches its extent
     let bounds = catalog::discover(&settings.output_root)
@@ -910,7 +1094,21 @@ async fn run_terrain(
             let p: Vec<f64> = b.split(',').filter_map(|v| v.trim().parse().ok()).collect();
             (p.len() == 4).then(|| (p[0], p[1], p[2], p[3]))
         })
-        .ok_or("no basemap bounds to derive the terrain extent from")?;
+        .ok_or("no basemap bounds to derive the terrain extent from");
+    // an explicit box wins, then the shape's own bounds, then the area's basemap
+    let bounds = match text("bounds") {
+        Some(raw) => {
+            let p: Vec<f64> = raw.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+            if p.len() != 4 {
+                return Err("bounds want west,south,east,north".into());
+            }
+            (p[0], p[1], p[2], p[3])
+        }
+        None => match &shape {
+            Some(shape) => shape.bounds(),
+            None => bounds?,
+        },
+    };
 
     let name = format!("{area}_{suffix}");
     let progress = tx.clone();
@@ -942,10 +1140,21 @@ async fn run_terrain(
             for x in x0..=x1 {
                 for y in y0..=y1 {
                     done += 1;
+                    if let Some(shape) = &shape {
+                        let (w, s, e, n) = render::tile_bounds(zoom, x, y);
+                        let (dx, dy) = ((e - w) * tile_buffer as f64, (n - s) * tile_buffer as f64);
+                        if !shape.intersects_rect(w - dx, s - dy, e + dx, n + dy) {
+                            continue;
+                        }
+                    }
                     let Some(rgb) = render::render_tile(&mut source, zoom, x, y, &opts) else {
                         continue;
                     };
-                    let webp = render::to_webp(&rgb, opts.tile_size).map_err(|e| e.to_string())?;
+                    let webp = if as_png {
+                        render::to_png(&rgb, opts.tile_size).map_err(|e| e.to_string())?
+                    } else {
+                        render::to_webp(&rgb, opts.tile_size).map_err(|e| e.to_string())?
+                    };
                     // mbtiles rows are TMS, counting up from the south
                     let tms = (1u32 << zoom) - 1 - y;
                     stmt.execute((zoom, x, tms, &webp)).map_err(|e| e.to_string())?;
@@ -1075,6 +1284,7 @@ pub fn run() {
             build_state,
             clear_build_state,
             resolved_defaults,
+            cli_reference,
             save_preset,
             delete_preset,
             run_steps

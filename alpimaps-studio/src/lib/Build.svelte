@@ -2,6 +2,8 @@
   import { invoke, listen, isTauri } from "./api.js";
   import { onMount } from "svelte";
   import Section from "./Section.svelte";
+  import { buildConfig } from "./buildconfig.svelte.js";
+  import { commandFor } from "./cli.js";
 
   let { onFinished } = $props();
 
@@ -151,6 +153,15 @@
     values = { ...values, [step]: next };
   }
 
+  let copiedLine = $state("");
+  async function copy(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      copiedLine = text;
+      setTimeout(() => (copiedLine = ""), 1200);
+    } catch {}
+  }
+
   let logCopied = $state(false);
   async function copyLog() {
     try {
@@ -234,6 +245,15 @@
   // options for everything that will actually run, dependencies included - selecting two steps
   // used to leave only the last-clicked one configurable
   let optionSteps = $derived(planned.length ? planned : [...selected]);
+
+  // the CLI view shows this same run as a command line; it reads what the form holds rather
+  // than being told separately, so the two cannot describe different builds
+  $effect(() => {
+    buildConfig.area = area;
+    buildConfig.steps = optionSteps;
+    buildConfig.values = values;
+    buildConfig.defs = optionDefs;
+  });
   let ready = $derived(java && (jar || jarDefault) && area && selected.size && !running);
 </script>
 
@@ -355,6 +375,16 @@
 {#each optionSteps as step, i}
   <Section title={`3.${i + 1} · ${labelFor(step)}`} open={false}
            subtitle={setCountFor(step) ? `${setCountFor(step)} set` : "defaults"}>
+    {#if commandFor(step, area, values[step] ?? {}, optionDefs[step] ?? [])}
+      {@const line = commandFor(step, area, values[step] ?? {}, optionDefs[step] ?? [])}
+      <div class="asline">
+        <code>{line}</code>
+        <button class="ghost tiny" onclick={() => copy(line)}>
+          {copiedLine === line ? "copied" : "copy"}
+        </button>
+      </div>
+    {/if}
+
     <div class="presets">
       {#each presets.filter((p) => p.step === step) as p}
         <button class="ghost" title={p.description} onclick={() => applyPreset(p)}>{p.name}</button>
@@ -475,6 +505,11 @@
   .plan { font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis;
           white-space: nowrap; }
   .tag.soft { background: var(--line-2); color: var(--muted-2); }
+  .asline { display: flex; align-items: center; gap: 8px; background: var(--bg);
+            border: 1px solid var(--line-2); border-radius: var(--r); padding: 7px 9px;
+            margin-bottom: 10px; }
+  .asline code { flex: 1; color: var(--text-3); font-size: 11px; overflow-x: auto;
+                 white-space: nowrap; }
   .presets { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
   .presets input { width: 160px; margin: 0; }
   .opt { padding: 8px 10px; border-left: 2px solid var(--line-2); margin-bottom: 8px; }

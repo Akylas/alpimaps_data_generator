@@ -64,16 +64,16 @@ enum Command {
     Download(steps::tools::DownloadArgs),
     /// Download the elevation tiles the Valhalla graph bakes in.
     Elevation(steps::tools::ToolArgs),
-    /// Build the Valhalla routing graph from the OSM extract.
-    ValhallaTiles(steps::tools::ToolArgs),
-    /// Build terrain-RGB tiles with the older mapbox packing, named _hillshade.
-    Hillshade(steps::terrain::Args),
     /// Build the basemap vector tiles.
     Basemap(steps::planetiler::Args),
     /// Build the routes vector tiles.
     Routes(steps::planetiler::Args),
     /// Build terrain-RGB tiles from the sources in sources.json.
     Terrain(steps::terrain::Args),
+    /// Build terrain-RGB tiles with the older mapbox packing, named _hillshade.
+    Hillshade(steps::terrain::Args),
+    /// Build the Valhalla routing graph from the OSM extract.
+    ValhallaTiles(steps::tools::ToolArgs),
     /// Pack a Valhalla tile directory into a .vtiles routing package.
     Package(steps::valhalla::PackageArgs),
     /// Expand a .vtiles package back into a tile directory.

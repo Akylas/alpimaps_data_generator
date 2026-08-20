@@ -25,6 +25,9 @@ async function devInvoke(cmd, args) {
       return (await fetch(`${DEV_BASE}/steps`)).json();
     case "step_options":
       return (await fetch(`${DEV_BASE}/step-options/${args.step}`)).json();
+    case "cli_reference":
+      // the browser cannot run a binary; the app reads the real --help
+      return { path: null, usage: "", commands: [], hint: "available inside the app" };
     case "resolved_defaults": {
       const areas = await (await fetch(`${DEV_BASE}/catalog`)).json();
       return { planetiler_jar: null, valhalla_config: null, areas: areas.map((a) => a.name) };

@@ -6,6 +6,7 @@
   import { invoke } from "./api.js";
   import { onMount } from "svelte";
   import Section from "./Section.svelte";
+  import Cli from "./Cli.svelte";
 
   let steps = $state([]);
   let paths = $state(null);
@@ -42,14 +43,14 @@
       note: "The same planetiler run restricted to the route layer. Hiking and cycling relations only, which is why it is a fraction of the basemap's size.",
     },
     terrain_rgb: {
-      cli: "alpimaps terrain --area <area>",
+      cli: "alpimaps terrain --area <area> --poly-shape <area>.poly",
       writes: "<area>/<area>_terrain.mbtiles",
       note: "Terrarium-packed elevation from the sources in sources.json, lowest priority first. The map view draws hillshade from these; there is no contour archive any more.",
     },
     hillshade: {
-      cli: "alpimaps terrain --area <area> -o encoding=mapbox",
+      cli: "alpimaps hillshade --area <area>",
       writes: "<area>/<area>_hillshade.mbtiles",
-      note: "The same pyramid packed the mapbox way. It exists because older archives are named this and the app still reads them.",
+      note: "The same renderer packed the mapbox way. It exists because older archives are named this and the app still reads them.",
     },
     valhalla_tiles: {
       cli: "alpimaps valhalla-tiles --area <area>",
@@ -57,31 +58,12 @@
       note: "valhalla_build_tiles over the OSM extract, using the configured valhalla.json. Slow, and worth building once for a parent area covering everything you route in.",
     },
     valhalla_package: {
-      cli: "alpimaps package --area <area>",
+      cli: "alpimaps package --area <area> --poly <area>.poly",
       writes: "<area>/<area>.vtiles",
-      note: "Packs the graph tiles for one area into the archive the phone downloads. Takes its tile list from an existing package.",
+      note: "Packs the graph tiles for one area into the archive the phone downloads. --poly picks the tiles from the shape; --like copies another package's list.",
     },
   };
 
-  const CLI = [
-    ["alpimaps catalog", "List areas and artifacts, with sizes and zoom ranges."],
-    ["alpimaps state --area <area>", "What is already built, from the files on disk."],
-    ["alpimaps state --area <area> clear [step]", "Delete a step's output so it runs again."],
-    ["alpimaps state --area <area> forget [step]", "Drop the recorded options; output stays."],
-    ["alpimaps options <step>", "Every option a step accepts, with its default."],
-    ["alpimaps route --tiles <pkg> --point lon,lat --point lon,lat", "Route through a package."],
-    ["alpimaps profile --path <terrain.mbtiles> --point lon,lat …", "Sample elevation along a line."],
-    ["alpimaps serve <output_root>", "Serve the output for a browser or this app."],
-  ];
-
-  const FLAGS = [
-    ["--repo <dir>", "Repository root. Every other path defaults from it."],
-    ["--output <dir>", "Output root. Defaults to <repo>/alpimaps_mbtiles."],
-    ["--force", "Run even though the output is already there."],
-    ["--dry-run", "Print the command that would run, and stop."],
-    ["-o key=value", "Override one option; repeatable, checked against the step's schema."],
-    ["--preset <name>", "Start from a saved option set, then apply any -o on top."],
-  ];
 </script>
 
 <Section title="What this is" open={true}>
@@ -153,22 +135,9 @@
   </p>
 </Section>
 
-<Section title="Command line" open={false}>
-  <table>
-    <tbody>
-      {#each CLI as [cmd, what]}
-        <tr><td><code>{cmd}</code></td><td class="muted">{what}</td></tr>
-      {/each}
-    </tbody>
-  </table>
-  <h4>Flags worth knowing</h4>
-  <table>
-    <tbody>
-      {#each FLAGS as [flag, what]}
-        <tr><td><code>{flag}</code></td><td class="muted">{what}</td></tr>
-      {/each}
-    </tbody>
-  </table>
+<Section title="Command line" open={false}
+         subtitle="read from the binary, so it cannot drift">
+  <Cli />
 </Section>
 
 <Section title="Where things live" open={false}>
@@ -203,6 +172,4 @@
   td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
   /* break at spaces, not mid-flag: `--ar ea` is worse than a slightly wider column */
   td code { color: var(--text-3); overflow-wrap: break-word; }
-  h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted-2);
-       margin: 16px 0 6px; }
 </style>

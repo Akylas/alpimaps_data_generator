@@ -110,6 +110,72 @@ pub fn planetiler_common() -> Vec<OptionDef> {
     ]
 }
 
+/// Terrain-RGB options.
+///
+/// These are the renderer's own knobs, not planetiler flags - `flag` names the CLI flag so the
+/// same values can be shown as an `alpimaps terrain` command line. The step used to be handed
+/// `TerrainOptions::default()` regardless of what the form said.
+pub fn terrain_options() -> Vec<OptionDef> {
+    vec![
+        opt("minzoom", "minzoom", "Min zoom", "Zooms",
+            OptionKind::Int { min: Some(0), max: Some(15) }, "Lowest zoom rendered.", "5"),
+        opt("maxzoom", "maxzoom", "Max zoom", "Zooms",
+            OptionKind::Int { min: Some(0), max: Some(15) },
+            "Highest zoom rendered, and the zoom the quantisation ramp is anchored to.", "13"),
+        opt("encoding", "encoding", "Encoding", "Packing",
+            OptionKind::Choice { choices: vec!["terrarium".into(), "mapbox".into()] },
+            "How elevation is packed into RGB. terrarium is 1 m per step at round-digits 8;              mapbox is 0.1 m, which is what the older `_hillshade` archives use.",
+            "terrarium"),
+        opt("round_digits", "round-digits", "Round digits", "Packing",
+            OptionKind::Int { min: Some(0), max: Some(16) },
+            "Quantisation exponent at the maximum zoom. The step is `interval * 2^round_digits`,              so raising it coarsens elevation and compresses far better.",
+            "8"),
+        opt("max_round_digits", "max-round-digits", "Max round digits", "Packing",
+            OptionKind::Int { min: Some(0), max: Some(16) },
+            "Cap on the per-zoom ramp: lower zooms quantise more coarsely, up to this.",
+            "15"),
+        opt("tile_size", "tile-size", "Tile size", "Output",
+            OptionKind::Int { min: Some(256), max: Some(1024) }, "Pixels per side.", "512"),
+        opt("format", "format", "Format", "Output",
+            OptionKind::Choice { choices: vec!["webp".into(), "png".into()] },
+            "Lossless WebP is much smaller; PNG is for tools that will not read WebP.", "webp"),
+        opt("blur", "blur", "Source blend", "Sources",
+            float(0.0),
+            "Metres over which a higher-priority source fades in at its coverage boundary, so              the seam between IGN and tilezen data is a ramp rather than a step.",
+            "1000"),
+        opt("nodata_elevation", "nodata-elevation", "No-data elevation", "Sources",
+            OptionKind::Float { min: None, max: None },
+            "Elevation written where no source covers a pixel. build_terrain_rgb.py used -10 so              uncovered pixels read as sea; every archive in this repository was built with 0.",
+            "0"),
+        opt("poly_shape", "poly-shape", "Clip shape", "Sources",
+            OptionKind::Text,
+            "Path to an osmosis .poly. Only tiles touching the shape are written.",
+            "the whole bounding box"),
+        opt("tile_buffer", "tile-buffer", "Tile buffer", "Sources",
+            OptionKind::Int { min: Some(0), max: Some(8) },
+            "Ring of extra tiles around the shape. 3D renderers backfill a DEM tile's 1px border              from its neighbours, so without a ring there is a seam where coverage stops.",
+            "0"),
+        opt("bounds", "bounds", "Bounds", "Sources",
+            OptionKind::Text, "west,south,east,north.",
+            "the shape's bounds, else the area's basemap bounds"),
+    ]
+}
+
+/// Valhalla package options.
+pub fn package_options() -> Vec<OptionDef> {
+    vec![
+        opt("compression", "compression", "Compression", "Output",
+            OptionKind::Choice { choices: vec!["zopfli".into(), "zlib".into()] },
+            "Both emit ordinary gzip. zopfli is about 3% smaller and much slower.", "zopfli"),
+        opt("poly", "poly", "Tile selection shape", "Tiles",
+            OptionKind::Text,
+            "Path to an osmosis .poly. Every graph tile the shape touches is packed.",
+            "the tile list of the package already there"),
+        opt("levels", "levels", "Hierarchy levels", "Tiles",
+            OptionKind::Text, "Comma-separated Valhalla levels to include.", "0,1,2"),
+    ]
+}
+
 /// Basemap-only options, including the fork's landcover work.
 pub fn basemap_options() -> Vec<OptionDef> {
     let mut defs = planetiler_common();
