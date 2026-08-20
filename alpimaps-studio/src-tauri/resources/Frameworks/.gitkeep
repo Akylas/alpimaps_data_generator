@@ -1,0 +1,3 @@
+Tauri checks every declared resource path before the build starts, but the dylibs that land here
+are produced by beforeBundleCommand, which runs after it. The directory therefore has to exist in
+the checkout or a clean build fails with "resource path doesn't exist".

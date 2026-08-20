@@ -70,7 +70,10 @@ pub async fn run(
     }
     let _ = tx.send(StepEvent::Started { step, area: job.area.clone() }).await;
     let _ = tx
-        .send(StepEvent::Log { step, line: job.command_line().join(" ") })
+        .send(StepEvent::Log {
+            step,
+            line: job.command_line().iter().map(|a| super::shell_quote(a)).collect::<Vec<_>>().join(" "),
+        })
         .await;
 
     let mut child = Command::new(&job.program)

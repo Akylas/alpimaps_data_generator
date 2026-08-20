@@ -32,3 +32,11 @@ build_tiles.log
 *.aux.xml
 route_symbols.json
 valhalla_tiles.tar
+
+# Bundled at package time by scripts/bundle_resources.sh - the jar, the CLI, valhalla.json and
+# the collected dylibs. Large, machine-specific, and rebuilt on every release.
+alpimaps-studio/src-tauri/resources/*
+!alpimaps-studio/src-tauri/resources/.gitkeep
+!alpimaps-studio/src-tauri/resources/Frameworks/
+alpimaps-studio/src-tauri/resources/Frameworks/*
+!alpimaps-studio/src-tauri/resources/Frameworks/.gitkeep

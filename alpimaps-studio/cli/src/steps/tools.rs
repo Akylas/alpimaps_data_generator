@@ -101,28 +101,78 @@ pub struct ToolArgs {
     pub passthrough: Vec<String>,
 }
 
-/// `valhalla_build_elevation` - the `.hgt` tiles the graph bakes in.
+/// The `.hgt` tiles the graph bakes in, downloaded natively.
+///
+/// `valhalla_build_elevation` is a Python script; this does the same job without one, so neither
+/// the CLI nor the packaged app needs an interpreter.
 pub async fn elevation(settings: &Settings, args: ToolArgs) -> Result<()> {
-    let config = args.config.clone().unwrap_or_else(|| settings.valhalla_config_path());
-    let out = args.output.clone().unwrap_or_else(|| settings.elevation_tiles_dir.clone());
-    // `-d` writes decompressed .hgt, which is what the terrain step reads later
-    let mut tool_args = vec!["-v".to_string(), "-d".to_string()];
-    match &args.bbox {
-        // an explicit box beats the config: it is how you fetch a parent area's elevation
-        Some(bbox) => tool_args.extend(["-b".to_string(), bbox.clone()]),
-        None => tool_args.extend(["-c".to_string(), config.display().to_string()]),
-    }
-    tool_args.extend(["-o".to_string(), out.display().to_string()]);
-    tool_args.extend(args.passthrough.clone());
+    use studio_core::steps::elevation as hgt;
 
-    let job = ToolJob {
-        step: StepId::ElevationTiles,
-        area: args.area.clone(),
-        program: bin(&args, settings, "valhalla_build_elevation")?,
-        args: tool_args,
-        working_dir: settings.repo_root.clone(),
+    let out = args.output.clone().unwrap_or_else(|| settings.elevation_tiles_dir.clone());
+    let bounds = match &args.bbox {
+        Some(raw) => {
+            let p: Vec<f64> = raw.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+            if p.len() != 4 {
+                return Err(anyhow!("--bbox wants west,south,east,north"));
+            }
+            (p[0], p[1], p[2], p[3])
+        }
+        None => area_bounds(settings, &args.area)?,
     };
-    run_tool(settings, args, job, out).await
+
+    let tiles = hgt::tiles_for_bounds(bounds);
+    println!(
+        "{} tiles cover {:.2},{:.2},{:.2},{:.2} -> {}",
+        tiles.len(),
+        bounds.0,
+        bounds.1,
+        bounds.2,
+        bounds.3,
+        out.display()
+    );
+    if args.dry_run {
+        for tile in &tiles {
+            println!("  {}/{}", tile.dir, tile.name);
+        }
+        return Ok(());
+    }
+
+    let (downloaded, total) = hgt::fetch(&out, &tiles, false, |done, total| {
+        print!("\r  {done}/{total}   ");
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+    })
+    .await?;
+    println!("\n{downloaded} downloaded, {} already there", total - downloaded);
+
+    let _ = state::mark_done(
+        &settings.area_dir(&args.area),
+        StepId::ElevationTiles,
+        None,
+        &BTreeMap::new(),
+    );
+    Ok(())
+}
+
+/// The area's extent, from its basemap - the same source the terrain step uses, so the two cover
+/// the same ground.
+fn area_bounds(settings: &Settings, area: &str) -> Result<(f64, f64, f64, f64)> {
+    let raw = studio_core::catalog::discover(&settings.output_root)?
+        .into_iter()
+        .find(|a| a.name == area)
+        .and_then(|a| {
+            a.artifacts
+                .iter()
+                .find(|x| x.kind == studio_core::catalog::ArtifactKind::Basemap)?
+                .bounds
+                .clone()
+        })
+        .ok_or_else(|| anyhow!("no --bbox given and no basemap for `{area}` to take one from"))?;
+    let p: Vec<f64> = raw.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+    if p.len() != 4 {
+        return Err(anyhow!("the basemap's bounds are not west,south,east,north"));
+    }
+    Ok((p[0], p[1], p[2], p[3]))
 }
 
 fn bin(args: &ToolArgs, settings: &Settings, name: &str) -> Result<std::path::PathBuf> {
@@ -178,7 +228,9 @@ async fn run_tool(
 ) -> Result<()> {
     let step = job.step;
     if args.dry_run {
-        println!("{}", job.command_line().join(" "));
+        let quoted: Vec<String> =
+            job.command_line().iter().map(|a| studio_core::steps::shell_quote(a)).collect();
+        println!("{}", quoted.join(" "));
         return Ok(());
     }
     let occupied = std::fs::read_dir(&output).map(|mut e| e.next().is_some()).unwrap_or(false);

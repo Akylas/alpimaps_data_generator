@@ -205,7 +205,9 @@ pub async fn run(settings: &Settings, args: Args, routes: bool) -> Result<()> {
     };
 
     if args.dry_run {
-        println!("{}", job.command_line().join(" \\\n  "));
+        let quoted: Vec<String> =
+            job.command_line().iter().map(|a| studio_core::steps::shell_quote(a)).collect();
+        println!("{}", quoted.join(" \\\n  "));
         return Ok(());
     }
 

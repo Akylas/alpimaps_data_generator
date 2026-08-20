@@ -144,16 +144,19 @@ Every step runs from the app now:
 | Step | What runs |
 | --- | --- |
 | Download OSM | Geofabrik extract, resolved through their index rather than a guessed URL |
-| Elevation tiles | `valhalla_build_elevation` |
+| Elevation tiles | the `.hgt` tiles for the area's bounds, downloaded from the Skadi mirror |
 | Basemap, Routes | planetiler, as a subprocess |
 | Terrain RGB | the Rust renderer in `core/src/terrain` |
 | Hillshade | the same renderer with mapbox packing, which is all `_hillshade` ever was |
 | Valhalla tiles | `valhalla_build_tiles` |
 | Valhalla package | the Rust packer in `core/src/valhalla/package.rs` |
 
-The two Valhalla binaries stay subprocesses: both take an hour or more on a large area and
-neither has an embeddable form worth the linking. What the app adds over a shell is their output
-as events and a cancel that actually kills the process.
+`valhalla_build_tiles` stays a subprocess: it takes an hour or more on a large area and has no
+embeddable form worth the linking. What the app adds over a shell is its output as events and a
+cancel that actually kills the process. `valhalla_build_elevation` is *not* used - it is a Python
+script, and shipping it would put an interpreter in the app's dependencies for what is a naming
+convention and a download loop, so that is done natively. The output is byte-identical: the same
+`.hgt` files, checked against ones the script produced.
 
 ### Already built
 
@@ -182,7 +185,7 @@ then `PATH`.**
 | --- | --- | --- |
 | planetiler jar | `resources/*-with-deps.jar` | `planetiler/planetiler-dist/target` |
 | `valhalla.json` | `resources/valhalla.json` | `<repo>/valhalla.json` |
-| `valhalla_build_tiles`, `valhalla_build_elevation` | `resources/valhalla/` | `valhalla/build`, then `PATH` |
+| `valhalla_build_tiles` | `resources/valhalla/` | `valhalla/build`, then `PATH` |
 | `alpimaps` | `resources/alpimaps` | the workspace target dir |
 
 `scripts/bundle_resources.sh` collects them; Tauri runs it as `beforeBundleCommand`. The OSM

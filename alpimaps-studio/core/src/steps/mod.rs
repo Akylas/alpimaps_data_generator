@@ -1,4 +1,5 @@
 pub mod download;
+pub mod elevation;
 pub mod external;
 pub mod options;
 pub mod planetiler;
@@ -60,10 +61,10 @@ impl StepId {
                  is why it is a step of its own rather than planetiler's `--download`."
             }
             StepId::ElevationTiles => {
-                "Runs `valhalla_build_elevation` with `-d`, so the .hgt tiles land decompressed. \
-                 The Valhalla graph bakes elevation in during its own build, so these have to \
-                 exist before the tiles are built - and the terrain step reads the same files \
-                 afterwards."
+                "Downloads the 1-degree .hgt tiles covering the area from the public Skadi \
+                 mirror, decompressed. The Valhalla graph bakes elevation in during its own \
+                 build, so these have to exist before the graph is built - and the terrain step \
+                 reads the same files afterwards."
             }
             StepId::Basemap => {
                 "Planetiler over the OSM extract, with the bundled OpenMapTiles fork or a YAML \
@@ -101,7 +102,7 @@ impl StepId {
     pub fn reads(self) -> &'static str {
         match self {
             StepId::DownloadOsm => "the network",
-            StepId::ElevationTiles => "valhalla.json, for the bounds to cover",
+            StepId::ElevationTiles => "an area to cover, and the network",
             StepId::Basemap | StepId::Routes => "the OSM extract, the planetiler jar, Java 21+",
             StepId::TerrainRgb | StepId::Hillshade => "sources.json and the elevation tiles",
             StepId::ValhallaTiles => "the OSM extract, valhalla.json, the elevation tiles",
@@ -178,6 +179,19 @@ pub fn plan(requested: &[StepId]) -> Vec<StepId> {
     ordered
 }
 
+/// Quote an argument the way a shell needs it, for printing a command someone may paste.
+///
+/// Only for display: the argv handed to the process is unquoted, because it is passed as a list.
+/// It matters because the bundled jar lives inside `AlpiMaps Studio.app`, and a dry run that
+/// prints that path unquoted produces a line that does not run.
+pub fn shell_quote(arg: &str) -> String {
+    if !arg.is_empty() && arg.chars().all(|c| c.is_alphanumeric() || "_.,:/=+-@".contains(c)) {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', "'\\''"))
+    }
+}
+
 /// Emitted by every step, native or subprocess, so the UI has one shape to render.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -236,6 +250,18 @@ mod tests {
         for step in ALL_STEPS {
             assert!(p.contains(&step), "{step:?} missing");
         }
+    }
+
+    /// The bundled jar's path contains a space, so an unquoted dry run prints a line that does
+    /// not run when pasted.
+    #[test]
+    fn display_quoting_survives_a_path_with_a_space() {
+        assert_eq!(shell_quote("--mbtiles=/tmp/a.mbtiles"), "--mbtiles=/tmp/a.mbtiles");
+        assert_eq!(
+            shell_quote("/Applications/AlpiMaps Studio.app/planetiler.jar"),
+            "'/Applications/AlpiMaps Studio.app/planetiler.jar'"
+        );
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
     }
 
     #[test]

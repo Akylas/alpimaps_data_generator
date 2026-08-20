@@ -43,7 +43,16 @@ impl Config {
         // the bundle's own files - the planetiler jar, valhalla.json, the Valhalla binaries.
         // A packaged install has no repository to fall back on, and this path moves with the
         // app, so it is discovered every launch rather than stored.
-        settings.resource_dir = app.path().resource_dir().ok();
+        settings.resource_dir = app.path().resource_dir().ok().map(|dir| {
+            // tauri.conf maps `resources/` to `resources/`, so the files land one level inside
+            // the resource directory rather than at its root
+            let nested = dir.join("resources");
+            if nested.is_dir() {
+                nested
+            } else {
+                dir
+            }
+        });
         Self { path, settings: Mutex::new(settings) }
     }
 
@@ -602,6 +611,7 @@ fn find_cli(app: &AppHandle) -> Option<PathBuf> {
         }
     }
     if let Ok(dir) = app.path().resource_dir() {
+        candidates.push(dir.join("resources/alpimaps"));
         candidates.push(dir.join("alpimaps"));
     }
     for path in candidates {
@@ -802,7 +812,8 @@ async fn resolved_defaults(config: State<'_, Config>) -> Result<ResolvedDefaults
     }
     areas.sort();
     let bin_dirs = settings.valhalla_bin_dirs();
-    let valhalla_tools = ["valhalla_build_tiles", "valhalla_build_elevation"]
+    // only one external tool is left: the elevation tiles are downloaded natively
+    let valhalla_tools = ["valhalla_build_tiles"]
         .iter()
         .map(|name| {
             let found =
@@ -969,7 +980,20 @@ async fn run_steps(
             }
             continue;
         }
-        if step == StepId::ElevationTiles || step == StepId::ValhallaTiles {
+        if step == StepId::ElevationTiles {
+            match run_elevation(&settings, &req.area, tx.clone()).await {
+                Ok(()) => {
+                    record(true);
+                    completed.push(step);
+                }
+                Err(e) => {
+                    let _ = tx.send(StepEvent::Log { step, line: format!("ERROR: {e}") }).await;
+                    break;
+                }
+            }
+            continue;
+        }
+        if step == StepId::ValhallaTiles {
             let cancel = step_cancel(&cancel_tx);
             match run_valhalla_tool(&settings, &req.area, step, tx.clone(), cancel).await {
                 Ok(true) => {
@@ -1112,6 +1136,82 @@ async fn run_download(
     Ok(())
 }
 
+/// Download the `.hgt` tiles covering the area.
+///
+/// Native, rather than `valhalla_build_elevation`: that is a Python script, and shipping it would
+/// put a Python interpreter in the app's dependencies for a naming convention and a download loop.
+async fn run_elevation(
+    settings: &Settings,
+    area: &str,
+    tx: mpsc::Sender<StepEvent>,
+) -> Result<(), String> {
+    use studio_core::steps::elevation;
+
+    let step = StepId::ElevationTiles;
+    let _ = tx.send(StepEvent::Started { step, area: area.to_string() }).await;
+
+    let bounds = area_bounds(settings, area)
+        .ok_or("no bounds for this area yet - build the basemap first, or set a polygon")?;
+    let tiles = elevation::tiles_for_bounds(bounds);
+    let _ = tx
+        .send(StepEvent::Log {
+            step,
+            line: format!(
+                "{} tiles cover {:.2},{:.2},{:.2},{:.2}",
+                tiles.len(),
+                bounds.0,
+                bounds.1,
+                bounds.2,
+                bounds.3
+            ),
+        })
+        .await;
+
+    let progress = tx.clone();
+    // decompressed: the graph reads these and so does the terrain step
+    let (downloaded, total) = elevation::fetch(
+        &settings.elevation_tiles_dir,
+        &tiles,
+        false,
+        |done, total| {
+            let _ = progress.try_send(StepEvent::Progress {
+                step,
+                label: "tiles".into(),
+                percent: ((done * 100) / total.max(1)).min(100) as u8,
+            });
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let _ = tx
+        .send(StepEvent::Log {
+            step,
+            line: format!("{downloaded} downloaded, {} already there", total - downloaded),
+        })
+        .await;
+    let _ = tx
+        .send(StepEvent::Finished { step, ok: true, elapsed: None, outputs: vec![] })
+        .await;
+    Ok(())
+}
+
+/// The area's extent, from its basemap. The one thing every later step needs and none of them
+/// can invent.
+fn area_bounds(settings: &Settings, area: &str) -> Option<(f64, f64, f64, f64)> {
+    let bounds = catalog::discover(&settings.output_root)
+        .ok()?
+        .into_iter()
+        .find(|a| a.name == area)?
+        .artifacts
+        .iter()
+        .find(|a| a.kind == catalog::ArtifactKind::Basemap)?
+        .bounds
+        .clone()?;
+    let parts: Vec<f64> = bounds.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+    (parts.len() == 4).then(|| (parts[0], parts[1], parts[2], parts[3]))
+}
+
 /// Run one of the Valhalla command-line tools.
 ///
 /// `valhalla_build_elevation` fetches the `.hgt` tiles the graph bakes in; `valhalla_build_tiles`
@@ -1131,34 +1231,14 @@ async fn run_valhalla_tool(
         return Err(format!("no Valhalla config at {} - set one in Settings", config.display()));
     }
 
-    let (name, args) = match step {
-        StepId::ElevationTiles => (
-            "valhalla_build_elevation",
-            // `-d` writes decompressed .hgt, which is what the terrain step reads later; `-c`
-            // takes the bounds from the graph config rather than needing a bbox
-            vec![
-                "-v".to_string(),
-                "-d".to_string(),
-                "-c".to_string(),
-                config.display().to_string(),
-                "-o".to_string(),
-                settings.elevation_tiles_dir.display().to_string(),
-            ],
-        ),
-        _ => {
-            let pbf = studio_core::steps::download::extract_path(&settings.data_dir, area);
-            if !pbf.is_file() {
-                return Err(format!(
-                    "{} is missing - run the OSM download step first",
-                    pbf.display()
-                ));
-            }
-            (
-                "valhalla_build_tiles",
-                vec!["-c".to_string(), config.display().to_string(), pbf.display().to_string()],
-            )
-        }
-    };
+    let pbf = studio_core::steps::download::extract_path(&settings.data_dir, area);
+    if !pbf.is_file() {
+        return Err(format!("{} is missing - run the OSM download step first", pbf.display()));
+    }
+    let (name, args) = (
+        "valhalla_build_tiles",
+        vec!["-c".to_string(), config.display().to_string(), pbf.display().to_string()],
+    );
 
     let program = external::find_tool(bin_dirs.iter().map(|p| p.as_path()), name).ok_or_else(
         || {

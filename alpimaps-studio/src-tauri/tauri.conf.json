@@ -8,7 +8,7 @@
     "devUrl": "http://localhost:5183",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist",
-    "beforeBundleCommand": "bash -c '../../scripts/bundle_resources.sh'"
+    "beforeBundleCommand": "bash -c 'for p in ../scripts ../../scripts scripts; do [ -f \"$p/bundle_resources.sh\" ] && exec bash \"$p/bundle_resources.sh\"; done; echo \"bundle_resources.sh not found from $(pwd)\" >&2; exit 1'"
   },
   "app": {
     "windows": [
@@ -35,6 +35,9 @@
     "resources": {
       "resources/": "resources/",
       "resources/Frameworks/": "Frameworks/"
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0"
     }
   }
 }

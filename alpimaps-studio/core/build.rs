@@ -31,6 +31,12 @@ fn main() {
     println!("cargo:rerun-if-changed=src-cpp/valhalla_shim.cc");
     let mut cc = cc::Build::new();
     cc.cpp(true).file("src-cpp/valhalla_shim.cc").std("gnu++20").opt_level(2);
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        // Valhalla's headers use `std::filesystem::path`, which libc++ marks unavailable before
+        // 10.15. cc-rs otherwise defaults to 10.13 - and `tauri build` sets that explicitly -
+        // so the shim fails to compile in a release bundle while building fine in dev.
+        cc.flag("-mmacosx-version-min=11.0");
+    }
     for dir in includes {
         cc.include(dir);
     }

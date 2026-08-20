@@ -50,18 +50,29 @@ else
   echo "  WARNING: no valhalla.json; routing steps will have no config to start from" >&2
 fi
 
-# --- valhalla tools --------------------------------------------------------------------------
-# optional: without them the app still runs, and the two steps that need them say what is
-# missing rather than failing halfway
+# --- valhalla_build_tiles --------------------------------------------------------------------
+# The only external tool left: the graph builder. `valhalla_build_elevation` is not here on
+# purpose - it is a Python script, and downloading .hgt tiles is done natively instead, so the
+# app needs no interpreter.
+#
+# The binary links ~95 Homebrew dylibs, so copying it alone would produce something that runs
+# only on a machine with the same Homebrew installation. It gets the same treatment as the app:
+# its dependencies are collected into Frameworks and its load commands rewritten. From
+# Resources/valhalla/ that is one level up, hence the different prefix.
 mkdir -p "$resources/valhalla"
-for tool in valhalla_build_tiles valhalla_build_elevation; do
-  if [ -x "$repo/valhalla/build/$tool" ]; then
-    cp "$repo/valhalla/build/$tool" "$resources/valhalla/$tool"
-    say "$tool"
-  else
-    echo "  note: $tool not built; the packaged app will look for it on PATH" >&2
+if [ -x "$repo/valhalla/build/valhalla_build_tiles" ]; then
+  cp "$repo/valhalla/build/valhalla_build_tiles" "$resources/valhalla/valhalla_build_tiles"
+  if [ "$(uname)" = Darwin ]; then
+    "$repo/scripts/bundle_macos_dylibs.sh" \
+      "$resources/valhalla/valhalla_build_tiles" \
+      "$resources/Frameworks" \
+      "@executable_path/../Frameworks"
   fi
-done
+  say "valhalla_build_tiles"
+else
+  echo "  note: valhalla_build_tiles not built; the packaged app will look for it on PATH and" >&2
+  echo "        say so in Docs -> Where things live if it is not there either" >&2
+fi
 
 # --- dylibs (macOS) --------------------------------------------------------------------------
 # the app links Valhalla, whose dependencies are Homebrew dylibs that will not exist on a user's

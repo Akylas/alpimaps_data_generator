@@ -12,7 +12,7 @@ started any of the three ways produces the same bytes.
 | By hand | With the CLI |
 | --- | --- |
 | `scripts/download-osm.py geofabrik ${AREA}` | `alpimaps download --area ${AREA}` |
-| `valhalla_build_elevation -v -d -b $BOUNDS -o ./elevation_tiles` | `alpimaps elevation --area ${AREA} --bbox $BOUNDS` |
+| `valhalla_build_elevation -v -d -b $BOUNDS -o ./elevation_tiles` | `alpimaps elevation --area ${AREA}` (native, no Python) |
 | `java -jar $PLANETILER_JAR --area=${AREA} ... --exclude_layers=route` | `alpimaps basemap --area ${AREA}` |
 | `java -jar $PLANETILER_JAR --area=${AREA} ... --only_layers=route` | `alpimaps routes --area ${AREA}` |
 | `scripts/build_terrain_rgb.py --sources sources.json ...` | `alpimaps terrain --area ${AREA} --poly-shape $POLY` |
