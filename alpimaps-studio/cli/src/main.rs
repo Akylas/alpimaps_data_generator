@@ -24,10 +24,11 @@ pub struct Cli {
     #[arg(long, global = true, default_value = ".")]
     pub repo: PathBuf,
 
+    // Named `output_root`, not `output`: the field name is the clap id, and a global shares its
+    // id with any subcommand arg of the same name. With a global `--output`, `terrain --output
+    // file.mbtiles` set the output *root* and every later write looked for a directory inside an
+    // mbtiles file.
     /// Output root. Defaults to <repo>/alpimaps_mbtiles. Per-step `--output` names one file.
-    ///
-    /// The field name is the clap id, and a global shares its id with any subcommand arg of the
-    /// same name - which is how `terrain --output <file>` silently became the output *root*.
     #[arg(long, global = true)]
     pub output_root: Option<PathBuf>,
 

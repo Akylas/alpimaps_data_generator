@@ -1,9 +1,15 @@
 # AlpiMaps Studio
 
-Desktop front end for the AlpiMaps tile pipeline. See [`../docs/DESKTOP_APP_PLAN.md`](../docs/DESKTOP_APP_PLAN.md)
-for the full plan. Milestones **1.1–1.3** (spike, workspace, catalog), **2** (preview), **3** (generation) and
-part of **4** (native ports) are in. Still outstanding in 4: the GeoTIFF raster source for
-terrain, Valhalla routing preview, and packaging/notarisation.
+Two front ends over one pipeline: a desktop app, and `alpimaps`, a command line that replaces the
+shell scripts. See [`../docs/DESKTOP_APP_PLAN.md`](../docs/DESKTOP_APP_PLAN.md) for the full plan.
+Milestones **1.1–1.3** (spike, workspace, catalog), **2** (preview), **3** (generation) and **4**
+(native ports) are in. Outstanding: the GeoTIFF raster source for terrain, and
+packaging/notarisation.
+
+The two front ends are not layered on each other. The app runs the pipeline through a plan and
+skips what is already built; the command line runs exactly what the line says and skips nothing
+unless asked. Both call the same `studio-core`, so a build started either way produces the same
+bytes.
 
 ## Layout
 
@@ -133,8 +139,45 @@ Steps carry a dependency graph, so selecting only *Valhalla package* runs
 time: each planetiler run already gets its own `--tmpdir`, and serialising removes the whole
 class of sort-chunk corruption rather than just the instance that was hit.
 
-Terrain, hillshade and the valhalla steps are still shell scripts. They appear in the graph
-marked *not wired* and the runner says so rather than silently doing nothing.
+Every step runs from the app now:
+
+| Step | What runs |
+| --- | --- |
+| Download OSM | Geofabrik extract, resolved through their index rather than a guessed URL |
+| Elevation tiles | `valhalla_build_elevation` |
+| Basemap, Routes | planetiler, as a subprocess |
+| Terrain RGB | the Rust renderer in `core/src/terrain` |
+| Hillshade | the same renderer with mapbox packing, which is all `_hillshade` ever was |
+| Valhalla tiles | `valhalla_build_tiles` |
+| Valhalla package | the Rust packer in `core/src/valhalla/package.rs` |
+
+The two Valhalla binaries stay subprocesses: both take an hour or more on a large area and
+neither has an embeddable form worth the linking. What the app adds over a shell is their output
+as events and a cancel that actually kills the process.
+
+### Already built
+
+A step counts as built when **the files it produces are on disk and non-empty** - not because
+something recorded that it ran. Output built by the shell scripts, copied from another machine,
+or produced before any of this existed all count the same way, and deleting a file is all it
+takes to make the step run again.
+
+A record (`<area>/.studio-state.json`) sits alongside, but only as extra information: how long
+the step took, and the options it used, so an option edited since then reports as a reason to
+rebuild. Losing the record loses the timing and the option check, never the knowledge that the
+output exists.
+
+The plan skips anything already built. **Force** re-runs it, and **Delete output** is the honest
+way to make it run again - it removes the file rather than a flag saying to ignore it. Directories
+shared between areas (the elevation tiles, the raw Valhalla graph) are never deleted for you.
+
+### Paths it finds for itself
+
+The planetiler jar is discovered in `planetiler/planetiler-dist/target` when Settings has none,
+and the newest `-with-deps.jar` wins. The area list comes from the output root rather than the
+config, because a half-finished build is in the output root and nowhere else. `valhalla.json` is
+a setting, defaulting to `<repo>/valhalla.json` - the embedded router validates the whole
+document, so a hand-written stub is not enough.
 
 ### Options
 
@@ -171,13 +214,31 @@ encoded bytes directly, so quantisation banding and the seam between two sources
 themselves rather than as shading; **3D** drapes the DEM, which is how tile edges give themselves
 away - a mismatched edge is a cliff.
 
+Entering **3D** tilts the camera; leaving it flattens again, without overriding a pitch that was
+set by hand. A flat camera shows none of the tile edges the mode exists to reveal.
+
+**Route** mode picks which `.vtiles` package it routes on - an area can hold several, and the
+drawer reports the package and the `valhalla.json` actually loaded rather than leaving it to be
+inferred. The unpack cache is keyed by package, so a `.base` variant and the main package do not
+evict each other.
+
 **Tiles** mode dumps whichever tile was clicked as JSON, decoded from MVT or MLT, so attribute
 work can be checked against what is actually in the archive rather than against what the renderer
-chose to draw. **Grid** overlays tile boundaries with their z/x/y.
+chose to draw, with a copy button and ctrl/cmd-A scoped to the dump - a `pre` is not a text
+control, so select-all otherwise goes to the whole window. **Grid** overlays tile boundaries with
+their z/x/y.
 
 **Style** mode renders an archive through a real MapLibre style, edited in place. Whatever the
 style names its sources, they are repointed at the local server, so a style written for a hosted
 tileset renders the file on disk without editing its URLs.
+
+### Resizing
+
+Dragging the window edge used to blink the map. Every ResizeObserver callback called `resize()`,
+which reallocates the GL drawing buffer and clears it - and one resize per frame still blinks,
+because the clear and the repaint are not the same frame. The resize now waits for the drag to
+settle while CSS stretches the last good frame to the new box: briefly scaled rather than blank,
+crisp again once the pointer stops.
 
 ### Three bugs the rewrite exposed
 
@@ -259,25 +320,71 @@ ordinary browser. Start it with
 
 ## Command line
 
-`alpimaps` runs the same code the app runs, so a build started from a terminal and one started
-from the GUI produce the same bytes. It replaces the shell scripts it mirrors and keeps their
-shape.
+`alpimaps` replaces the shell scripts, not the app. A command line does what the line says: it
+runs the step, it does not consult a plan, and it skips nothing unless `--skip-existing` is
+passed. The build record is written for the app's benefit and never read back to decide anything.
+
+Every path is a flag. `--repo` only supplies defaults:
 
 ```
-alpimaps catalog --stats
+--repo             everything else defaults from it (default: .)
+--output-root      where areas are written        (default: <repo>/alpimaps_mbtiles)
+--data-dir         OSM extracts                   (default: <repo>/data/sources)
+--elevation-dir    .hgt tiles                     (default: <repo>/elevation_tiles)
+--sources-json     terrain sources                (default: <repo>/sources.json)
+--valhalla-bin     valhalla binaries              (default: <repo>/valhalla/build, then PATH)
+--valhalla-config  valhalla.json                  (default: <repo>/valhalla.json)
+```
+
+Each step also takes `--output` for the one file it writes.
+
+```bash
+alpimaps download --area rhone-alpes                     # or --url ... --output ...
+alpimaps elevation --area rhone-alpes --bbox 3.6,44.1,7.2,46.6
+alpimaps valhalla-tiles --area rhone-alpes -- --extra-arg
 alpimaps basemap --area rhone-alpes --preset measured -o simplify_tolerance=0.6
-alpimaps terrain --area rhone-alpes --maxzoom 13 --blur 1000
-alpimaps package --area rhone-alpes --compression zopfli
-alpimaps route  --tiles .../rhone-alpes.vtiles --point 5.72,45.19 --point 5.92,45.56
+alpimaps routes  --area rhone-alpes --output /tmp/routes.mbtiles
+alpimaps terrain --area rhone-alpes --poly-shape rhone-alpes.poly --maxzoom 13 -j 8
+alpimaps hillshade --area rhone-alpes --poly-shape rhone-alpes.poly
+alpimaps package --area rhone-alpes --poly rhone-alpes.poly --compression zopfli
+alpimaps route   --tiles .../rhone-alpes.vtiles --point 5.72,45.19 --point 5.92,45.56
 alpimaps profile --terrain .../rhone-alpes_terrain.mbtiles --point 6.5,45.35 --point 6.9,45.42
-alpimaps serve  --tiles .../rhone-alpes.vtiles
+alpimaps state   --area rhone-alpes                      # what is built, from the files
+alpimaps state   --area rhone-alpes clear terrain_rgb    # delete that step's output
+alpimaps serve   --tiles .../rhone-alpes.vtiles
 alpimaps options basemap --presets
 ```
+
+`--dry-run` prints what would run - the exact planetiler or Valhalla command line, the resolved
+download URL, the tile list a `--poly` selects - instead of running it.
 
 `-o key=value` overrides are checked against the same option schema the GUI form is generated
 from, so an unknown key is refused rather than forwarded. Planetiler ignores flags it does not
 recognise, which would otherwise turn a typo into a build that quietly used the default.
-`--dry-run` prints the exact command instead of running it.
+
+### Shapes
+
+`core/src/poly.rs` reads osmosis `.poly` and answers the question the tile steps actually ask:
+does this tile *touch* the shape. Corner tests alone get the interesting case wrong - a narrow
+shape crossing a tile without either containing a corner of the other - and dropping that tile
+leaves a hole in the middle of a valley.
+
+`terrain --poly-shape` clips which tiles are written, with `--tile-buffer` for a ring of extra
+tiles around the edge: 3D renderers backfill a DEM tile's 1px border from its neighbours, so
+without the ring there is a visible seam where coverage stops.
+
+`package --poly` works out the graph tiles itself, which is what `build_valhalla_package.py`
+needed a quadtree tilemask for. Selecting from the shape directly disagrees with a mask-built
+package on the fringe: against `rhone-alpes.poly` it drops three tiles the old package carries
+and adds one it lacks, and an independent point sampler agrees with the shape in all five cases.
+`--tilemask` still accepts the old base64 mask, and `--like` still copies another package's list.
+
+### One clap trap
+
+A global argument shares its clap id with a subcommand argument of the same name. With a global
+`--output`, `alpimaps terrain --output file.mbtiles` set the output *root*, and every later write
+looked for a directory inside an mbtiles file (`Not a directory (os error 20)`). The global is
+`--output-root` for that reason, and the ids no longer collide.
 
 Each binary crate carries its own `build.rs` including `valhalla-link.rs`. Cargo link directives
 do not propagate: `cargo:rustc-link-arg` applies only to the crate that emits it, so a binary
@@ -377,6 +484,13 @@ The parser never fails a line — anything unrecognised becomes `Log`. The forma
 contract and upstream merges move it.
 
 ## Tests
+
+`cargo test --workspace` is the whole suite and runs in about ten seconds.
+
+Two of them are worth calling out because they check against something other than themselves.
+`core/src/poly.rs` parses the repository's own `rhone-alpes.poly` and asserts Grenoble is inside
+it and Paris is not, so a parser that reads the format wrongly cannot pass by agreeing with its
+own idea of the format.
 
 `core/tests/real_log.rs` runs the parser over a real captured build log
 (`../bench/base.log`) and is self-calibrating: it counts percent-bearing bracketed lines

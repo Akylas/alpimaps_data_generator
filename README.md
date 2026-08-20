@@ -4,6 +4,30 @@
 That repo explains how to generate data to be used with [AlpiMaps](https://github.com/Akylas/alpimaps).
 It can also be used to generate mbtiles to be used with other projects like `tileserver-gl`, `qgis` ...
 
+Everything below is the pipeline run by hand, which is still the reference for what each step
+does. [`alpimaps-studio/`](alpimaps-studio/) packages the same pipeline two other ways: a desktop
+app, and an `alpimaps` command line that replaces the scripts. Same code underneath, so a build
+started any of the three ways produces the same bytes.
+
+| By hand | With the CLI |
+| --- | --- |
+| `scripts/download-osm.py geofabrik ${AREA}` | `alpimaps download --area ${AREA}` |
+| `valhalla_build_elevation -v -d -b $BOUNDS -o ./elevation_tiles` | `alpimaps elevation --area ${AREA} --bbox $BOUNDS` |
+| `java -jar $PLANETILER_JAR --area=${AREA} ... --exclude_layers=route` | `alpimaps basemap --area ${AREA}` |
+| `java -jar $PLANETILER_JAR --area=${AREA} ... --only_layers=route` | `alpimaps routes --area ${AREA}` |
+| `scripts/build_terrain_rgb.py --sources sources.json ...` | `alpimaps terrain --area ${AREA} --poly-shape $POLY` |
+| `scripts/build_hillshades.sh ...` | `alpimaps hillshade --area ${AREA} --poly-shape $POLY` |
+| `valhalla_build_tiles -c valhalla.json data/sources/...osm.pbf` | `alpimaps valhalla-tiles --area ${AREA}` |
+| `scripts/build_valhalla_package.py --id $AREA --poly $POLY ...` | `alpimaps package --area ${AREA} --poly $POLY` |
+
+The CLI takes every path as a flag and runs exactly the step you name; `--dry-run` prints the
+command or tile list it would use. `alpimaps state --area ${AREA}` reports which outputs already
+exist, and `state ... clear <step>` deletes one. Contours are not covered: they are drawn from the RGB terrain tiles now.
+
+```shell
+cd alpimaps-studio && cargo build --release -p alpimaps-cli   # target/release/alpimaps
+```
+
 ### macos
 
 ```shell

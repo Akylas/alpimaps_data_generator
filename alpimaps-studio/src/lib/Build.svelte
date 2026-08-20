@@ -288,14 +288,13 @@
       {@const disk = built[s.id]}
       <li class="steprow" class:on={selected.has(s.id)} class:auto>
         <button class="pick" onclick={() => toggle(s.id)} disabled={running}
-                title={s.implemented ? "include this step" : "not wired up yet"}>
+                title="include this step">
           <span class="box" class:checked={selected.has(s.id)} class:auto>
             {#if selected.has(s.id)}✓{:else if auto}+{/if}
           </span>
           <span class="sname">{s.label}</span>
         </button>
 
-        {#if !s.implemented}<span class="tag">not wired</span>{/if}
         {#if auto}<span class="tag soft">dependency</span>{/if}
 
         {#if st.state === "running"}

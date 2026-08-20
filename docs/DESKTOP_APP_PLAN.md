@@ -5,6 +5,21 @@ steps for any area, expose every step's options as a form, show progress, browse
 output with sizes, and inspect/compare/validate the resulting tiles — including live routing
 against the generated Valhalla package.
 
+## Status
+
+Milestones 1-4 are in, plus a second front end the plan did not call for: `alpimaps`, a command
+line that replaces the shell scripts rather than driving the app. Every step listed in the graph
+below runs from either front end.
+
+Departures from the plan as written:
+
+* **4.1** ships the `.hgt` path and the Lambert-93 inverse (hand-rolled, matching pyproj to
+  1e-7). The GeoTIFF raster source reads BigTIFF/ZSTD/float-predictor, but compositing IGN RGE
+  ALTI into a full run is not wired into the app's terrain step yet.
+* **4.3** went further than a port: tile selection reads the `.poly` directly instead of going
+  through a quadtree tilemask, so a package can be built for an area nothing has covered before.
+* **Not started:** packaging and notarisation.
+
 ## Decisions settled
 
 | question | decision | reason |
