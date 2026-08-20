@@ -1,4 +1,4 @@
-# AlpiMaps Studio — desktop app plan
+# Cairn — desktop app plan
 
 Replace the shell/Python pipeline with a desktop app that can run one, some, or all build
 steps for any area, expose every step's options as a form, show progress, browse generated
@@ -7,7 +7,7 @@ against the generated Valhalla package.
 
 ## Status
 
-Milestones 1-4 are in, plus a second front end the plan did not call for: `alpimaps`, a command
+Milestones 1-4 are in, plus a second front end the plan did not call for: `cairn`, a command
 line that replaces the shell scripts rather than driving the app. Every step listed in the graph
 below runs from either front end.
 
@@ -87,7 +87,7 @@ schema), valhalla binary dir, per-area poly files, per-step option presets.
 ## Architecture
 
 ```
-alpimaps-studio/
+cairn/
   src-tauri/
     src/
       main.rs

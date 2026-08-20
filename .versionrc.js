@@ -10,12 +10,12 @@
 // anyway. That is standard-version trying its extension-based resolution first and only then
 // the custom updater; the bump does happen. Noise, not failure.
 const cargo = {
-  filename: './alpimaps-studio/Cargo.toml',
+  filename: './cairn/Cargo.toml',
   updater: require('./tauriVersioner')
 };
 
 // tauri.conf.json has a plain top-level `version`, which the built-in JSON updater handles
-const tauriConf = { filename: './alpimaps-studio/src-tauri/tauri.conf.json', type: 'json' };
+const tauriConf = { filename: './cairn/src-tauri/tauri.conf.json', type: 'json' };
 
 module.exports = {
   bumpFiles: ['package.json', cargo, tauriConf],

@@ -1,0 +1,17 @@
+[package]
+name = "cairn-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "cairn"
+path = "src/main.rs"
+
+[dependencies]
+cairn-core = { path = "../core" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+# the terrain renderer is rayon-parallel; -j sizes its pool
+rayon = "1"

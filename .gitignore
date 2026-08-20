@@ -35,7 +35,7 @@ valhalla_tiles.tar
 
 # Bundled at package time by scripts/bundle_resources.sh - the jar, the CLI, valhalla.json and
 # the collected dylibs. Large, machine-specific, and rebuilt on every release.
-alpimaps-studio/src-tauri/resources/*
-!alpimaps-studio/src-tauri/resources/.gitkeep
-alpimaps-studio/src-tauri/frameworks/*
-!alpimaps-studio/src-tauri/frameworks/.gitkeep
+cairn/src-tauri/resources/*
+!cairn/src-tauri/resources/.gitkeep
+cairn/src-tauri/frameworks/*
+!cairn/src-tauri/frameworks/.gitkeep

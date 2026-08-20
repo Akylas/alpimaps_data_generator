@@ -3,7 +3,7 @@
 # Check a built .app: every library reference resolves to a file inside it, and everything that
 # can be run without opening a window, runs.
 #
-#   scripts/verify_bundle.sh "path/to/AlpiMaps Studio.app"
+#   scripts/verify_bundle.sh "path/to/Cairn.app"
 #
 # The load commands are rewritten before the bundle exists, against a layout that has to be
 # predicted - Tauri's resource map is rooted at Contents/Resources, so `frameworks/ ->
@@ -82,9 +82,9 @@ RES="$APP/Contents/Resources/resources"
 FRAMEWORKS="$APP/Contents/Resources/Frameworks"
 
 # --- the app binary and the libraries it loads ------------------------------------------------
-if [ -x "$MACOS/alpimaps-studio" ]; then
-  resolve_all "app binary" "$MACOS/alpimaps-studio" "$MACOS"
-  note "app binary: $(du -h "$MACOS/alpimaps-studio" | cut -f1), references resolved"
+if [ -x "$MACOS/cairn" ]; then
+  resolve_all "app binary" "$MACOS/cairn" "$MACOS"
+  note "app binary: $(du -h "$MACOS/cairn" | cut -f1), references resolved"
 else
   bad "no app binary in $MACOS"
 fi
@@ -103,9 +103,9 @@ else
 fi
 
 # --- the tools, which can be run without a window ---------------------------------------------
-if [ -x "$RES/alpimaps" ]; then
-  resolve_all "alpimaps" "$RES/alpimaps" "$RES"
-  runs "alpimaps CLI" "$RES/alpimaps" --version
+if [ -x "$RES/cairn" ]; then
+  resolve_all "cairn" "$RES/cairn" "$RES"
+  runs "cairn CLI" "$RES/cairn" --version
 else
   bad "the CLI is not in the bundle"
 fi

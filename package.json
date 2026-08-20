@@ -2,7 +2,7 @@
   "name": "alpimaps-data-generator",
   "private": true,
   "version": "0.1.0",
-  "description": "Release tooling for AlpiMaps Studio. The app itself lives in alpimaps-studio/.",
+  "description": "Release tooling for Cairn. The app itself lives in cairn/.",
   "scripts": {
     "release": "standard-version --commit-all",
     "release:dry": "standard-version --commit-all --dry-run"

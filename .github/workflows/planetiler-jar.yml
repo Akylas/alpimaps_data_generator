@@ -1,0 +1,154 @@
+# Build the planetiler fork and publish the jar on its own release.
+#
+# The jar is separate from the app on purpose. It is 76 MB, it changes on its own schedule, and
+# Cairn can fetch it at run time - so an app release does not have to carry it, and a schema
+# change does not have to wait for one.
+#
+# Two releases come out of a run:
+#
+#   planetiler-<version>   a fixed point, for pinning
+#   planetiler-latest      a tag that moves, so one URL always resolves to the newest jar:
+#                          .../releases/download/planetiler-latest/planetiler-with-deps.jar
+#
+# The moving tag is what makes "latest" work without an API call or a token. GitHub's own
+# /releases/latest cannot be used for this: it would name whichever release is newest overall,
+# which is usually an app release.
+#
+# GitHub Packages was the alternative. It is a Maven repository, and downloading from it needs a
+# token even for public packages - which an installed app does not have and should not need.
+name: Planetiler jar
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or SHA of the planetiler fork to build. Empty builds the submodule as pinned here.'
+        required: false
+        default: ''
+      mark_latest:
+        description: 'Also move the planetiler-latest tag to this build'
+        type: boolean
+        default: true
+  push:
+    # a submodule bump is the usual reason the jar needs rebuilding
+    paths: ['planetiler']
+    branches: [master, studio]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Take the requested revision of the fork
+        if: inputs.ref != ''
+        working-directory: planetiler
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$REF"
+          git checkout FETCH_HEAD
+
+      - name: Describe what is being built
+        id: describe
+        working-directory: planetiler
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse --short HEAD)"
+          # the fork tracks upstream tags, so `describe` gives something like v0.10.2-173-gabc1234
+          described="$(git describe --tags --always)"
+          version="${described#v}"
+          {
+            echo "sha=$sha"
+            echo "version=$version"
+            echo "tag=planetiler-$version"
+          } >> "$GITHUB_OUTPUT"
+          echo "building planetiler $version ($sha)"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build the jar
+        working-directory: planetiler
+        run: ./mvnw -B -DskipTests clean package
+
+      # The fat jar carries native libraries for every platform at once. This one is downloaded by
+      # apps on any platform, so nothing is stripped here - stripping belongs to the bundle, where
+      # the platform is known.
+      - name: Collect the jar
+        id: jar
+        run: |
+          set -euo pipefail
+          built="$(ls -1 planetiler/planetiler-dist/target/*-with-deps.jar | sort | tail -1)"
+          mkdir -p dist
+          # a stable name, because the download URL is written into the app's settings
+          cp "$built" dist/planetiler-with-deps.jar
+          size="$(du -h dist/planetiler-with-deps.jar | cut -f1)"
+          echo "built=$built" >> "$GITHUB_OUTPUT"
+          echo "size=$size" >> "$GITHUB_OUTPUT"
+          echo "$size from $(basename "$built")"
+
+      # A jar that cannot write an mbtiles is no use, and `--help` does not touch the SQLite
+      # native that writing one needs. Monaco is the smallest real area there is.
+      - name: Prove it builds something
+        run: |
+          set -euo pipefail
+          java -Xmx4g -jar dist/planetiler-with-deps.jar openmaptiles \
+            --download --area=monaco --force \
+            --mbtiles=/tmp/monaco.mbtiles --tmpdir=/tmp/ptmp
+          count="$(sqlite3 /tmp/monaco.mbtiles 'select count(*) from tiles')"
+          echo "monaco: $count tiles"
+          [ "$count" -gt 100 ] || { echo "suspiciously few tiles" >&2; exit 1; }
+
+      - name: Publish the versioned release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ steps.describe.outputs.tag }}
+          name: planetiler ${{ steps.describe.outputs.version }}
+          body: |
+            Planetiler jar built from [`${{ steps.describe.outputs.sha }}`](https://github.com/farfromrefug/planetiler/commit/${{ steps.describe.outputs.sha }}) of the fork.
+
+            This is the fork Cairn builds with - it carries the `route` and `landcover` layers,
+            which upstream planetiler does not. An upstream jar builds a different schema.
+
+            `planetiler-with-deps.jar` — ${{ steps.jar.outputs.size }}, verified by building monaco.
+          artifacts: dist/planetiler-with-deps.jar
+          allowUpdates: true
+          makeLatest: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The moving tag. `removeArtifacts` clears the old jar first, so the URL never serves a
+      # stale file alongside the new one.
+      - name: Move planetiler-latest
+        if: inputs.mark_latest != false
+        uses: ncipollo/release-action@v1
+        with:
+          tag: planetiler-latest
+          name: planetiler (latest)
+          body: |
+            Always the newest planetiler jar Cairn was built against — currently
+            **${{ steps.describe.outputs.version }}** (`${{ steps.describe.outputs.sha }}`).
+
+            The app fetches it from here when it has none:
+
+            ```
+            https://github.com/${{ github.repository }}/releases/download/planetiler-latest/planetiler-with-deps.jar
+            ```
+
+            Pin a version instead by pointing *Settings → Planetiler jar URL* at a
+            `planetiler-<version>` release.
+          artifacts: dist/planetiler-with-deps.jar
+          allowUpdates: true
+          removeArtifacts: true
+          makeLatest: false
+          token: ${{ secrets.GITHUB_TOKEN }}

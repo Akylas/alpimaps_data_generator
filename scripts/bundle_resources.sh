@@ -3,12 +3,12 @@
 # Collect everything the packaged app needs to run without this repository.
 #
 # A published build has no submodules, no scripts and no checkout: whatever the pipeline reaches
-# for at run time has to be inside the bundle. Run from `alpimaps-studio/` by Tauri's
+# for at run time has to be inside the bundle. Run from `cairn/` by Tauri's
 # `beforeBundleCommand`.
 #
 #   planetiler jar   the basemap and routes steps are a subprocess over this
 #   valhalla.json    the embedded router validates the whole document, so a stub will not do
-#   alpimaps         the CLI, and the in-app reference reads its --help
+#   cairn            the CLI, and the in-app reference reads its --help
 #   valhalla/*       the two build tools, when they have been built
 #
 # What is deliberately *not* bundled: the OSM extracts, the elevation tiles and the Valhalla
@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-studio="$(cd "$(dirname "${BASH_SOURCE[0]}")/../alpimaps-studio" && pwd)"
+studio="$(cd "$(dirname "${BASH_SOURCE[0]}")/../cairn" && pwd)"
 repo="$(dirname "$studio")"
 resources="$studio/src-tauri/resources"
 # the dylibs live in their own source directory: mapping one directory to two destinations put
@@ -28,18 +28,18 @@ mkdir -p "$resources" "$frameworks"
 say() { printf '  %s\n' "$*"; }
 
 # --- the CLI ---------------------------------------------------------------------------------
-( cd "$studio" && cargo build --release -p alpimaps-cli )
-cp "$studio/target/release/alpimaps" "$resources/alpimaps"
+( cd "$studio" && cargo build --release -p cairn-cli )
+cp "$studio/target/release/cairn" "$resources/cairn"
 # it links Valhalla too, so it needs the same treatment as the app - on the build machine it
 # runs either way, which is exactly why this was missed until a bundle was checked
 if [ "$(uname)" = Darwin ]; then
   # Contents/Resources/resources -> Contents/Resources/Frameworks
   "$repo/scripts/bundle_macos_dylibs.sh" \
-    "$resources/alpimaps" \
+    "$resources/cairn" \
     "$frameworks" \
     "@executable_path/../Frameworks" >/dev/null
 fi
-say "alpimaps"
+say "cairn"
 
 # --- planetiler ------------------------------------------------------------------------------
 # BUNDLE_JAR=0 leaves it out entirely: the app then fetches one on first use into its data
@@ -110,7 +110,7 @@ fi
 if [ "$(uname)" = Darwin ]; then
   # Contents/MacOS -> Contents/Resources/Frameworks
   "$repo/scripts/bundle_macos_dylibs.sh" \
-    "$studio/target/release/alpimaps-studio" \
+    "$studio/target/release/cairn" \
     "$frameworks" \
     "@executable_path/../Resources/Frameworks"
 fi
