@@ -248,8 +248,12 @@ async fn build_state_handler(
     let Some(root) = state.output_root.clone() else {
         return (StatusCode::NOT_FOUND, "no output root configured").into_response();
     };
+    // dev only: the browser has no settings store, so derive one from the root being served
+    let mut settings =
+        crate::settings::Settings::for_repo(root.parent().unwrap_or(&root).to_path_buf());
+    settings.output_root = root.clone();
     let statuses =
-        crate::steps::state::statuses(&root.join(&area), &area, &std::collections::BTreeMap::new());
+        crate::steps::state::statuses(&settings, &area, &std::collections::BTreeMap::new());
     Json(statuses).into_response()
 }
 

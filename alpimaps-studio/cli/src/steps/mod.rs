@@ -5,6 +5,7 @@ pub mod profile;
 pub mod serve;
 pub mod state;
 pub mod terrain;
+pub mod tools;
 pub mod valhalla;
 
 use anyhow::Result;

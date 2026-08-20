@@ -74,7 +74,7 @@ fn parse_bounds(raw: &str) -> Result<(f64, f64, f64, f64)> {
 pub fn run(settings: &Settings, args: Args) -> Result<()> {
     let area_dir = settings.area_dir(&args.area);
     let recorded = terrain_options(&args);
-    if !args.force && state::status(&area_dir, &args.area, StepId::TerrainRgb, &recorded).is_fresh() {
+    if !args.force && state::status(settings, &args.area, StepId::TerrainRgb, &recorded).is_fresh() {
         println!("Terrain RGB is already built for {} - pass --force to rebuild", args.area);
         return Ok(());
     }

@@ -1,3 +1,5 @@
+pub mod download;
+pub mod external;
 pub mod options;
 pub mod planetiler;
 pub mod state;
@@ -57,26 +59,7 @@ impl StepId {
 
     /// Whether the app can run this step itself, rather than it still being a shell script.
     pub fn is_implemented(self) -> bool {
-        matches!(
-            self,
-            StepId::Basemap | StepId::Routes | StepId::TerrainRgb | StepId::ValhallaPackage
-        )
-    }
-
-    /// What this step writes into the area directory, by name.
-    ///
-    /// This is what lets "already built" mean something on disk rather than only in a record:
-    /// the files are checked before a step is skipped. Steps that write outside the area
-    /// directory (the downloads, the raw Valhalla tile tree) list nothing.
-    pub fn outputs(self, area: &str) -> Vec<String> {
-        match self {
-            StepId::Basemap => vec![format!("{area}.mbtiles")],
-            StepId::Routes => vec![format!("{area}_routes.mbtiles")],
-            StepId::TerrainRgb => vec![format!("{area}_terrain.mbtiles")],
-            StepId::Hillshade => vec![format!("{area}_hillshade.mbtiles")],
-            StepId::ValhallaPackage => vec![format!("{area}.vtiles")],
-            StepId::DownloadOsm | StepId::ElevationTiles | StepId::ValhallaTiles => vec![],
-        }
+        true
     }
 
     /// Steps that write into the same planetiler temp tree and therefore must not overlap.
@@ -183,16 +166,12 @@ mod tests {
         assert!(plan(&[]).is_empty());
     }
 
-    /// Hillshade, the OSM download and valhalla_build_tiles are still shell scripts. The flag
-    /// must stay honest: a step claiming to be implemented that silently does nothing is worse
-    /// than one that says it is not wired.
+    /// Every step runs from the app now. The flag has to stay honest: one claiming to be
+    /// implemented that silently does nothing is worse than one that says it is not wired.
     #[test]
-    fn implemented_flag_matches_what_the_runner_handles() {
-        for step in [StepId::Basemap, StepId::Routes, StepId::TerrainRgb, StepId::ValhallaPackage] {
-            assert!(step.is_implemented(), "{step:?} is wired into the runner");
-        }
-        for step in [StepId::DownloadOsm, StepId::ElevationTiles, StepId::Hillshade, StepId::ValhallaTiles] {
-            assert!(!step.is_implemented(), "{step:?} is still a shell script");
+    fn every_step_is_wired_into_the_runner() {
+        for step in ALL_STEPS {
+            assert!(step.is_implemented(), "{step:?} is not wired into the runner");
         }
     }
 

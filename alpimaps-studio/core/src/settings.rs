@@ -103,6 +103,30 @@ impl Settings {
         self.output_root.join(area)
     }
 
+    /// The planetiler jar to run.
+    ///
+    /// Configured first, then the one built in the submodule - which is where it lands after
+    /// `mvn package`, and the only copy most checkouts have. Finding it beats making every
+    /// caller paste the same path.
+    pub fn planetiler_jar_path(&self) -> Option<PathBuf> {
+        if let Some(jar) = &self.planetiler_jar {
+            if jar.is_file() {
+                return Some(jar.clone());
+            }
+        }
+        let dir = self.repo_root.join("planetiler/planetiler-dist/target");
+        let mut jars: Vec<PathBuf> = std::fs::read_dir(dir)
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.to_string_lossy().ends_with("-with-deps.jar"))
+            .collect();
+        // several versions can sit side by side; the newest name wins, which is the one the
+        // submodule most recently built
+        jars.sort();
+        jars.pop()
+    }
+
     /// Where the Valhalla config template lives. Falls back to the repo checkout.
     pub fn valhalla_config_path(&self) -> PathBuf {
         self.valhalla_config

@@ -36,6 +36,12 @@ struct Cli {
 enum Command {
     /// List generated areas and their artifacts.
     Catalog(steps::catalog::Args),
+    /// Download the area's OSM extract from Geofabrik.
+    Download(steps::tools::DownloadArgs),
+    /// Download the elevation tiles the Valhalla graph bakes in.
+    Elevation(steps::tools::ToolArgs),
+    /// Build the Valhalla routing graph from the OSM extract.
+    ValhallaTiles(steps::tools::ToolArgs),
     /// Build the basemap vector tiles.
     Basemap(steps::planetiler::Args),
     /// Build the routes vector tiles.
@@ -65,6 +71,9 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Catalog(args) => steps::catalog::run(&settings, args),
+        Command::Download(args) => steps::tools::download(&settings, args).await,
+        Command::Elevation(args) => steps::tools::elevation(&settings, args).await,
+        Command::ValhallaTiles(args) => steps::tools::valhalla_tiles(&settings, args).await,
         Command::Basemap(args) => steps::planetiler::run(&settings, args, false).await,
         Command::Routes(args) => steps::planetiler::run(&settings, args, true).await,
         Command::Terrain(args) => steps::terrain::run(&settings, args),

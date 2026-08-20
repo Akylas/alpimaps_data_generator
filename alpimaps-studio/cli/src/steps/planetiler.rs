@@ -83,7 +83,13 @@ pub fn describe(status: &state::StepStatus) -> String {
         state::StepStatus::Built { outputs, elapsed, .. } => {
             let files: Vec<String> = outputs
                 .iter()
-                .map(|f| format!("{} {}", f.name, super::mb(f.bytes)))
+                .map(|f| {
+                    if f.dir {
+                        format!("{}/", f.name)
+                    } else {
+                        format!("{} {}", f.name, super::mb(f.bytes))
+                    }
+                })
                 .collect();
             match elapsed {
                 Some(e) => format!("{}, built in {e}", files.join(", ")),
@@ -103,15 +109,6 @@ pub fn human_elapsed(d: std::time::Duration) -> String {
     } else {
         format!("{secs}s")
     }
-}
-
-fn default_jar(settings: &Settings) -> Option<PathBuf> {
-    let dir = settings.repo_root.join("planetiler/planetiler-dist/target");
-    let entries = std::fs::read_dir(dir).ok()?;
-    entries
-        .flatten()
-        .map(|e| e.path())
-        .find(|p| p.to_string_lossy().ends_with("-with-deps.jar"))
 }
 
 pub async fn run(settings: &Settings, args: Args, routes: bool) -> Result<()> {
@@ -134,7 +131,7 @@ pub async fn run(settings: &Settings, args: Args, routes: bool) -> Result<()> {
 
     let jar = args
         .jar
-        .or_else(|| default_jar(settings))
+        .or_else(|| settings.planetiler_jar_path())
         .ok_or_else(|| anyhow!("no planetiler jar found; pass --jar"))?;
     let java = toolchain::find(None, &settings.repo_root.join(".jre"))
         .await
@@ -180,7 +177,7 @@ pub async fn run(settings: &Settings, args: Args, routes: bool) -> Result<()> {
     // the record is shared with the app, so a step built there is not rebuilt here
     let area_dir = settings.area_dir(&args.area);
     if !args.force {
-        let status = state::status(&area_dir, &args.area, step, &values);
+        let status = state::status(settings, &args.area, step, &values);
         if status.is_fresh() {
             println!(
                 "{} is already built for {} ({}) - pass --force to rebuild",

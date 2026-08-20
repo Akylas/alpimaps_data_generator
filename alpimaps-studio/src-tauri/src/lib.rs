@@ -486,6 +486,39 @@ fn human_elapsed(d: std::time::Duration) -> String {
     }
 }
 
+/// Paths the app resolves for itself, so the UI can show what will actually be used.
+#[derive(Serialize)]
+struct ResolvedDefaults {
+    planetiler_jar: Option<String>,
+    valhalla_config: Option<String>,
+    /// Areas found in the output root, which is where a half-finished build shows up.
+    areas: Vec<String>,
+}
+
+#[tauri::command]
+fn resolved_defaults(config: State<'_, Config>) -> Result<ResolvedDefaults, String> {
+    let settings = config.get()?;
+    let mut areas: Vec<String> = catalog::discover(&settings.output_root)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    for area in &settings.areas {
+        if !areas.contains(&area.name) {
+            areas.push(area.name.clone());
+        }
+    }
+    areas.sort();
+    Ok(ResolvedDefaults {
+        planetiler_jar: settings.planetiler_jar_path().map(|p| p.display().to_string()),
+        valhalla_config: settings
+            .valhalla_config_path()
+            .is_file()
+            .then(|| settings.valhalla_config_path().display().to_string()),
+        areas,
+    })
+}
+
 /// What is already built for an area, judged against the files on disk.
 ///
 /// Takes the current option values so a step whose options were edited since it ran reports as
@@ -498,7 +531,7 @@ fn build_state(
 ) -> Result<BTreeMap<StepId, build_state::StepStatus>, String> {
     let settings = config.get()?;
     let values = values.unwrap_or_default();
-    Ok(build_state::statuses(&settings.area_dir(&area), &area, &values))
+    Ok(build_state::statuses(&settings, &area, &values))
 }
 
 /// Forget what is known about a step's options, or delete what it produced.
@@ -516,7 +549,7 @@ fn clear_build_state(
     let dir = settings.area_dir(&area);
     match (step, delete_outputs.unwrap_or(false)) {
         (Some(step), true) => {
-            build_state::remove_outputs(&dir, &area, step).map_err(|e| e.to_string())
+            build_state::remove_outputs(&settings, &area, step).map_err(|e| e.to_string())
         }
         (Some(step), false) => {
             build_state::clear(&dir, step).map_err(|e| e.to_string())?;
@@ -526,7 +559,7 @@ fn clear_build_state(
             let mut removed = Vec::new();
             for step in ALL_STEPS {
                 removed.extend(
-                    build_state::remove_outputs(&dir, &area, step).map_err(|e| e.to_string())?,
+                    build_state::remove_outputs(&settings, &area, step).map_err(|e| e.to_string())?,
                 );
             }
             Ok(removed)
@@ -554,9 +587,10 @@ async fn run_steps(
     let java = detect_java(app.clone()).await?;
     let jar = req
         .jar
+        .filter(|j| !j.is_empty())
         .map(PathBuf::from)
-        .or(settings.planetiler_jar.clone())
-        .ok_or("no planetiler jar configured")?;
+        .or_else(|| settings.planetiler_jar_path())
+        .ok_or("no planetiler jar: build the submodule, or set one in Settings")?;
     let schema = match req.schema_yaml.as_deref() {
         Some(path) if !path.is_empty() => Schema::Yaml { path: PathBuf::from(path) },
         _ => Schema::OpenMapTiles,
@@ -586,7 +620,7 @@ async fn run_steps(
         let values = req.values.get(&step).cloned().unwrap_or_default();
         let forced = req.force_all || req.force.contains(&step);
         if !forced {
-            let status = build_state::status(&area_dir, &req.area, step, &values);
+            let status = build_state::status(&settings, &req.area, step, &values);
             if let build_state::StepStatus::Built { outputs, .. } = &status {
                 let names: Vec<String> = outputs
                     .iter()
@@ -617,8 +651,36 @@ async fn run_steps(
             }
         };
 
-        if step == StepId::TerrainRgb {
-            match run_terrain(&settings, &req.area, tx.clone()).await {
+        if step == StepId::DownloadOsm {
+            match run_download(&settings, &req.area, tx.clone()).await {
+                Ok(()) => {
+                    record(true);
+                    completed.push(step);
+                }
+                Err(e) => {
+                    let _ = tx.send(StepEvent::Log { step, line: format!("ERROR: {e}") }).await;
+                    break;
+                }
+            }
+            continue;
+        }
+        if step == StepId::ElevationTiles || step == StepId::ValhallaTiles {
+            let cancel = step_cancel(&cancel_tx);
+            match run_valhalla_tool(&settings, &req.area, step, tx.clone(), cancel).await {
+                Ok(true) => {
+                    record(true);
+                    completed.push(step);
+                }
+                Ok(false) => break,
+                Err(e) => {
+                    let _ = tx.send(StepEvent::Log { step, line: format!("ERROR: {e}") }).await;
+                    break;
+                }
+            }
+            continue;
+        }
+        if step == StepId::TerrainRgb || step == StepId::Hillshade {
+            match run_terrain(&settings, &req.area, step, tx.clone()).await {
                 Ok(()) => {
                     record(true);
                     completed.push(step);
@@ -641,15 +703,6 @@ async fn run_steps(
                     break;
                 }
             }
-            continue;
-        }
-        if !step.is_planetiler() {
-            let _ = tx
-                .send(StepEvent::Log {
-                    step,
-                    line: format!("{} is not implemented in the app yet - skipped", step.label()),
-                })
-                .await;
             continue;
         }
         let defs = match step {
@@ -676,17 +729,7 @@ async fn run_steps(
             log_interval: settings.log_interval.clone(),
         };
 
-        // bridge the run-wide broadcast onto this step's own channel; the task ends when the
-        // signal arrives or when the broadcast sender is dropped at the end of the run
-        let mut subscription = cancel_tx.subscribe();
-        let (step_tx, step_cancel) = mpsc::channel(1);
-        tokio::spawn(async move {
-            if subscription.recv().await.is_ok() {
-                let _ = step_tx.send(()).await;
-            }
-        });
-
-        let ok = run_cancellable(job, tx.clone(), step_cancel)
+        let ok = run_cancellable(job, tx.clone(), step_cancel(&cancel_tx))
             .await
             .map_err(|e| e.to_string())?;
         if !ok {
@@ -702,6 +745,127 @@ async fn run_steps(
     Ok(completed)
 }
 
+/// Bridge the run-wide cancel broadcast onto one step's channel.
+///
+/// The task ends when the signal arrives or when the broadcast sender is dropped at the end of
+/// the run - and a dropped sender must not read as a cancellation, which is what once killed
+/// builds that had simply finished.
+fn step_cancel(cancel_tx: &tokio::sync::broadcast::Sender<()>) -> mpsc::Receiver<()> {
+    let mut subscription = cancel_tx.subscribe();
+    let (step_tx, step_cancel) = mpsc::channel(1);
+    tokio::spawn(async move {
+        if subscription.recv().await.is_ok() {
+            let _ = step_tx.send(()).await;
+        }
+    });
+    step_cancel
+}
+
+/// Download the area's OSM extract, so the three steps that read it share one copy.
+async fn run_download(
+    settings: &Settings,
+    area: &str,
+    tx: mpsc::Sender<StepEvent>,
+) -> Result<(), String> {
+    use studio_core::steps::download;
+
+    let step = StepId::DownloadOsm;
+    let _ = tx.send(StepEvent::Started { step, area: area.to_string() }).await;
+
+    let mut last_percent = u8::MAX;
+    let progress = tx.clone();
+    let path = download::fetch(&settings.data_dir, area, |done, total| {
+        let percent = match total {
+            Some(total) if total > 0 => ((done * 100) / total).min(100) as u8,
+            _ => 0,
+        };
+        // one event per percent: a 400 MB extract otherwise emits thousands a second
+        if percent != last_percent {
+            last_percent = percent;
+            let _ = progress.try_send(StepEvent::Progress {
+                step,
+                label: "download".into(),
+                percent,
+            });
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let _ = tx
+        .send(StepEvent::Log { step, line: format!("wrote {}", path.display()) })
+        .await;
+    let _ = tx
+        .send(StepEvent::Finished {
+            step,
+            ok: true,
+            elapsed: None,
+            outputs: vec![path.display().to_string()],
+        })
+        .await;
+    Ok(())
+}
+
+/// Run one of the Valhalla command-line tools.
+///
+/// `valhalla_build_elevation` fetches the `.hgt` tiles the graph bakes in; `valhalla_build_tiles`
+/// builds the graph itself from the OSM extract. Both are subprocesses from the submodule build.
+async fn run_valhalla_tool(
+    settings: &Settings,
+    area: &str,
+    step: StepId,
+    tx: mpsc::Sender<StepEvent>,
+    cancel: mpsc::Receiver<()>,
+) -> Result<bool, String> {
+    use studio_core::steps::external::{self, ToolJob};
+
+    let bin_dir = settings.valhalla_bin_dir.clone();
+    let config = settings.valhalla_config_path();
+    if !config.is_file() {
+        return Err(format!("no Valhalla config at {} - set one in Settings", config.display()));
+    }
+
+    let (name, args) = match step {
+        StepId::ElevationTiles => (
+            "valhalla_build_elevation",
+            // `-d` writes decompressed .hgt, which is what the terrain step reads later; `-c`
+            // takes the bounds from the graph config rather than needing a bbox
+            vec![
+                "-v".to_string(),
+                "-d".to_string(),
+                "-c".to_string(),
+                config.display().to_string(),
+                "-o".to_string(),
+                settings.elevation_tiles_dir.display().to_string(),
+            ],
+        ),
+        _ => {
+            let pbf = studio_core::steps::download::extract_path(&settings.data_dir, area);
+            if !pbf.is_file() {
+                return Err(format!(
+                    "{} is missing - run the OSM download step first",
+                    pbf.display()
+                ));
+            }
+            (
+                "valhalla_build_tiles",
+                vec!["-c".to_string(), config.display().to_string(), pbf.display().to_string()],
+            )
+        }
+    };
+
+    let program = external::find_tool(bin_dir.as_deref(), name)
+        .ok_or_else(|| format!("{name} not found - build the Valhalla submodule"))?;
+    let job = ToolJob {
+        step,
+        area: area.to_string(),
+        program,
+        args,
+        working_dir: settings.repo_root.clone(),
+    };
+    external::run(job, tx, cancel).await.map_err(|e| e.to_string())
+}
+
 /// Build the terrain pyramid from `.hgt` sources.
 ///
 /// Reads only SRTM `.hgt`, which needs no projection library. The GeoTIFF raster sources in
@@ -710,17 +874,24 @@ async fn run_steps(
 async fn run_terrain(
     settings: &Settings,
     area: &str,
+    step: StepId,
     tx: mpsc::Sender<StepEvent>,
 ) -> Result<(), String> {
+    use studio_core::elevation::Encoding;
     use studio_core::terrain::{render, source};
 
-    let step = StepId::TerrainRgb;
     let _ = tx.send(StepEvent::Started { step, area: area.to_string() }).await;
 
     let sources_json = settings.sources_json.clone();
     let hgt_dir = settings.elevation_tiles_dir.clone();
-    let output = settings.area_dir(area).join(format!("{area}_terrain.mbtiles"));
-    let opts = render::TerrainOptions::default();
+    // the two differ only in packing: `_hillshade` is this pipeline's older mapbox-encoded
+    // terrain, kept because the app still reads those archives
+    let suffix = if step == StepId::Hillshade { "hillshade" } else { "terrain" };
+    let output = settings.area_dir(area).join(format!("{area}_{suffix}.mbtiles"));
+    let opts = render::TerrainOptions {
+        encoding: if step == StepId::Hillshade { Encoding::Mapbox } else { Encoding::Terrarium },
+        ..render::TerrainOptions::default()
+    };
 
     // bounds come from the area's basemap when there is one, so terrain matches its extent
     let bounds = catalog::discover(&settings.output_root)
@@ -741,7 +912,7 @@ async fn run_terrain(
         })
         .ok_or("no basemap bounds to derive the terrain extent from")?;
 
-    let name = format!("{area}_terrain");
+    let name = format!("{area}_{suffix}");
     let progress = tx.clone();
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         // sources.json is the pipeline's own definition of what to read, in priority order;
@@ -903,6 +1074,7 @@ pub fn run() {
             list_presets,
             build_state,
             clear_build_state,
+            resolved_defaults,
             save_preset,
             delete_preset,
             run_steps

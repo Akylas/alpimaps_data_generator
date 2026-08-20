@@ -10,6 +10,8 @@
   let downloading = $state(null);
 
   let settings = $state(null);
+  let areas = $state([]);
+  let jarDefault = $state("");
   let steps = $state([]);
   let selected = $state(new Set());
   let planned = $state([]);
@@ -41,8 +43,14 @@
     await detect();
     try {
       settings = await invoke("get_settings");
+      const defaults = await invoke("resolved_defaults");
+      jarDefault = defaults.planetiler_jar ?? "";
+      // the jar the app already found beats making someone paste the same path
       jar = settings.planetiler_jar ?? "";
-      area = settings.areas?.[0]?.name ?? "";
+      // areas come from the output root, not just the config: a half-finished build is in the
+      // output root and nowhere else, which is exactly when this view is needed
+      areas = defaults.areas ?? [];
+      area = areas[0] ?? settings.areas?.[0]?.name ?? "";
       steps = await invoke("list_steps");
       presets = await invoke("list_presets");
       for (const s of steps) {
@@ -226,7 +234,7 @@
   // options for everything that will actually run, dependencies included - selecting two steps
   // used to leave only the last-clicked one configurable
   let optionSteps = $derived(planned.length ? planned : [...selected]);
-  let ready = $derived(java && jar && area && selected.size && !running);
+  let ready = $derived(java && (jar || jarDefault) && area && selected.size && !running);
 </script>
 
 {#if !isTauri}
@@ -245,8 +253,19 @@
     <button onclick={downloadJre}>Download JRE 21</button>
   {/if}
   <div class="pair">
-    <label>Area<input bind:value={area} placeholder="rhone-alpes" /></label>
-    <label>Planetiler jar<input bind:value={jar} /></label>
+    <label>Area
+      {#if areas.length}
+        <select value={area} onchange={(e) => { area = e.target.value; refreshBuilt(); }}>
+          {#each areas as a}<option value={a}>{a}</option>{/each}
+          {#if !areas.includes(area)}<option value={area}>{area}</option>{/if}
+        </select>
+      {:else}
+        <input bind:value={area} placeholder="rhone-alpes" onchange={refreshBuilt} />
+      {/if}
+    </label>
+    <label>Planetiler jar
+      <input bind:value={jar} placeholder={jarDefault || "not found - build the submodule"} />
+    </label>
   </div>
   <div class="pair">
     <label>Schema
@@ -291,7 +310,7 @@
           <span class="stat">queued</span>
         {:else if disk?.state === "built"}
           <span class="stat ok" title={`${disk.outputs.map((f) => f.name).join(", ")}\n${fmtWhen(disk.finished_at)}`}>
-            built · {disk.outputs.map((f) => fmtSize(f.bytes)).join(" + ")}
+            built · {disk.outputs.map((f) => (f.dir ? "directory" : fmtSize(f.bytes))).join(" + ")}
           </span>
         {:else if disk?.state === "options_changed"}
           <span class="stat warnish" title={`changed: ${disk.changed.join(", ")}`}>
@@ -302,12 +321,15 @@
         {/if}
 
         {#if disk?.state === "built" || disk?.state === "options_changed"}
+          {@const files = (disk.outputs ?? []).filter((f) => !f.dir)}
           <button class="mini" class:on={force.has(s.id)} disabled={running}
                   title="run this step even though its output is there"
                   onclick={() => toggleForce(s.id)}>force</button>
-          <button class="mini danger" disabled={running}
-                  title="delete the output, so the step runs again"
-                  onclick={() => clearOutputs(s.id)}>delete</button>
+          {#if files.length}
+            <button class="mini danger" disabled={running}
+                    title="delete the output, so the step runs again"
+                    onclick={() => clearOutputs(s.id)}>delete</button>
+          {/if}
         {/if}
 
         {#if st.state === "running"}

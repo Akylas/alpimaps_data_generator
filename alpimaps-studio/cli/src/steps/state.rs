@@ -62,7 +62,7 @@ pub fn run(settings: &Settings, args: Args) -> Result<()> {
             };
             let mut removed = Vec::new();
             for step in steps {
-                removed.extend(state::remove_outputs(&dir, &args.area, step)?);
+                removed.extend(state::remove_outputs(settings, &args.area, step)?);
             }
             if removed.is_empty() {
                 println!("nothing to delete in {}", dir.display());
@@ -71,13 +71,19 @@ pub fn run(settings: &Settings, args: Args) -> Result<()> {
             }
         }
         None => {
-            let statuses = state::statuses(&dir, &args.area, &BTreeMap::new());
+            let statuses = state::statuses(settings, &args.area, &BTreeMap::new());
             for step in ALL_STEPS {
                 let line = match statuses.get(&step) {
                     Some(StepStatus::Built { outputs, elapsed, tracked, .. }) => {
                         let files: Vec<String> = outputs
                             .iter()
-                            .map(|f| format!("{} {}", f.name, super::mb(f.bytes)))
+                            .map(|f| {
+                                if f.dir {
+                                    format!("{}/", f.name)
+                                } else {
+                                    format!("{} {}", f.name, super::mb(f.bytes))
+                                }
+                            })
                             .collect();
                         format!(
                             "built  {}{}{}",

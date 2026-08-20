@@ -58,7 +58,7 @@ pub fn package(settings: &Settings, args: PackageArgs) -> Result<()> {
     let area_dir = settings.area_dir(&args.area);
     let recorded: std::collections::BTreeMap<String, serde_json::Value> =
         [("compression".to_string(), args.compression.clone().into())].into_iter().collect();
-    if !args.force && state::status(&area_dir, &args.area, StepId::ValhallaPackage, &recorded).is_fresh() {
+    if !args.force && state::status(settings, &args.area, StepId::ValhallaPackage, &recorded).is_fresh() {
         println!("Valhalla package is already built for {} - pass --force to rebuild", args.area);
         return Ok(());
     }

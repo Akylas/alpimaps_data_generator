@@ -20,17 +20,42 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::StepId;
+use crate::settings::Settings;
 
 const FILE_NAME: &str = ".studio-state.json";
 const VERSION: u32 = 1;
 
-/// One output file, as found on disk.
+/// One output, as found on disk. Some steps produce a directory rather than a file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputFile {
     pub name: String,
     pub bytes: u64,
     /// Seconds since the epoch. Formatting is the UI's business.
     pub modified: u64,
+    #[serde(default)]
+    pub dir: bool,
+}
+
+/// Where each step writes.
+///
+/// Not every step writes into the area directory: the OSM extract lands in planetiler's source
+/// downloads, the elevation tiles and the raw Valhalla graph in their own trees. Resolving all
+/// of them here is what lets one existence check cover every step.
+pub fn outputs_for(settings: &Settings, area: &str, step: StepId) -> Vec<PathBuf> {
+    let in_area = |name: String| vec![settings.area_dir(area).join(name)];
+    match step {
+        StepId::Basemap => in_area(format!("{area}.mbtiles")),
+        StepId::Routes => in_area(format!("{area}_routes.mbtiles")),
+        StepId::TerrainRgb => in_area(format!("{area}_terrain.mbtiles")),
+        StepId::Hillshade => in_area(format!("{area}_hillshade.mbtiles")),
+        StepId::ValhallaPackage => in_area(format!("{area}.vtiles")),
+        // planetiler names its downloads with underscores
+        StepId::DownloadOsm => {
+            vec![settings.data_dir.join(format!("{}.osm.pbf", area.replace('-', "_")))]
+        }
+        StepId::ElevationTiles => vec![settings.elevation_tiles_dir.clone()],
+        StepId::ValhallaTiles => vec![settings.repo_root.join("valhalla_tiles")],
+    }
 }
 
 /// One completed run of one step. Supplementary to the files, never a substitute for them.
@@ -74,8 +99,6 @@ pub enum StepStatus {
     },
     /// Output is there, but the options have been edited since it was produced.
     OptionsChanged { changed: Vec<String>, outputs: Vec<OutputFile> },
-    /// The step writes outside the area directory, so its output cannot be checked here.
-    Unknown,
 }
 
 impl StepStatus {
@@ -152,52 +175,66 @@ pub fn clear_all(area_dir: &Path) -> anyhow::Result<()> {
 
 /// Delete what a step produced, which is the honest way to make it run again.
 ///
-/// Returns the files actually removed.
-pub fn remove_outputs(area_dir: &Path, area: &str, step: StepId) -> anyhow::Result<Vec<String>> {
+/// Returns what was actually removed. Directories are left alone: the elevation tiles and the
+/// Valhalla graph are shared between areas and expensive to rebuild, so deleting them has to be
+/// a deliberate act outside this app.
+pub fn remove_outputs(
+    settings: &Settings,
+    area: &str,
+    step: StepId,
+) -> anyhow::Result<Vec<String>> {
     let mut removed = Vec::new();
-    for name in step.outputs(area) {
-        let path = area_dir.join(&name);
-        if path.exists() {
+    for path in outputs_for(settings, area, step) {
+        if path.is_file() {
             std::fs::remove_file(&path)?;
-            removed.push(name);
+            removed.push(name_of(&path));
         }
     }
-    let _ = clear(area_dir, step);
+    let _ = clear(&settings.area_dir(area), step);
     Ok(removed)
 }
 
-fn probe(area_dir: &Path, name: &str) -> Option<OutputFile> {
-    let meta = std::fs::metadata(area_dir.join(name)).ok()?;
-    if !meta.is_file() || meta.len() == 0 {
-        return None;
-    }
+fn name_of(path: &Path) -> String {
+    path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+}
+
+fn probe(path: &Path) -> Option<OutputFile> {
+    let meta = std::fs::metadata(path).ok()?;
     let modified = meta
         .modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    Some(OutputFile { name: name.to_string(), bytes: meta.len(), modified })
+    if meta.is_dir() {
+        // a directory counts when it holds something; an empty one is the same as absent
+        let empty = std::fs::read_dir(path).map(|mut e| e.next().is_none()).unwrap_or(true);
+        if empty {
+            return None;
+        }
+        return Some(OutputFile { name: name_of(path), bytes: 0, modified, dir: true });
+    }
+    if !meta.is_file() || meta.len() == 0 {
+        return None;
+    }
+    Some(OutputFile { name: name_of(path), bytes: meta.len(), modified, dir: false })
 }
 
 /// Judge one step from its output files, then from the record if there is one.
 pub fn status(
-    area_dir: &Path,
+    settings: &Settings,
     area: &str,
     step: StepId,
     options: &BTreeMap<String, Value>,
 ) -> StepStatus {
-    let expected = step.outputs(area);
-    if expected.is_empty() {
-        return StepStatus::Unknown;
-    }
-
+    let area_dir = settings.area_dir(area);
+    let expected = outputs_for(settings, area, step);
     let mut found = Vec::new();
     let mut missing = Vec::new();
-    for name in &expected {
-        match probe(area_dir, name) {
+    for path in &expected {
+        match probe(path) {
             Some(file) => found.push(file),
-            None => missing.push(name.clone()),
+            None => missing.push(name_of(path)),
         }
     }
     if !missing.is_empty() {
@@ -205,7 +242,7 @@ pub fn status(
     }
 
     let newest = found.iter().map(|f| f.modified).max().unwrap_or(0);
-    let Some(record) = load(area_dir).steps.remove(&step) else {
+    let Some(record) = load(&area_dir).steps.remove(&step) else {
         return StepStatus::Built {
             outputs: found,
             elapsed: None,
@@ -234,14 +271,14 @@ pub fn status(
 
 /// Status for every step, for the UI to render in one call.
 pub fn statuses(
-    area_dir: &Path,
+    settings: &Settings,
     area: &str,
     options: &BTreeMap<StepId, BTreeMap<String, Value>>,
 ) -> BTreeMap<StepId, StepStatus> {
     let empty = BTreeMap::new();
     super::ALL_STEPS
         .iter()
-        .map(|step| (*step, status(area_dir, area, *step, options.get(step).unwrap_or(&empty))))
+        .map(|step| (*step, status(settings, area, *step, options.get(step).unwrap_or(&empty))))
         .collect()
 }
 
@@ -273,10 +310,24 @@ mod tests {
         pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
     }
 
+    /// Settings whose output root is the temp dir itself, so `alps/` is the area directory.
+    fn settings_at(root: &Path) -> Settings {
+        let mut settings = Settings::for_repo(root.to_path_buf());
+        settings.output_root = root.to_path_buf();
+        settings
+    }
+
+    /// Create an area directory and return it, so a test can drop output into it.
+    fn area_dir(root: &Path) -> PathBuf {
+        let dir = root.join("alps");
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn no_output_means_the_step_has_to_run() {
         let dir = tempfile::tempdir().unwrap();
-        match status(dir.path(), "alps", StepId::Basemap, &BTreeMap::new()) {
+        match status(&settings_at(dir.path()), "alps", StepId::Basemap, &BTreeMap::new()) {
             StepStatus::Missing { missing } => assert_eq!(missing, vec!["alps.mbtiles"]),
             other => panic!("expected missing output, got {other:?}"),
         }
@@ -287,8 +338,8 @@ mod tests {
     #[test]
     fn output_alone_counts_as_built() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("alps.mbtiles"), b"x").unwrap();
-        let status = status(dir.path(), "alps", StepId::Basemap, &BTreeMap::new());
+        std::fs::write(area_dir(dir.path()).join("alps.mbtiles"), b"x").unwrap();
+        let status = status(&settings_at(dir.path()), "alps", StepId::Basemap, &BTreeMap::new());
         assert!(status.is_fresh());
         match status {
             StepStatus::Built { tracked, outputs, .. } => {
@@ -304,27 +355,27 @@ mod tests {
     #[test]
     fn an_empty_file_is_not_output() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("alps.mbtiles"), b"").unwrap();
-        assert!(!status(dir.path(), "alps", StepId::Basemap, &BTreeMap::new()).is_fresh());
+        std::fs::write(area_dir(dir.path()).join("alps.mbtiles"), b"").unwrap();
+        assert!(!status(&settings_at(dir.path()), "alps", StepId::Basemap, &BTreeMap::new()).is_fresh());
     }
 
     #[test]
     fn deleting_the_output_makes_it_run_again() {
         let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("alps.mbtiles");
+        let out = area_dir(dir.path()).join("alps.mbtiles");
         std::fs::write(&out, b"x").unwrap();
-        mark_done(dir.path(), StepId::Basemap, Some("2m".into()), &BTreeMap::new()).unwrap();
-        assert!(status(dir.path(), "alps", StepId::Basemap, &BTreeMap::new()).is_fresh());
+        mark_done(&area_dir(dir.path()), StepId::Basemap, Some("2m".into()), &BTreeMap::new()).unwrap();
+        assert!(status(&settings_at(dir.path()), "alps", StepId::Basemap, &BTreeMap::new()).is_fresh());
         std::fs::remove_file(&out).unwrap();
-        assert!(!status(dir.path(), "alps", StepId::Basemap, &BTreeMap::new()).is_fresh());
+        assert!(!status(&settings_at(dir.path()), "alps", StepId::Basemap, &BTreeMap::new()).is_fresh());
     }
 
     #[test]
     fn changing_an_option_makes_it_stale_and_says_which() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("alps.mbtiles"), b"x").unwrap();
-        mark_done(dir.path(), StepId::Basemap, None, &opts(&[("maxzoom", json!(14))])).unwrap();
-        match status(dir.path(), "alps", StepId::Basemap, &opts(&[("maxzoom", json!(13))])) {
+        std::fs::write(area_dir(dir.path()).join("alps.mbtiles"), b"x").unwrap();
+        mark_done(&area_dir(dir.path()), StepId::Basemap, None, &opts(&[("maxzoom", json!(14))])).unwrap();
+        match status(&settings_at(dir.path()), "alps", StepId::Basemap, &opts(&[("maxzoom", json!(13))])) {
             StepStatus::OptionsChanged { changed, .. } => assert_eq!(changed, vec!["maxzoom"]),
             other => panic!("expected changed options, got {other:?}"),
         }
@@ -343,10 +394,10 @@ mod tests {
     #[test]
     fn clearing_forgets_the_options_not_the_output() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("alps.mbtiles"), b"x").unwrap();
-        mark_done(dir.path(), StepId::Basemap, None, &opts(&[("maxzoom", json!(14))])).unwrap();
-        clear(dir.path(), StepId::Basemap).unwrap();
-        match status(dir.path(), "alps", StepId::Basemap, &opts(&[("maxzoom", json!(13))])) {
+        std::fs::write(area_dir(dir.path()).join("alps.mbtiles"), b"x").unwrap();
+        mark_done(&area_dir(dir.path()), StepId::Basemap, None, &opts(&[("maxzoom", json!(14))])).unwrap();
+        clear(&area_dir(dir.path()), StepId::Basemap).unwrap();
+        match status(&settings_at(dir.path()), "alps", StepId::Basemap, &opts(&[("maxzoom", json!(13))])) {
             StepStatus::Built { tracked, .. } => assert!(!tracked),
             other => panic!("expected built and untracked, got {other:?}"),
         }
@@ -355,21 +406,37 @@ mod tests {
     #[test]
     fn removing_outputs_is_what_makes_a_step_run_again() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("alps.mbtiles"), b"x").unwrap();
-        let removed = remove_outputs(dir.path(), "alps", StepId::Basemap).unwrap();
+        std::fs::write(area_dir(dir.path()).join("alps.mbtiles"), b"x").unwrap();
+        let removed = remove_outputs(&settings_at(dir.path()), "alps", StepId::Basemap).unwrap();
         assert_eq!(removed, vec!["alps.mbtiles"]);
-        assert!(!status(dir.path(), "alps", StepId::Basemap, &BTreeMap::new()).is_fresh());
+        assert!(!status(&settings_at(dir.path()), "alps", StepId::Basemap, &BTreeMap::new()).is_fresh());
     }
 
-    /// Steps that write outside the area directory cannot be judged from it, and must not be
-    /// reported as built just because nothing is missing.
+    /// Not every step writes into the area directory. The OSM extract lands in planetiler's
+    /// download folder, and it has to be judged there rather than reported as unknowable.
     #[test]
-    fn steps_writing_elsewhere_are_unknown() {
+    fn steps_writing_outside_the_area_are_still_checked() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(
-            status(dir.path(), "alps", StepId::DownloadOsm, &BTreeMap::new()),
-            StepStatus::Unknown
-        );
-        assert!(!StepStatus::Unknown.is_fresh());
+        let settings = settings_at(dir.path());
+        assert!(!status(&settings, "alps", StepId::DownloadOsm, &BTreeMap::new()).is_fresh());
+
+        std::fs::create_dir_all(&settings.data_dir).unwrap();
+        std::fs::write(settings.data_dir.join("alps.osm.pbf"), b"x").unwrap();
+        assert!(status(&settings, "alps", StepId::DownloadOsm, &BTreeMap::new()).is_fresh());
+    }
+
+    /// The elevation tiles are a directory, not a file: an empty one is the same as absent.
+    #[test]
+    fn a_directory_output_counts_when_it_holds_something() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = settings_at(dir.path());
+        std::fs::create_dir_all(&settings.elevation_tiles_dir).unwrap();
+        assert!(!status(&settings, "alps", StepId::ElevationTiles, &BTreeMap::new()).is_fresh());
+
+        std::fs::write(settings.elevation_tiles_dir.join("N45E006.hgt"), b"x").unwrap();
+        match status(&settings, "alps", StepId::ElevationTiles, &BTreeMap::new()) {
+            StepStatus::Built { outputs, .. } => assert!(outputs[0].dir),
+            other => panic!("expected built, got {other:?}"),
+        }
     }
 }

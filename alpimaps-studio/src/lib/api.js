@@ -25,6 +25,10 @@ async function devInvoke(cmd, args) {
       return (await fetch(`${DEV_BASE}/steps`)).json();
     case "step_options":
       return (await fetch(`${DEV_BASE}/step-options/${args.step}`)).json();
+    case "resolved_defaults": {
+      const areas = await (await fetch(`${DEV_BASE}/catalog`)).json();
+      return { planetiler_jar: null, valhalla_config: null, areas: areas.map((a) => a.name) };
+    }
     case "build_state":
       return (await fetch(`${DEV_BASE}/build-state/${args.area}`)).json();
     case "list_presets":

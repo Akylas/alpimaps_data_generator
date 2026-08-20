@@ -3,11 +3,15 @@
   import MapView from "./lib/MapView.svelte";
   import Build from "./lib/Build.svelte";
   import Settings from "./lib/Settings.svelte";
+  import Docs from "./lib/Docs.svelte";
 
   let tab = $state("areas");
   let areasRef = $state(null);
 
-  const TABS = [["areas", "Output"], ["map", "Map"], ["build", "Build"], ["settings", "Settings"]];
+  const TABS = [
+    ["areas", "Output"], ["map", "Map"], ["build", "Build"],
+    ["settings", "Settings"], ["docs", "Docs"],
+  ];
 
   // digits switch tabs, the way every other tool with a tab bar does - but not while someone is
   // typing a path into a field
@@ -15,7 +19,7 @@
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     const el = event.target;
     if (el instanceof HTMLElement && (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName))) return;
-    const index = "1234".indexOf(event.key);
+    const index = "12345".indexOf(event.key);
     if (index < 0) return;
     tab = TABS[index][0];
   }
@@ -42,8 +46,10 @@
     <MapView />
   {:else if tab === "build"}
     <Build onFinished={() => areasRef?.refresh()} />
-  {:else}
+  {:else if tab === "settings"}
     <Settings />
+  {:else}
+    <Docs />
   {/if}
 </main>
 
