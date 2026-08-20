@@ -1240,6 +1240,34 @@ async fn run_valhalla_tool(
         vec!["-c".to_string(), config.display().to_string(), pbf.display().to_string()],
     );
 
+    // the graph bakes elevation in while it builds, reading the same .hgt directory the terrain
+    // step uses. Missing tiles are not an error there either - the graph just comes out with no
+    // grades - so they are fetched first.
+    if step == StepId::ValhallaTiles {
+        if let Some(bounds) = area_bounds(settings, area) {
+            let progress = tx.clone();
+            let (got, total) = studio_core::steps::elevation::ensure(
+                &settings.elevation_tiles_dir,
+                bounds,
+                |done, total| {
+                    let _ = progress.try_send(StepEvent::Progress {
+                        step,
+                        label: "elevation".into(),
+                        percent: ((done * 100) / total.max(1)).min(100) as u8,
+                    });
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            let _ = tx
+                .send(StepEvent::Log {
+                    step,
+                    line: format!("elevation: {got} downloaded of {total} covering tiles"),
+                })
+                .await;
+        }
+    }
+
     let program = external::find_tool(bin_dirs.iter().map(|p| p.as_path()), name).ok_or_else(
         || {
             format!(
@@ -1312,6 +1340,10 @@ async fn run_terrain(
         None => None,
     };
     let tile_buffer = num("tile_buffer").map(|v| v as u32).unwrap_or(0);
+    let download_elevation = values
+        .get("download_elevation")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
     let as_png = text("format").as_deref() == Some("png");
 
     // bounds come from the area's basemap when there is one, so terrain matches its extent
@@ -1347,6 +1379,31 @@ async fn run_terrain(
         },
     };
 
+    // the sources may name a directory of .hgt tiles; make sure the ones this render needs are
+    // actually there, or the archive comes out with holes and nothing says why
+    if download_elevation {
+        let progress = tx.clone();
+        let (got, total) = studio_core::steps::elevation::ensure(
+            &settings.elevation_tiles_dir,
+            bounds,
+            |done, total| {
+                let _ = progress.try_send(StepEvent::Progress {
+                    step,
+                    label: "elevation".into(),
+                    percent: ((done * 100) / total.max(1)).min(100) as u8,
+                });
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        let _ = tx
+            .send(StepEvent::Log {
+                step,
+                line: format!("elevation: {got} downloaded of {total} covering tiles"),
+            })
+            .await;
+    }
+
     let name = format!("{area}_{suffix}");
     let progress = tx.clone();
     tokio::task::spawn_blocking(move || -> Result<(), String> {
@@ -1358,6 +1415,7 @@ async fn run_terrain(
                 kind: "valhalla".into(),
                 path: hgt_dir.clone(),
                 clamp_min: Some(-10.0),
+                download: None,
             }]
         });
         let (mut source, skipped) = source::CompositeSource::open(&specs).map_err(|e| e.to_string())?;

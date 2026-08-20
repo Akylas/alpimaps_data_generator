@@ -58,6 +58,9 @@ pub struct Args {
     /// Elevation written where no source covers a pixel. build_terrain_rgb.py used -10.
     #[arg(long, default_value_t = 0.0)]
     pub nodata_elevation: f64,
+    /// Do not fetch missing .hgt tiles; render only what is already on disk.
+    #[arg(long)]
+    pub no_elevation_download: bool,
     /// Stop if the output is already there, instead of replacing it.
     #[arg(long)]
     pub skip_existing: bool,
@@ -113,7 +116,7 @@ fn parse_bounds(raw: &str) -> Result<(f64, f64, f64, f64)> {
     }
 }
 
-pub fn run(settings: &Settings, args: Args, hillshade: bool) -> Result<()> {
+pub async fn run(settings: &Settings, args: Args, hillshade: bool) -> Result<()> {
     let area_dir = settings.area_dir(&args.area);
     let recorded = terrain_options(&args);
     // `_hillshade` is this pipeline's older mapbox-packed terrain; same renderer, different
@@ -141,6 +144,7 @@ pub fn run(settings: &Settings, args: Args, hillshade: bool) -> Result<()> {
                 kind: "valhalla".into(),
                 path: hgt_dir.clone(),
                 clamp_min: Some(-10.0),
+                download: None,
             }]
         }
         Err(e) => return Err(e),
@@ -216,6 +220,21 @@ pub fn run(settings: &Settings, args: Args, hillshade: bool) -> Result<()> {
             opts.minzoom, opts.maxzoom, bounds.0, bounds.1, bounds.2, bounds.3, output.display()
         );
         return Ok(());
+    }
+
+    // a missing .hgt is silent - the renderer writes nothing there and the archive comes out
+    // with a hole - so the tiles this render needs are fetched first
+    if !args.no_elevation_download {
+        let (got, total) =
+            studio_core::steps::elevation::ensure(&hgt_dir, bounds, |done, total| {
+                print!("\r  elevation {done}/{total}   ");
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+            })
+            .await?;
+        if total > 0 {
+            println!("\r  elevation: {got} downloaded of {total} covering tiles");
+        }
     }
 
     println!(

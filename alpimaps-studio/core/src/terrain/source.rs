@@ -33,6 +33,13 @@ pub struct SourceSpec {
     pub path: PathBuf,
     #[serde(default)]
     pub clamp_min: Option<f64>,
+    /// Whether missing `.hgt` tiles may be fetched for this source. Defaults to true, matching
+    /// `build_terrain_rgb.py`, where only `"download": false` stopped it.
+    ///
+    /// It matters because a missing tile is not an error anywhere - the renderer simply writes
+    /// nothing there, and the hole only shows up as blank terrain much later.
+    #[serde(default)]
+    pub download: Option<bool>,
 }
 
 /// Read a `sources.json`, resolving relative paths against its own directory.
@@ -227,9 +234,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let specs = vec![
             SourceSpec { name: "ign".into(), kind: "raster".into(),
-                         path: dir.path().join("absent.tif"), clamp_min: None },
+                         path: dir.path().join("absent.tif"), clamp_min: None , download: None},
             SourceSpec { name: "tilezen".into(), kind: "valhalla".into(),
-                         path: dir.path().to_path_buf(), clamp_min: Some(-10.0) },
+                         path: dir.path().to_path_buf(), clamp_min: Some(-10.0) , download: None},
         ];
         let (composite, skipped) = CompositeSource::open(&specs).unwrap();
         assert_eq!(composite.names(), vec!["tilezen"]);
@@ -242,7 +249,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let specs = vec![SourceSpec {
             name: "weird".into(), kind: "netcdf".into(),
-            path: dir.path().to_path_buf(), clamp_min: None,
+            path: dir.path().to_path_buf(), clamp_min: None, download: None
         }];
         let (composite, skipped) = CompositeSource::open(&specs).unwrap();
         assert!(composite.names().is_empty());
@@ -262,9 +269,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let specs = vec![
             SourceSpec { name: "low".into(), kind: "valhalla".into(),
-                         path: dir.path().to_path_buf(), clamp_min: None },
+                         path: dir.path().to_path_buf(), clamp_min: None , download: None},
             SourceSpec { name: "high".into(), kind: "valhalla".into(),
-                         path: dir.path().to_path_buf(), clamp_min: None },
+                         path: dir.path().to_path_buf(), clamp_min: None , download: None},
         ];
         let (composite, _) = CompositeSource::open(&specs).unwrap();
         assert_eq!(composite.names(), vec!["high", "low"], "highest priority is consulted first");
@@ -285,9 +292,9 @@ mod tests {
 
         let specs = vec![
             SourceSpec { name: "low".into(), kind: "valhalla".into(),
-                         path: low.path().to_path_buf(), clamp_min: None },
+                         path: low.path().to_path_buf(), clamp_min: None , download: None},
             SourceSpec { name: "high".into(), kind: "valhalla".into(),
-                         path: high.path().to_path_buf(), clamp_min: None },
+                         path: high.path().to_path_buf(), clamp_min: None , download: None},
         ];
         let (mut c, _) = CompositeSource::open(&specs).unwrap();
         let blur = 2000.0;
@@ -314,9 +321,9 @@ mod tests {
         std::fs::write(high.path().join("N44E006.hgt"), flat(9, 200)).unwrap();
         let specs = vec![
             SourceSpec { name: "low".into(), kind: "valhalla".into(),
-                         path: low.path().to_path_buf(), clamp_min: None },
+                         path: low.path().to_path_buf(), clamp_min: None , download: None},
             SourceSpec { name: "high".into(), kind: "valhalla".into(),
-                         path: high.path().to_path_buf(), clamp_min: None },
+                         path: high.path().to_path_buf(), clamp_min: None , download: None},
         ];
         let (mut c, _) = CompositeSource::open(&specs).unwrap();
         assert_eq!(c.sample_blended(6.5, 44.5, 30.0, 0.0), Some(200.0));
@@ -329,7 +336,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("N44E006.hgt"), flat(9, 200)).unwrap();
         let specs = vec![SourceSpec { name: "only".into(), kind: "valhalla".into(),
-                                      path: dir.path().to_path_buf(), clamp_min: None }];
+                                      path: dir.path().to_path_buf(), clamp_min: None , download: None}];
         let (mut c, _) = CompositeSource::open(&specs).unwrap();
         assert_eq!(c.coverage_weight(0, 20.0, 20.0, 30.0, 2000.0), 0.0);
         assert_eq!(c.coverage_weight(0, 6.5, 44.5, 30.0, 2000.0), 1.0, "deep inside is full weight");
@@ -347,9 +354,9 @@ mod tests {
 
         let specs = vec![
             SourceSpec { name: "absent-raster".into(), kind: "raster".into(),
-                         path: dir.path().join("nope.tif"), clamp_min: None },
+                         path: dir.path().join("nope.tif"), clamp_min: None , download: None},
             SourceSpec { name: "hgt".into(), kind: "valhalla".into(),
-                         path: dir.path().to_path_buf(), clamp_min: None },
+                         path: dir.path().to_path_buf(), clamp_min: None , download: None},
         ];
         let (mut composite, _) = CompositeSource::open(&specs).unwrap();
         assert_eq!(composite.sample(6.5, 44.5, 30.0), Some(700.0));

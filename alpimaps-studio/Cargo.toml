@@ -5,3 +5,11 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+
+# Shipping profile. The binaries carry a statically linked Valhalla and a bundled SQLite, so the
+# defaults leave a lot on the table: debug symbols alone are several megabytes of a binary nobody
+# will debug from a .dmg.
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1

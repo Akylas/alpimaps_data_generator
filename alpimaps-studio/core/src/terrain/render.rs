@@ -318,7 +318,7 @@ mod tests {
     fn hgt_only(dir: &std::path::Path) -> CompositeSource {
         let specs = vec![crate::terrain::source::SourceSpec {
             name: "hgt".into(), kind: "valhalla".into(),
-            path: dir.to_path_buf(), clamp_min: None,
+            path: dir.to_path_buf(), clamp_min: None, download: None
         }];
         CompositeSource::open(&specs).unwrap().0
     }

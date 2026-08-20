@@ -147,6 +147,12 @@ pub fn terrain_options() -> Vec<OptionDef> {
             OptionKind::Float { min: None, max: None },
             "Elevation written where no source covers a pixel. build_terrain_rgb.py used -10 so              uncovered pixels read as sea; every archive in this repository was built with 0.",
             "0"),
+        opt("download_elevation", "no-elevation-download", "Fetch missing tiles", "Sources",
+            OptionKind::Bool,
+            "Download any .hgt tile this render needs and does not have. A missing tile is \
+             otherwise silent: the renderer writes nothing there and the archive comes out with \
+             a hole.",
+            "on"),
         opt("poly_shape", "poly-shape", "Clip shape", "Sources",
             OptionKind::Text,
             "Path to an osmosis .poly. Only tiles touching the shape are written.",

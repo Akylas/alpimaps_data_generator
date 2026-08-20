@@ -134,6 +134,24 @@ async fn fetch_one(root: &Path, tile: &Tile, gzipped: bool) -> Result<Fetched> {
     Ok(Fetched::Downloaded)
 }
 
+/// Make sure every tile covering `bounds` is on disk, downloading what is missing.
+///
+/// This is what both the graph build and the terrain render need, and neither can do without it:
+/// `valhalla_build_tiles` bakes elevation in from this directory, and the terrain renderer reads
+/// the same files. A missing tile is silent in both - the graph simply has no grades there, and
+/// the terrain archive has a hole - so the tiles are ensured rather than assumed.
+pub async fn ensure<F>(
+    root: &Path,
+    bounds: (f64, f64, f64, f64),
+    progress: F,
+) -> Result<(usize, usize)>
+where
+    F: FnMut(usize, usize),
+{
+    let tiles = tiles_for_bounds(bounds);
+    fetch(root, &tiles, false, progress).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
