@@ -3,8 +3,13 @@ name = "cairn-cli"
 version.workspace = true
 edition.workspace = true
 
+# `cairn-cli`, not `cairn`, because the app package is also called cairn and its binary would
+# land on the same path - cargo says "output filename collision" and the later build wins. The
+# app is built first and this one second, by bundle_resources.sh, so the .app and .deb would have
+# shipped the command line as their main binary. It is installed as `cairn`; clap sets the name
+# it prints, so nothing user-facing changes.
 [[bin]]
-name = "cairn"
+name = "cairn-cli"
 path = "src/main.rs"
 
 [dependencies]

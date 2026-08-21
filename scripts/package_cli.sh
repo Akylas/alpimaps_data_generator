@@ -15,7 +15,8 @@ OUT="${2:-dist}"
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 studio="$repo/cairn"
-binary="$studio/target/release/cairn"
+# cairn-cli on disk, `cairn` once installed - see cli/Cargo.toml for why they differ
+binary="$studio/target/release/cairn-cli"
 
 [ -f "$binary" ] || { echo "no CLI at $binary - build it first" >&2; exit 1; }
 

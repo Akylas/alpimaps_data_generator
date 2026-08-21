@@ -300,6 +300,17 @@ jobs:
       # The load commands are rewritten before the bundle exists, against a predicted layout.
       # That prediction has been wrong twice, and both times every static check passed while
       # nothing in the bundle could start. This resolves them against what was actually built.
+      # The same question as the macOS check, asked of the .deb: the rpaths were written against
+      # a predicted install layout, and the libraries that had to travel are the ones whose
+      # sonames differ between releases - so a package that looks right on the runner is exactly
+      # what fails on 24.04.
+      - name: Verify the package is self-contained (ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          set -euo pipefail
+          deb="$(ls -1 cairn/target/release/bundle/deb/*.deb | head -1)"
+          ./scripts/verify_deb.sh "$deb"
+
       - name: Verify the bundle is self-contained (macOS only)
         if: matrix.platform == 'macos-latest'
         run: ./scripts/verify_bundle.sh "cairn/target/release/bundle/macos/Cairn.app"
