@@ -22,14 +22,29 @@ repo="$(dirname "$studio")"
 resources="$studio/src-tauri/resources"
 # the dylibs live in their own source directory: mapping one directory to two destinations put
 # 34 MB of them in the bundle twice
+#
+# Linux uses the same directory for the same purpose - the libraries the app carries - so the
+# name is macOS's rather than a second resource mapping in tauri.conf.json for one .so directory.
 frameworks="$studio/src-tauri/frameworks"
 mkdir -p "$resources" "$frameworks"
+
+# Where those two directories end up once installed decides every rpath below.
+#
+#   macOS   Cairn.app/Contents/Resources/{resources,Frameworks}
+#   Linux   /usr/bin/cairn and /usr/lib/<product name>/{resources,Frameworks}
+#
+# The Linux layout is debian::generate_data in tauri-bundler, and the AppImage bundler copies
+# that same usr/ tree into the AppDir - so one set of rpaths serves .deb, .rpm and .AppImage.
+product="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["productName"])' \
+  "$studio/src-tauri/tauri.conf.json")"
 
 say() { printf '  %s\n' "$*"; }
 
 # --- the CLI ---------------------------------------------------------------------------------
 ( cd "$studio" && cargo build --release -p cairn-cli )
-cp "$studio/target/release/cairn" "$resources/cairn"
+# built as cairn-cli so that this build does not overwrite the app binary, which Tauri is
+# about to bundle from target/release/cairn - see cli/Cargo.toml
+cp "$studio/target/release/cairn-cli" "$resources/cairn"
 # it links Valhalla too, so it needs the same treatment as the app - on the build machine it
 # runs either way, which is exactly why this was missed until a bundle was checked
 if [ "$(uname)" = Darwin ]; then
@@ -38,6 +53,12 @@ if [ "$(uname)" = Darwin ]; then
     "$resources/cairn" \
     "$frameworks" \
     "@executable_path/../Frameworks" >/dev/null
+else
+  # /usr/lib/<product>/resources -> /usr/lib/<product>/Frameworks
+  "$repo/scripts/bundle_linux_libs.sh" \
+    "$resources/cairn" \
+    "$frameworks" \
+    '$ORIGIN/../Frameworks' >/dev/null
 fi
 say "cairn"
 
@@ -97,6 +118,12 @@ if [ -x "$repo/valhalla/build/valhalla_build_tiles" ]; then
       "$resources/valhalla/valhalla_build_tiles" \
       "$frameworks" \
       "@executable_path/../../Frameworks"
+  else
+    # /usr/lib/<product>/resources/valhalla -> /usr/lib/<product>/Frameworks
+    "$repo/scripts/bundle_linux_libs.sh" \
+      "$resources/valhalla/valhalla_build_tiles" \
+      "$frameworks" \
+      '$ORIGIN/../../Frameworks' >/dev/null
   fi
   say "valhalla_build_tiles"
 else
@@ -104,13 +131,24 @@ else
   echo "        say so in Docs -> Where things live if it is not there either" >&2
 fi
 
-# --- dylibs (macOS) --------------------------------------------------------------------------
-# the app links Valhalla, whose dependencies are Homebrew dylibs that will not exist on a user's
-# machine; this rewrites them to load from inside the bundle
+# --- the libraries the app itself needs ------------------------------------------------------
+# The app links Valhalla, and Valhalla's dependencies are not something a user's machine can be
+# relied on to have: Homebrew dylibs on macOS, and on Linux libraries whose sonames change
+# between releases (libprotobuf.so.23 on Ubuntu 22.04, .32 on 24.04). Either way they travel
+# with the bundle and the binary is pointed at them.
 if [ "$(uname)" = Darwin ]; then
   # Contents/MacOS -> Contents/Resources/Frameworks
   "$repo/scripts/bundle_macos_dylibs.sh" \
     "$studio/target/release/cairn" \
     "$frameworks" \
     "@executable_path/../Resources/Frameworks"
+else
+  # /usr/bin -> /usr/lib/<product>/Frameworks
+  "$repo/scripts/bundle_linux_libs.sh" \
+    "$studio/target/release/cairn" \
+    "$frameworks" \
+    "\$ORIGIN/../lib/$product/Frameworks" >/dev/null
+  # the total, not what this call added: the CLI and the graph builder were bundled first and
+  # share the directory, so most of it is already there by now
+  say "$(ls -1 "$frameworks" | wc -l | tr -d ' ') libraries carried into Frameworks"
 fi

@@ -15,7 +15,8 @@ OUT="${2:-dist}"
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 studio="$repo/cairn"
-binary="$studio/target/release/cairn"
+# cairn-cli on disk, `cairn` once installed - see cli/Cargo.toml for why they differ
+binary="$studio/target/release/cairn-cli"
 
 [ -f "$binary" ] || { echo "no CLI at $binary - build it first" >&2; exit 1; }
 
@@ -38,6 +39,12 @@ if [ "$(uname)" = Darwin ]; then
   "$repo/scripts/bundle_macos_dylibs.sh" "$stage/cairn" "$stage/lib" "@executable_path/lib" \
     >/dev/null
   echo "  carried $(ls -1 "$stage/lib" | wc -l | tr -d ' ') libraries into lib/"
+else
+  # Linux carries libraries for a different reason: they exist on every distribution, under
+  # names that change between releases (libprotobuf.so.23 on 22.04, .32 on 24.04). Carrying
+  # them is what lets one build run on both.
+  carried="$("$repo/scripts/bundle_linux_libs.sh" "$stage/cairn" "$stage/lib" '$ORIGIN/lib')"
+  echo "  carried $carried libraries into lib/"
 fi
 
 cat > "$stage/README.txt" <<EOF
@@ -61,17 +68,24 @@ MAC
 else
 cat <<'LINUX'
 
-Dynamically linked against the usual system libraries (libcurl, libsqlite3, libspatialite, geos,
-luajit, protobuf). On Debian/Ubuntu:
+lib/ holds the libraries this needs that differ between distributions - protobuf, spatialite,
+geos, luajit and their dependencies. Keep it next to the binary; `cairn` looks for it there.
 
-  apt install libsqlite3-0 libspatialite7 libgeos-c1v5 libluajit-5.1-2 libprotobuf-lite23 libcurl4
+Built on Ubuntu 22.04, so it needs glibc 2.35 or newer: Ubuntu 22.04 and later, Debian 12 and
+later, or anything of that vintage. Nothing to install.
 LINUX
 fi)
 EOF
 
 archive="$OUT/${name}.tar.gz"
 tar -czf "$archive" -C "$OUT" "$name"
-( cd "$OUT" && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256" )
+# shasum is the macOS spelling, sha256sum the GNU one - and a minimal Linux image has only the
+# second, so neither can be assumed
+if command -v sha256sum >/dev/null; then
+  ( cd "$OUT" && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256" )
+else
+  ( cd "$OUT" && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256" )
+fi
 
 echo "  $archive ($(du -h "$archive" | cut -f1))"
 
@@ -90,6 +104,43 @@ if [ "$(uname)" = Darwin ]; then
     rm -rf "$check"
     exit 1
   fi
+else
+  # Every library that was carried has to be the one that actually loads. The build machine has
+  # system copies of most of them, so an rpath that failed to take would look fine here and fail
+  # on a machine of a different vintage - which is the whole point of carrying them.
+  #
+  # Read once into a variable rather than piped per library: `grep -q` stops at the first match
+  # and leaves ldd with a SIGPIPE, which `set -o pipefail` then reports as a failed pipeline -
+  # so a matching library would be read as a missing one.
+  deps="$(ldd "$check/$name/cairn" "$check/$name/lib"/* 2>/dev/null || true)"
+  for lib in "$check/$name/lib"/*; do
+    [ -f "$lib" ] || continue
+    soname="$(basename "$lib")"
+    case "$deps" in
+      *"$soname => $check/$name/lib/$soname"*) ;;
+      *)
+        echo "  FAIL: $soname is carried but the system copy is what loads" >&2
+        rm -rf "$check"
+        exit 1
+        ;;
+    esac
+  done
+  echo "  $(ls -1 "$check/$name/lib" | wc -l | tr -d ' ') carried libraries all load from the archive"
+  # libstdc++ is static in `cairn` itself; if it shows up as a dependency there, the link flags
+  # were lost and the binary will not start on a release older than the one it was built on.
+  #
+  # Only the binary: the carried libraries come from the distribution and link the system C++
+  # runtime, which is correct - they were built against an older one than this binary needs.
+  # ldd walks the whole closure, and the carried libraries pull libstdc++ in themselves, so it
+  # cannot answer this. The direct NEEDED entries can.
+  own="$(patchelf --print-needed "$check/$name/cairn" 2>/dev/null || true)"
+  case "$own" in
+    *libstdc++*)
+      echo "  FAIL: links libstdc++ dynamically - it will not run on an older release" >&2
+      rm -rf "$check"
+      exit 1
+      ;;
+  esac
 fi
 rm -rf "$check"
 echo "  unpacked elsewhere and ran: ok"

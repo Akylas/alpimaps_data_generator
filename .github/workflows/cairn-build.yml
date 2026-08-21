@@ -48,6 +48,9 @@ jobs:
       matrix:
         # Windows is left out on purpose: Valhalla's support for it is poor and this pipeline has
         # never been run there.
+        # 22.04 sets the glibc floor at 2.35, which is what lets one Linux build run on 22.04,
+        # 24.04 and Debian 12 alike. Its compiler is too old for Valhalla - see below - so a
+        # newer one is installed rather than a newer runner used.
         platform: [macos-latest, ubuntu-22.04]
     runs-on: ${{ matrix.platform }}
     steps:
@@ -75,10 +78,35 @@ jobs:
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf \
-            cmake make libtool pkg-config g++ ccache \
+            cmake make libtool pkg-config ccache \
             libboost-all-dev libcurl4-openssl-dev zlib1g-dev liblz4-dev \
             libprotobuf-dev protobuf-compiler libsqlite3-dev libspatialite-dev \
             libluajit-5.1-dev libgeos++-dev libgeos-dev spatialite-bin
+
+      # Valhalla 3.8 is C++20 and midgard/logging.h includes <format>, which arrived in GCC 13.
+      # 22.04 ships GCC 11, so the build dies on the first translation unit.
+      #
+      # The compiler is installed rather than the runner moved to 24.04, because the runner sets
+      # the glibc floor: a binary built on 24.04 wants glibc 2.39 and will not start on 22.04.
+      # Building on 22.04 with a newer compiler gets both.
+      #
+      # -static-libstdc++ is the other half. GCC 13's <format> pulls in GLIBCXX_3.4.31 and .32,
+      # which 22.04's libstdc++ does not have, so a dynamically linked binary fails to start on
+      # the very release it was built on. Linked statically it needs no GLIBCXX symbols at all.
+      - name: Install a compiler new enough for Valhalla (ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          set -euo pipefail
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get install -y g++-13 gcc-13
+          g++-13 --version | head -1
+          # for everything downstream: cc-rs compiles the Valhalla shim, which includes those
+          # same headers, and cargo links the final binaries
+          {
+            echo "CC=gcc-13"
+            echo "CXX=g++-13"
+            echo "RUSTFLAGS=-C link-arg=-static-libstdc++ -C link-arg=-static-libgcc"
+          } >> "$GITHUB_ENV"
 
       # No dylibbundler: scripts/bundle_macos_dylibs.sh does the same job with otool and
       # install_name_tool, which ship with the Command Line Tools.
@@ -86,8 +114,11 @@ jobs:
         if: matrix.platform == 'macos-latest'
         run: |
           brew update
+          # spatialite-tools is not optional: Valhalla's CMake hard-fails without the
+          # `spatialite` and `spatialite_tool` binaries, which it uses to build tz.sqlite.
+          # libspatialite is the library only, so a machine with it still fails configure.
           brew install autoconf automake libtool cmake ccache boost protobuf \
-                       libspatialite sqlite3 luajit geos lz4 pkg-config
+                       libspatialite spatialite-tools sqlite3 luajit geos lz4 pkg-config
 
       # ---------------------------------------------------------------- Valhalla
       #
@@ -100,18 +131,26 @@ jobs:
         uses: actions/cache@v4
         with:
           path: valhalla/build
-          key: valhalla-${{ matrix.platform }}-${{ steps.revs.outputs.valhalla }}
+          # the compiler is part of what is cached, so it belongs in the key
+          key: valhalla-${{ matrix.platform }}-gcc13-${{ steps.revs.outputs.valhalla }}
 
       - name: Build Valhalla
         if: steps.valhalla-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
+          extra=()
+          if [ "${{ matrix.platform }}" = ubuntu-22.04 ]; then
+            extra=(-DCMAKE_C_COMPILER=gcc-13 -DCMAKE_CXX_COMPILER=g++-13
+                   -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
+                   -DCMAKE_SHARED_LINKER_FLAGS="-static-libstdc++ -static-libgcc")
+          fi
           cmake -S valhalla -B valhalla/build \
             -DCMAKE_BUILD_TYPE=Release \
             -DENABLE_SERVICES=Off \
             -DENABLE_BENCHMARKS=Off \
             -DENABLE_PYTHON_BINDINGS=Off \
-            -DENABLE_TESTS=Off
+            -DENABLE_TESTS=Off \
+            "${extra[@]}"
           cmake --build valhalla/build -j"$(getconf _NPROCESSORS_ONLN)"
 
       # ---------------------------------------------------------------- Planetiler
@@ -261,6 +300,17 @@ jobs:
       # The load commands are rewritten before the bundle exists, against a predicted layout.
       # That prediction has been wrong twice, and both times every static check passed while
       # nothing in the bundle could start. This resolves them against what was actually built.
+      # The same question as the macOS check, asked of the .deb: the rpaths were written against
+      # a predicted install layout, and the libraries that had to travel are the ones whose
+      # sonames differ between releases - so a package that looks right on the runner is exactly
+      # what fails on 24.04.
+      - name: Verify the package is self-contained (ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          set -euo pipefail
+          deb="$(ls -1 cairn/target/release/bundle/deb/*.deb | head -1)"
+          ./scripts/verify_deb.sh "$deb"
+
       - name: Verify the bundle is self-contained (macOS only)
         if: matrix.platform == 'macos-latest'
         run: ./scripts/verify_bundle.sh "cairn/target/release/bundle/macos/Cairn.app"
