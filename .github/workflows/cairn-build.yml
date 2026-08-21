@@ -68,6 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "valhalla=$(git -C valhalla rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "planetiler=$(git -C planetiler rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # Tauri v2 links against the 4.1 webkit2gtk, not the 4.0 the v1 template installed, and
       # against the ayatana fork of libappindicator
@@ -185,14 +186,50 @@ jobs:
           sudo chown -R "$(id -u):$(id -g)" /opt/protobuf
           /opt/protobuf/bin/protoc --version
 
+      # Two caches, doing different jobs.
+      #
+      # The build tree is the fast path: an unchanged submodule means nothing to do at all. But
+      # it only ever hits exactly, and the moment the submodule moves it is worth nothing on its
+      # own - which is what ccache is for. Restored by prefix, it turns a submodule bump into a
+      # rebuild of what actually changed rather than 180 files.
+      #
+      # Valhalla wires ccache itself (ENABLE_CCACHE, on by default) when it finds one on PATH,
+      # and both runners have it installed. CCACHE_DIR is set explicitly because the default
+      # differs by platform.
+      - name: Compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ matrix.platform }}-${{ steps.revs.outputs.valhalla }}
+          restore-keys: |
+            ccache-${{ matrix.platform }}-
+
+      - name: Point ccache at that directory
+        run: |
+          set -euo pipefail
+          {
+            echo "CCACHE_DIR=$HOME/.ccache"
+            echo "CCACHE_MAXSIZE=2G"
+          } >> "$GITHUB_ENV"
+
       - name: Valhalla build cache
         id: valhalla-cache
         uses: actions/cache@v4
         with:
           path: valhalla/build
-          # the compiler is part of what is cached, so it belongs in the key
-          key: valhalla-${{ matrix.platform }}-gcc13-boost183-pb21-${{ steps.revs.outputs.valhalla }}
+          # Hashing this file covers the compiler, the flags and the dependency versions, which
+          # are all written here - so changing any of them invalidates the tree without anyone
+          # having to remember to bump a tag by hand.
+          #
+          # restore-keys means a miss still restores the newest tree for this platform. CMake
+          # reconfigures if the flags moved, make rebuilds what the submodule changed, and
+          # ccache answers most of the rest.
+          key: valhalla-${{ matrix.platform }}-${{ hashFiles('.github/workflows/cairn-build.yml') }}-${{ steps.revs.outputs.valhalla }}
+          restore-keys: |
+            valhalla-${{ matrix.platform }}-
 
+      # Runs whenever the key was not an exact hit - including a prefix restore, where most of
+      # the tree is reusable and only the delta gets built.
       - name: Build Valhalla
         if: steps.valhalla-cache.outputs.cache-hit != 'true'
         run: |
@@ -229,6 +266,9 @@ jobs:
           # already off it takes the libgeotiff dependency with it.
           cmake --build valhalla/build -j"$(getconf _NPROCESSORS_ONLN)" \
             --target valhalla valhalla_build_tiles
+          # worth having in the log: it says whether the compiler cache did anything, which is
+          # the difference between a rebuild of the delta and a rebuild of everything
+          ccache -s 2>/dev/null | head -5 || true
 
       # ---------------------------------------------------------------- Planetiler
 
@@ -238,19 +278,55 @@ jobs:
       #
       # It is bundled so a released app works offline. Without it the app still runs and fetches
       # the jar itself on first use - which is what BUNDLE_JAR=0 leaves it to do.
-      - name: Fetch the planetiler jar
+      # `planetiler-latest` is a tag that moves, so the revision alone cannot say whether the
+      # jar changed - the jar workflow can republish the same submodule commit. The asset's ETag
+      # can, and a HEAD request costs nothing next to 76 MB.
+      - name: Identify the published jar
+        id: jar
         env:
           JAR_URL: https://github.com/${{ github.repository }}/releases/download/planetiler-latest/planetiler-with-deps.jar
         run: |
           set -euo pipefail
-          mkdir -p cairn/src-tauri/resources
-          if curl -fSL --retry 3 -o /tmp/planetiler-with-deps.jar "$JAR_URL"; then
-            # bundle_resources.sh strips it to this platform's natives when it stages resources
-            cp /tmp/planetiler-with-deps.jar \
-              cairn/src-tauri/resources/planetiler-with-deps.jar
-          else
+          echo "url=$JAR_URL" >> "$GITHUB_OUTPUT"
+          etag="$(curl -fsIL --retry 2 "$JAR_URL" 2>/dev/null |
+            awk 'tolower($1) == "etag:" { gsub(/[\"\r]/, "", $2); print $2 }' | tail -1 || true)"
+          # no ETag (or no release yet) falls back to the revision, which is right often enough
+          # and never serves a jar under a key that claims to be a different one
+          echo "id=${etag:-rev-${{ steps.revs.outputs.planetiler }}}" >> "$GITHUB_OUTPUT"
+
+      - name: Planetiler jar cache
+        id: jar-cache
+        uses: actions/cache@v4
+        with:
+          # outside the workspace on purpose: bundle_resources.sh strips the jar to one
+          # platform's natives, and a stripped jar must never be what the cache hands the other
+          path: /tmp/planetiler-jar
+          key: planetiler-jar-${{ steps.jar.outputs.id }}
+
+      - name: Fetch the planetiler jar
+        if: steps.jar-cache.outputs.cache-hit != 'true'
+        env:
+          JAR_URL: ${{ steps.jar.outputs.url }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/planetiler-jar
+          if ! curl -fSL --retry 3 -o /tmp/planetiler-jar/planetiler-with-deps.jar "$JAR_URL"; then
+            rm -f /tmp/planetiler-jar/planetiler-with-deps.jar
             echo "::warning::no published jar at $JAR_URL - run the Planetiler jar workflow." \
                  "The app will fetch one on first use instead."
+          fi
+
+      # PLANETILER_JAR rather than a copy into resources/: bundle_resources.sh strips the jar to
+      # this platform's natives on the way in, and it only does that for a jar it was pointed at.
+      # Copied straight into resources/ it was bundled whole, and the script warned about a jar
+      # it could not find while an unstripped one sat next to it.
+      - name: Point the bundle at the jar
+        run: |
+          set -euo pipefail
+          jar=/tmp/planetiler-jar/planetiler-with-deps.jar
+          if [ -f "$jar" ]; then
+            echo "PLANETILER_JAR=$jar" >> "$GITHUB_ENV"
+            echo "$(du -h "$jar" | cut -f1) jar, cached: ${{ steps.jar-cache.outputs.cache-hit }}"
           fi
 
       # ---------------------------------------------------------------- App
