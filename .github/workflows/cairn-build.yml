@@ -79,8 +79,8 @@ jobs:
             libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf \
             cmake make libtool pkg-config ccache \
-            libboost-all-dev libcurl4-openssl-dev zlib1g-dev liblz4-dev \
-            libprotobuf-dev protobuf-compiler libsqlite3-dev libspatialite-dev \
+            libcurl4-openssl-dev zlib1g-dev liblz4-dev \
+            libsqlite3-dev libspatialite-dev \
             libluajit-5.1-dev libgeos++-dev libgeos-dev spatialite-bin
 
       # Valhalla 3.8 is C++20 and midgard/logging.h includes <format>, which arrived in GCC 13.
@@ -106,6 +106,9 @@ jobs:
             echo "CC=gcc-13"
             echo "CXX=g++-13"
             echo "RUSTFLAGS=-C link-arg=-static-libstdc++ -C link-arg=-static-libgcc"
+            # the protobuf built in the next step: found by cargo test, by ldd while the
+            # libraries are being collected, and by anything else the build runs
+            echo "LD_LIBRARY_PATH=/opt/protobuf/lib"
           } >> "$GITHUB_ENV"
 
       # No dylibbundler: scripts/bundle_macos_dylibs.sh does the same job with otool and
@@ -126,13 +129,69 @@ jobs:
       # talking to valhalla_service, so the whole HTTP stack - and the hand-built prime_server
       # submodule with it - is off the release path.
 
+      # 22.04 ships Boost 1.74, and Valhalla's adminbuilder.cc calls boost::geometry::area on a
+      # geographic polygon having included only algorithms/area.hpp. In 1.74 the geographic
+      # default strategy is not visible from there and the build stops on
+      # NOT_IMPLEMENTED_FOR_THIS_COORDINATE_SYSTEM; 1.83 - what 24.04 ships - compiles it.
+      #
+      # Headers only, and nothing to build: Valhalla does `find_package(Boost 1.71 REQUIRED)`
+      # with no components and links Boost::boost.
+      - name: Boost headers cache
+        id: boost-cache
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: actions/cache@v4
+        with:
+          path: /opt/boost
+          key: boost-1.83.0-headers
+
+      - name: Fetch Boost headers (ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04' && steps.boost-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /opt/boost/include
+          curl -fsSL https://archives.boost.io/release/1.83.0/source/boost_1_83_0.tar.gz |
+            sudo tar -xz -C /opt/boost/include --strip-components=1 boost_1_83_0/boost
+          grep BOOST_LIB_VERSION /opt/boost/include/boost/version.hpp
+
+      # 22.04 ships protobuf 3.12, which predates proto3 `optional` - so the generated code has
+      # no has_x() accessors and Valhalla does not compile against it:
+      #
+      #   landmarks.cc:48: 'class valhalla::Location' has no member named 'has_node_snap_tolerance'
+      #
+      # 21.12 is what 24.04 ships, and is the last release before the abseil dependency, so it
+      # builds on its own. Shared rather than static, to match how Valhalla is compiled - the
+      # shim in core/build.rs defines PROTOBUF_USE_DLLS, and that has to be true.
+      - name: Protobuf cache
+        id: protobuf-cache
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: actions/cache@v4
+        with:
+          path: /opt/protobuf
+          key: protobuf-3.21.12-${{ matrix.platform }}
+
+      - name: Build protobuf (ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04' && steps.protobuf-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protobuf-cpp-3.21.12.tar.gz |
+            tar -xz -C /tmp
+          cmake -S /tmp/protobuf-3.21.12 -B /tmp/protobuf-build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/opt/protobuf \
+            -Dprotobuf_BUILD_TESTS=OFF \
+            -Dprotobuf_BUILD_SHARED_LIBS=ON
+          cmake --build /tmp/protobuf-build -j"$(getconf _NPROCESSORS_ONLN)"
+          sudo cmake --install /tmp/protobuf-build
+          sudo chown -R "$(id -u):$(id -g)" /opt/protobuf
+          /opt/protobuf/bin/protoc --version
+
       - name: Valhalla build cache
         id: valhalla-cache
         uses: actions/cache@v4
         with:
           path: valhalla/build
           # the compiler is part of what is cached, so it belongs in the key
-          key: valhalla-${{ matrix.platform }}-gcc13-${{ steps.revs.outputs.valhalla }}
+          key: valhalla-${{ matrix.platform }}-gcc13-boost183-pb21-${{ steps.revs.outputs.valhalla }}
 
       - name: Build Valhalla
         if: steps.valhalla-cache.outputs.cache-hit != 'true'
@@ -142,7 +201,15 @@ jobs:
           if [ "${{ matrix.platform }}" = ubuntu-22.04 ]; then
             extra=(-DCMAKE_C_COMPILER=gcc-13 -DCMAKE_CXX_COMPILER=g++-13
                    -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
-                   -DCMAKE_SHARED_LINKER_FLAGS="-static-libstdc++ -static-libgcc")
+                   -DCMAKE_SHARED_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
+                   -DBOOST_ROOT=/opt/boost -DBoost_NO_SYSTEM_PATHS=ON
+                   -DCMAKE_PREFIX_PATH=/opt/protobuf
+                   # Valhalla links protobuf-lite as a bare path in module-compatible mode,
+                   # which carries no include directories with it, so the targets that see only
+                   # that one cannot find google/protobuf/port_def.inc. This puts the directory
+                   # on every compile line - including the one build.rs reads back out of
+                   # flags.make for the shim.
+                   -DCMAKE_CXX_STANDARD_INCLUDE_DIRECTORIES=/opt/protobuf/include)
           fi
           cmake -S valhalla -B valhalla/build \
             -DCMAKE_BUILD_TYPE=Release \
@@ -150,7 +217,7 @@ jobs:
             -DENABLE_BENCHMARKS=Off \
             -DENABLE_PYTHON_BINDINGS=Off \
             -DENABLE_TESTS=Off \
-            "${extra[@]}"
+            ${extra[@]+"${extra[@]}"}
           cmake --build valhalla/build -j"$(getconf _NPROCESSORS_ONLN)"
 
       # ---------------------------------------------------------------- Planetiler

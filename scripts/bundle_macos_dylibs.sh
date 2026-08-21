@@ -76,8 +76,15 @@ collect_deps() {
 # Collect the transitive closure. The libraries themselves depend on each other - abseil alone is
 # dozens of interlinked pieces - so stopping at the binary's direct dependencies leaves a bundle
 # that still reaches outside for the second hop.
+# `seen` is a newline-delimited string rather than an associative array, because macOS ships
+# bash 3.2 and that is what runs this - `declare -A` is a bash 4 feature. It does not merely
+# fail there: with the error ignored, every subscript evaluates as arithmetic and collapses to
+# 0, so a dedup table would report the first library as already seen for all of them.
 declare -a QUEUE=()
-declare -A SEEN=()
+seen=$'\n'
+seen_add() { seen="$seen$1"$'\n'; }
+was_seen() { case "$seen" in *$'\n'"$1"$'\n'*) return 0 ;; *) return 1 ;; esac; }
+
 while IFS= read -r dep; do
   [ -n "$dep" ] && QUEUE+=("$dep")
 done < <(collect_deps "$BINARY")
@@ -86,21 +93,21 @@ declare -a LIBS=()
 while [ ${#QUEUE[@]} -gt 0 ]; do
   current="${QUEUE[0]}"
   QUEUE=("${QUEUE[@]:1}")
-  [ -n "${SEEN[$current]:-}" ] && continue
-  SEEN[$current]=1
+  was_seen "$current" && continue
+  seen_add "$current"
   if [ ! -f "$current" ]; then
     echo "warning: dependency not found on disk, skipping: $current" >&2
     continue
   fi
   LIBS+=("$current")
   while IFS= read -r dep; do
-    [ -n "$dep" ] && [ -z "${SEEN[$dep]:-}" ] && QUEUE+=("$dep")
+    [ -n "$dep" ] && ! was_seen "$dep" && QUEUE+=("$dep")
   done < <(collect_deps "$current")
 done
 
 echo "bundling ${#LIBS[@]} libraries into $DEST"
 
-for lib in "${LIBS[@]}"; do
+for lib in ${LIBS[@]+"${LIBS[@]}"}; do
   name="$(basename "$lib")"
   if [ ! -f "$DEST/$name" ]; then
     cp -L "$lib" "$DEST/$name"
@@ -113,7 +120,7 @@ done
 # The id is what a *new* dependent records when it links against the copy. `@rpath` keeps that
 # independent of where in the bundle the dependent lives; each executable adds the run-path that
 # resolves it.
-for lib in "${LIBS[@]}"; do
+for lib in ${LIBS[@]+"${LIBS[@]}"}; do
   name="$(basename "$lib")"
   install_name_tool -id "@rpath/$name" "$DEST/$name" 2>/dev/null || true
 done
@@ -150,7 +157,7 @@ retarget() {
 }
 
 retarget "$BINARY" "$PREFIX"
-for lib in "${LIBS[@]}"; do
+for lib in ${LIBS[@]+"${LIBS[@]}"}; do
   retarget "$DEST/$(basename "$lib")" "@loader_path"
 done
 
@@ -174,7 +181,7 @@ add_bundle_rpath() {
 }
 
 add_bundle_rpath "$BINARY"
-for lib in "${LIBS[@]}"; do
+for lib in ${LIBS[@]+"${LIBS[@]}"}; do
   # @loader_path is already the Frameworks directory for a copied library
   install_name_tool -add_rpath "@loader_path" "$DEST/$(basename "$lib")" 2>/dev/null || true
   while IFS= read -r rpath; do
@@ -190,7 +197,7 @@ done
 # a release re-signs with the real identity afterwards, which is why this must happen *before*
 # the signing step and not after it.
 IDENTITY="${MACOS_SIGN_IDENTITY:--}"
-for lib in "${LIBS[@]}"; do
+for lib in ${LIBS[@]+"${LIBS[@]}"}; do
   codesign --force --sign "$IDENTITY" --timestamp=none "$DEST/$(basename "$lib")" 2>/dev/null || true
 done
 codesign --force --sign "$IDENTITY" --timestamp=none "$BINARY" 2>/dev/null || true
@@ -275,7 +282,7 @@ BINARY_DIR="$(cd "$(dirname "$BINARY")" && pwd)"
 check "$BINARY"
 check_rpaths "$BINARY"
 resolves "$BINARY" "$BINARY_DIR"
-for lib in "${LIBS[@]}"; do
+for lib in ${LIBS[@]+"${LIBS[@]}"}; do
   check "$DEST/$(basename "$lib")"
   check_rpaths "$DEST/$(basename "$lib")"
   resolves "$DEST/$(basename "$lib")" "$BINARY_DIR"
