@@ -62,9 +62,10 @@ else
 cat <<'LINUX'
 
 Dynamically linked against the usual system libraries (libcurl, libsqlite3, libspatialite, geos,
-luajit, protobuf). On Debian/Ubuntu:
+luajit, protobuf). Built on Ubuntu 24.04, so it needs glibc 2.39 or newer - 22.04 is too old.
+On Debian/Ubuntu:
 
-  apt install libsqlite3-0 libspatialite7 libgeos-c1v5 libluajit-5.1-2 libprotobuf-lite23 libcurl4
+  apt install libsqlite3-0 libspatialite8 libgeos-c1v5 libluajit-5.1-2 libprotobuf-lite32 libcurl4
 LINUX
 fi)
 EOF

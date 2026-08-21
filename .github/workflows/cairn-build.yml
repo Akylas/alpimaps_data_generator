@@ -48,7 +48,11 @@ jobs:
       matrix:
         # Windows is left out on purpose: Valhalla's support for it is poor and this pipeline has
         # never been run there.
-        platform: [macos-latest, ubuntu-22.04]
+        # 24.04, not 22.04: Valhalla 3.8 is C++20 and midgard/logging.h includes <format>,
+        # which needs GCC 13 or later. 22.04 ships GCC 11 and the build dies on the first
+        # translation unit. The cost is glibc: binaries built here need 2.39, so they will not
+        # run on 22.04.
+        platform: [macos-latest, ubuntu-24.04]
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout repository
@@ -69,7 +73,7 @@ jobs:
       # Tauri v2 links against the 4.1 webkit2gtk, not the 4.0 the v1 template installed, and
       # against the ayatana fork of libappindicator
       - name: Install system dependencies (ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.platform == 'ubuntu-24.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -86,8 +90,11 @@ jobs:
         if: matrix.platform == 'macos-latest'
         run: |
           brew update
+          # spatialite-tools is not optional: Valhalla's CMake hard-fails without the
+          # `spatialite` and `spatialite_tool` binaries, which it uses to build tz.sqlite.
+          # libspatialite is the library only, so a machine with it still fails configure.
           brew install autoconf automake libtool cmake ccache boost protobuf \
-                       libspatialite sqlite3 luajit geos lz4 pkg-config
+                       libspatialite spatialite-tools sqlite3 luajit geos lz4 pkg-config
 
       # ---------------------------------------------------------------- Valhalla
       #
