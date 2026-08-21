@@ -87,7 +87,7 @@ fn link_args(link_line: &str, build: &Path) -> Vec<String> {
             t if t.starts_with("-L") || t.starts_with("-l") || t.starts_with("-F") => {
                 args.push(t.to_string())
             }
-            t if t.ends_with(".dylib") || t.ends_with(".a") || t.ends_with(".so") => {
+            t if is_library_path(t) => {
                 // CMake writes these relative to the build directory
                 let path = Path::new(t);
                 let resolved = if path.is_absolute() { path.to_path_buf() } else { build.join(path) };
@@ -102,12 +102,37 @@ fn link_args(link_line: &str, build: &Path) -> Vec<String> {
             _ => {}
         }
     }
-    // libvalhalla always needs these two and CMake resolves them through the compiler's own
-    // defaults rather than naming them on the link line
+    // libvalhalla always needs these and CMake resolves them through the compiler's own defaults
+    // rather than naming them on the link line. The C++ runtime is whichever one the platform's
+    // compiler uses - libc++ for clang on macOS, libstdc++ for GCC elsewhere. Naming the wrong
+    // one leaves every C++ symbol in libvalhalla undefined.
     args.push("-lcurl".into());
     args.push("-lz".into());
-    args.push("-lc++".into());
+    args.push(if cfg!(target_os = "macos") { "-lc++".into() } else { "-lstdc++".to_string() });
     args
+}
+
+/// Whether a link-line token names a library file rather than a flag.
+///
+/// Not `ends_with(".so")`: a Linux link line carries the versioned soname, and that is the
+/// normal form, not an edge case -
+///
+///   /opt/protobuf/lib/libprotobuf.so.3.21.12.0
+///   /usr/lib/x86_64-linux-gnu/libspatialite.so.7
+///
+/// which an extension test drops without saying so. What follows is a link that succeeds locally
+/// against Homebrew - where CMake writes libprotobuf-lite.35.1.0.dylib, and .dylib *is* the
+/// suffix - and fails on Linux with undefined symbols from every library that was skipped.
+fn is_library_path(token: &str) -> bool {
+    if token.starts_with('-') {
+        return false;
+    }
+    let Some(name) = Path::new(token).file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    // the version follows .so, so it is a contains rather than a suffix; taking the file name
+    // first keeps a directory called something.so.d from counting
+    name.contains(".so") || name.ends_with(".dylib") || name.ends_with(".a") || name.ends_with(".tbd")
 }
 
 /// Emit the link arguments for a crate that links Valhalla.

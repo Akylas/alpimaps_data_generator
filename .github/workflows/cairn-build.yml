@@ -416,13 +416,22 @@ jobs:
       # before the build either. `beforeBundleCommand` is the one point in between: the binary
       # is linked, the bundle is not yet assembled, and nothing has been signed.
       #
-      # tauri.conf.json points that hook at this script on macOS.
-      - name: Check the dylib bundler is wired in (macOS only)
-        if: matrix.platform == 'macos-latest'
+      # tauri.conf.json points that hook at bundle_resources.sh, which stages the resources and
+      # calls the platform's library bundler. The check follows that chain rather than looking
+      # for the bundler's name in tauri.conf.json, which is what it used to do - the hook was
+      # pointed at bundle_resources.sh and this went on grepping for the old name.
+      - name: Check the bundler is wired in
         run: |
           set -euo pipefail
-          test -x scripts/bundle_macos_dylibs.sh
-          grep -q bundle_macos_dylibs cairn/src-tauri/tauri.conf.json
+          test -x scripts/bundle_resources.sh
+          grep -q bundle_resources cairn/src-tauri/tauri.conf.json
+          if [ "${{ matrix.platform }}" = macos-latest ]; then
+            test -x scripts/bundle_macos_dylibs.sh
+            grep -q bundle_macos_dylibs scripts/bundle_resources.sh
+          else
+            test -x scripts/bundle_linux_libs.sh
+            grep -q bundle_linux_libs scripts/bundle_resources.sh
+          fi
 
       - uses: tauri-apps/tauri-action@v0
         id: tauri
