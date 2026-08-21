@@ -4,13 +4,11 @@
 # tag push takes the version already written down, the release is created as a draft, the
 # platform builds attach their bundles, and a failure takes the draft and the tag back out again.
 #
-# The release carries three things: the app bundles, and the `cairn` command line packaged on
-# its own per platform - same binary, without the app around it.
+# The release carries the app bundles and the `cairn` command line packaged on its own per
+# platform - same binary, without the app around it.
 #
-# What is different is underneath. The app links Valhalla, so it is built from the submodule
-# before Tauri runs and cached against its commit SHA - that build is tens of minutes and it
-# rarely moves. The Planetiler jar is *not* built here: it is published by its own workflow and
-# fetched, because it is the same jar on every platform.
+# The build itself lives in cairn-build.yml, which can also be run on its own to get the same
+# bundles as workflow artifacts without cutting a version.
 #
 # npm rather than yarn, because that is what cairn/ uses.
 name: Cairn release
@@ -37,7 +35,7 @@ jobs:
       contents: write
     outputs:
       RELEASE_UPLOAD_ID: ${{ steps.create_release.outputs.id }}
-      RELEASE_TAG: v${{ steps.changelog_reader.outputs.version }}
+      RELEASE_TAG: v${{ steps.tag_name.outputs.current_version }}
       # SHA before standard-version ran; the cleanup job resets to it on failure
       PRE_BUMP_SHA: ${{ steps.pre_bump.outputs.sha }}
 
@@ -63,6 +61,27 @@ jobs:
         id: pre_bump
         if: github.event_name == 'workflow_dispatch'
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # The 0.1.2 run cut a version whose only commit was the previous release commit, pushed a
+      # tag for it, and then fell over on the empty changelog it had just written - leaving a tag
+      # and a version bump on the branch with no release behind them. Nothing to release is not a
+      # failure worth that mess, so it stops here, before anything is written.
+      #
+      # Only `auto` is held to this: choosing a bump by hand is a deliberate act, and re-cutting a
+      # version over unreleasable commits is a legitimate thing to want.
+      - name: Check there is something to release
+        if: github.event_name == 'workflow_dispatch' && inputs.bump == 'auto'
+        run: |
+          set -euo pipefail
+          last="$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)"
+          range="${last:+$last..}HEAD"
+          # the types standard-version puts in a changelog, plus breaking changes of any type
+          if git log "$range" --format='%s%n%b' | grep -Eq '^(feat|fix|perf|revert)(\(.+\))?!?:|^BREAKING CHANGE'; then
+            echo "commits to release since ${last:-the first commit}"
+          else
+            echo "::error::Nothing to release since ${last:-the first commit}: no feat/fix/perf/revert or breaking-change commits. Pick an explicit bump if you mean to cut a version anyway."
+            exit 1
+          fi
 
       # A tag push arrives with the version already decided and written down. A manual run has
       # neither, so it cuts the release here: standard-version bumps the root package.json, the
@@ -95,8 +114,10 @@ jobs:
           case "$GITHUB_REF" in
             # a tag push says so itself
             refs/tags/v*) version="${GITHUB_REF#refs/tags/v}" ;;
-            # otherwise it is the tag the step above just wrote
-            *) version=$(git describe --tags --abbrev=0) ;;
+            # otherwise it is the tag the step above just wrote. `--match` matters: the
+            # planetiler jar has its own tags in this repository, and `planetiler-latest` moves,
+            # so an unfiltered describe can hand back a tag that is not a release of the app.
+            *) version=$(git describe --tags --abbrev=0 --match 'v[0-9]*') ;;
           esac
           version="${version#v}"
           if [ -z "$version" ]; then
@@ -106,243 +127,48 @@ jobs:
           echo "releasing $version"
           echo "current_version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Get Changelog Entry
-        id: changelog_reader
-        uses: mindsers/changelog-reader-action@v2
-        with:
-          version: ${{ steps.tag_name.outputs.current_version }}
-          path: ./CHANGELOG.md
+      # Not mindsers/changelog-reader-action: that reads Keep a Changelog (`## [0.1.1] - date`)
+      # and standard-version writes its own shapes (`### [0.1.1](compare-url) (date)`), so the
+      # release failed on a changelog it had just written itself.
+      - name: Get the changelog entry
+        id: changelog
+        env:
+          VERSION: ${{ steps.tag_name.outputs.current_version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "changes<<CHANGELOG_EOF"
+            ./scripts/changelog_entry.sh "$VERSION"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: create release
         id: create_release
         uses: ncipollo/release-action@v1
         with:
-          tag: v${{ steps.changelog_reader.outputs.version }}
-          name: v${{ steps.changelog_reader.outputs.version }}
-          body: ${{ steps.changelog_reader.outputs.changes }}
-          prerelease: ${{ steps.changelog_reader.outputs.status == 'prereleased' }}
+          tag: v${{ steps.tag_name.outputs.current_version }}
+          name: v${{ steps.tag_name.outputs.current_version }}
+          body: ${{ steps.changelog.outputs.changes }}
+          # a version with a dash in it is a prerelease: 0.2.0-rc.1, and nothing else
+          prerelease: ${{ contains(steps.tag_name.outputs.current_version, '-') }}
           # created as a draft; published once every platform has succeeded
           draft: true
           allowUpdates: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
-  build-tauri:
+  build:
     needs: create-release
-    strategy:
-      fail-fast: false
-      matrix:
-        # Windows is left out on purpose: Valhalla's support for it is poor and this pipeline has
-        # never been run there.
-        platform: [macos-latest, ubuntu-22.04]
-    runs-on: ${{ matrix.platform }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          # the tag, not the commit the run started from: a manual run bumps the version after
-          # that commit, and the bundles carry it
-          ref: ${{ needs.create-release.outputs.RELEASE_TAG }}
-
-      - name: Record dependency revisions
-        id: revs
-        run: |
-          set -euo pipefail
-          echo "valhalla=$(git -C valhalla rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      # Tauri v2 links against the 4.1 webkit2gtk, not the 4.0 the v1 template installed, and
-      # against the ayatana fork of libappindicator
-      - name: Install system dependencies (ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libgtk-3-dev \
-            libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf \
-            cmake make libtool pkg-config g++ ccache \
-            libboost-all-dev libcurl4-openssl-dev zlib1g-dev liblz4-dev \
-            libprotobuf-dev protobuf-compiler libsqlite3-dev libspatialite-dev \
-            libluajit-5.1-dev libgeos++-dev libgeos-dev spatialite-bin
-
-      # No dylibbundler: scripts/bundle_macos_dylibs.sh does the same job with otool and
-      # install_name_tool, which ship with the Command Line Tools.
-      - name: Install system dependencies (macOS only)
-        if: matrix.platform == 'macos-latest'
-        run: |
-          brew update
-          brew install autoconf automake libtool cmake ccache boost protobuf \
-                       libspatialite sqlite3 luajit geos lz4 pkg-config
-
-      # ---------------------------------------------------------------- Valhalla
-      #
-      # ENABLE_SERVICES=Off drops prime_server and zmq. The app embeds tyr::actor_t rather than
-      # talking to valhalla_service, so the whole HTTP stack - and the hand-built prime_server
-      # submodule with it - is off the release path.
-
-      - name: Valhalla build cache
-        id: valhalla-cache
-        uses: actions/cache@v4
-        with:
-          path: valhalla/build
-          key: valhalla-${{ matrix.platform }}-${{ steps.revs.outputs.valhalla }}
-
-      - name: Build Valhalla
-        if: steps.valhalla-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          cmake -S valhalla -B valhalla/build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DENABLE_SERVICES=Off \
-            -DENABLE_BENCHMARKS=Off \
-            -DENABLE_PYTHON_BINDINGS=Off \
-            -DENABLE_TESTS=Off
-          cmake --build valhalla/build -j"$(getconf _NPROCESSORS_ONLN)"
-
-      # ---------------------------------------------------------------- Planetiler
-
-      # The jar is published by .github/workflows/planetiler-jar.yml and fetched here, rather
-      # than built again per platform: it is the same jar on every one, and building it costs
-      # about eight minutes each time.
-      #
-      # It is bundled so a released app works offline. Without it the app still runs and fetches
-      # the jar itself on first use - which is what BUNDLE_JAR=0 leaves it to do.
-      - name: Fetch the planetiler jar
-        env:
-          JAR_URL: https://github.com/${{ github.repository }}/releases/download/planetiler-latest/planetiler-with-deps.jar
-        run: |
-          set -euo pipefail
-          mkdir -p cairn/src-tauri/resources
-          if curl -fSL --retry 3 -o /tmp/planetiler-with-deps.jar "$JAR_URL"; then
-            # bundle_resources.sh strips it to this platform's natives when it stages resources
-            cp /tmp/planetiler-with-deps.jar \
-              cairn/src-tauri/resources/planetiler-with-deps.jar
-          else
-            echo "::warning::no published jar at $JAR_URL - run the Planetiler jar workflow." \
-                 "The app will fetch one on first use instead."
-          fi
-
-      # ---------------------------------------------------------------- App
-
-      - name: setup node
-        uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-          cache: npm
-          cache-dependency-path: cairn/package-lock.json
-
-      - name: Install deps
-        working-directory: cairn
-        run: npm ci
-
-      - name: Rust setup
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "cairn -> target"
-
-      # A release that silently loses routing is worse than one that fails, and the only way to
-      # tell from outside is to ask.
-      - name: Fail if Valhalla did not link
-        working-directory: cairn
-        env:
-          VALHALLA_DIR: ${{ github.workspace }}/valhalla
-        run: |
-          set -euo pipefail
-          cargo test -p cairn-core --lib -- valhalla::routing --list > /tmp/routing-tests.txt
-          if ! grep -q reports_available_with_valhalla /tmp/routing-tests.txt; then
-            echo "Valhalla did not link; the release would ship without routing" >&2
-            cat /tmp/routing-tests.txt >&2
-            exit 1
-          fi
-
-      - name: Test the core
-        working-directory: cairn
-        env:
-          VALHALLA_DIR: ${{ github.workspace }}/valhalla
-        run: cargo test -p cairn-core
-
-      # ---------------------------------------------------------------- CLI
-      #
-      # The command line is released on its own, for anyone who wants the pipeline without the
-      # app. It is packaged *before* the bundle is built on purpose: `bundle_resources.sh`
-      # rewrites the same binary for the layout inside the .app, and a binary can only point at
-      # its libraries one way at a time.
-      - name: Build the CLI
-        working-directory: cairn
-        env:
-          VALHALLA_DIR: ${{ github.workspace }}/valhalla
-        run: cargo build --release -p cairn-cli
-
-      - name: Package the CLI standalone
-        env:
-          VERSION: ${{ needs.create-release.outputs.RELEASE_TAG }}
-        run: ./scripts/package_cli.sh "${VERSION#v}" dist
-
-      # Attached to the same draft release the bundles go to, so one release carries the app and
-      # the tool it is a front end for.
-      - name: Attach the CLI to the release
-        uses: ncipollo/release-action@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ needs.create-release.outputs.RELEASE_TAG }}
-          artifacts: 'dist/*.tar.gz,dist/*.sha256'
-          allowUpdates: true
-          draft: true
-          omitBodyDuringUpdate: true
-          omitNameDuringUpdate: true
-          omitPrereleaseDuringUpdate: true
-
-      # macOS needs its Homebrew libraries carried into the bundle before anything is signed.
-      #
-      # Ordering is the whole problem. Rewriting load commands invalidates a signature, so this
-      # cannot run after signing; and the .app does not exist until bundling, so it cannot run
-      # before the build either. `beforeBundleCommand` is the one point in between: the binary
-      # is linked, the bundle is not yet assembled, and nothing has been signed.
-      #
-      # tauri.conf.json points that hook at this script on macOS.
-      - name: Check the dylib bundler is wired in (macOS only)
-        if: matrix.platform == 'macos-latest'
-        run: |
-          set -euo pipefail
-          test -x scripts/bundle_macos_dylibs.sh
-          grep -q bundle_macos_dylibs cairn/src-tauri/tauri.conf.json
-
-      - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # the script re-signs ad-hoc after rewriting; passing the real identity here makes it
-          # sign with that instead, so tauri's own signing pass has less to redo
-          MACOS_SIGN_IDENTITY: ${{ secrets.APPLE_IDENTITY_ID }}
-          # build.rs reads this to find libvalhalla and the CMake link line. Unset, the app still
-          # builds and routing reports itself unavailable - so a missing secret degrades the
-          # release rather than failing it, which is worth knowing when one comes out unrouteable.
-          VALHALLA_DIR: ${{ github.workspace }}/valhalla
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          ENABLE_CODE_SIGNING: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_IDENTITY_ID }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_PROVIDER_SHORT_NAME: ${{ secrets.APPLE_PROVIDER_SHORT_NAME }}
-        with:
-          projectPath: cairn
-          releaseId: ${{ needs.create-release.outputs.RELEASE_UPLOAD_ID }}
-
-      # The load commands are rewritten before the bundle exists, against a predicted layout.
-      # That prediction has been wrong twice, and both times every static check passed while
-      # nothing in the bundle could start. This resolves them against what was actually built.
-      - name: Verify the bundle is self-contained (macOS only)
-        if: matrix.platform == 'macos-latest'
-        run: ./scripts/verify_bundle.sh "cairn/target/release/bundle/macos/Cairn.app"
+    uses: ./.github/workflows/cairn-build.yml
+    with:
+      version: ${{ needs.create-release.outputs.RELEASE_TAG }}
+      release_id: ${{ needs.create-release.outputs.RELEASE_UPLOAD_ID }}
+    # the signing and updater secrets, which the called workflow declares
+    secrets: inherit
 
   update-release:
     runs-on: ubuntu-latest
-    needs: [create-release, build-tauri]
-    if: ${{ always() && needs.create-release.result == 'success' && needs.build-tauri.result == 'success' }}
+    needs: [create-release, build]
+    if: ${{ always() && needs.create-release.result == 'success' && needs.build.result == 'success' }}
     permissions:
       contents: write
     steps:
@@ -363,11 +189,14 @@ jobs:
   # the draft and tag still have to go so the version can be re-released later.
   cleanup-on-failure:
     runs-on: ubuntu-latest
-    needs: [create-release, build-tauri]
+    needs: [create-release, build]
+    # Also on a create-release failure: by the time it can fail, the version bump and the tag are
+    # already pushed. The 0.1.2 run failed exactly there, and cleanup sat it out because it only
+    # looked at the build.
     if: >-
       ${{ always()
-          && needs.create-release.result == 'success'
-          && needs.build-tauri.result == 'failure' }}
+          && (needs.create-release.result == 'failure'
+              || (needs.create-release.result == 'success' && needs.build.result == 'failure')) }}
     permissions:
       contents: write
     steps:
@@ -383,9 +212,12 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # ignore errors: the tag may never have been pushed
-          git push --delete origin "$RELEASE_TAG" || true
-          gh release delete "$RELEASE_TAG" --yes || true
+          # a create-release that failed before the tag step leaves RELEASE_TAG as a bare "v"
+          if [ -n "${RELEASE_TAG#v}" ]; then
+            # ignore errors: the tag may never have been pushed
+            git push --delete origin "$RELEASE_TAG" || true
+            gh release delete "$RELEASE_TAG" --yes || true
+          fi
           if [ "${{ github.event_name }}" = workflow_dispatch ] && [ -n "$PRE_BUMP_SHA" ]; then
             git fetch origin "$GITHUB_REF_NAME"
             git checkout "$GITHUB_REF_NAME"

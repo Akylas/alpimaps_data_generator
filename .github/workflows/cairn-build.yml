@@ -1,0 +1,283 @@
+# Build Cairn, for a release or just to try it.
+#
+# One definition, two callers: `cairn-release.yml` calls it with a tag and a draft release to
+# attach to, and a manual run builds the same thing and leaves the results as workflow artifacts.
+# A test build creates no tag, no release and no version bump - it exists so a branch can be
+# built and handed to someone without cutting a version for it.
+name: Cairn build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version the bundles carry, as a tag (v1.2.3).'
+        required: true
+        type: string
+      release_id:
+        description: 'Draft release to attach the bundles to. Empty builds without publishing.'
+        required: false
+        default: ''
+        type: string
+    secrets:
+      # the caller passes these through with `secrets: inherit`
+      APPLE_CERTIFICATE: { required: false }
+      APPLE_CERTIFICATE_PASSWORD: { required: false }
+      APPLE_ID: { required: false }
+      APPLE_IDENTITY_ID: { required: false }
+      APPLE_PASSWORD: { required: false }
+      APPLE_PROVIDER_SHORT_NAME: { required: false }
+      APPLE_TEAM_ID: { required: false }
+      TAURI_SIGNING_PRIVATE_KEY: { required: false }
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: { required: false }
+
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'What the bundles should call themselves. Any string; nothing is tagged.'
+        required: false
+        default: 'test'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is left out on purpose: Valhalla's support for it is poor and this pipeline has
+        # never been run there.
+        platform: [macos-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          # a release build takes the tag, because a manual run bumps the version *after* the
+          # commit it started from and the bundles carry that version. A test build has no tag
+          # and takes the ref it was dispatched on.
+          ref: ${{ inputs.release_id != '' && inputs.version || github.ref }}
+
+      - name: Record dependency revisions
+        id: revs
+        run: |
+          set -euo pipefail
+          echo "valhalla=$(git -C valhalla rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Tauri v2 links against the 4.1 webkit2gtk, not the 4.0 the v1 template installed, and
+      # against the ayatana fork of libappindicator
+      - name: Install system dependencies (ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf \
+            cmake make libtool pkg-config g++ ccache \
+            libboost-all-dev libcurl4-openssl-dev zlib1g-dev liblz4-dev \
+            libprotobuf-dev protobuf-compiler libsqlite3-dev libspatialite-dev \
+            libluajit-5.1-dev libgeos++-dev libgeos-dev spatialite-bin
+
+      # No dylibbundler: scripts/bundle_macos_dylibs.sh does the same job with otool and
+      # install_name_tool, which ship with the Command Line Tools.
+      - name: Install system dependencies (macOS only)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          brew update
+          brew install autoconf automake libtool cmake ccache boost protobuf \
+                       libspatialite sqlite3 luajit geos lz4 pkg-config
+
+      # ---------------------------------------------------------------- Valhalla
+      #
+      # ENABLE_SERVICES=Off drops prime_server and zmq. The app embeds tyr::actor_t rather than
+      # talking to valhalla_service, so the whole HTTP stack - and the hand-built prime_server
+      # submodule with it - is off the release path.
+
+      - name: Valhalla build cache
+        id: valhalla-cache
+        uses: actions/cache@v4
+        with:
+          path: valhalla/build
+          key: valhalla-${{ matrix.platform }}-${{ steps.revs.outputs.valhalla }}
+
+      - name: Build Valhalla
+        if: steps.valhalla-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          cmake -S valhalla -B valhalla/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_SERVICES=Off \
+            -DENABLE_BENCHMARKS=Off \
+            -DENABLE_PYTHON_BINDINGS=Off \
+            -DENABLE_TESTS=Off
+          cmake --build valhalla/build -j"$(getconf _NPROCESSORS_ONLN)"
+
+      # ---------------------------------------------------------------- Planetiler
+
+      # The jar is published by .github/workflows/planetiler-jar.yml and fetched here, rather
+      # than built again per platform: it is the same jar on every one, and building it costs
+      # about eight minutes each time.
+      #
+      # It is bundled so a released app works offline. Without it the app still runs and fetches
+      # the jar itself on first use - which is what BUNDLE_JAR=0 leaves it to do.
+      - name: Fetch the planetiler jar
+        env:
+          JAR_URL: https://github.com/${{ github.repository }}/releases/download/planetiler-latest/planetiler-with-deps.jar
+        run: |
+          set -euo pipefail
+          mkdir -p cairn/src-tauri/resources
+          if curl -fSL --retry 3 -o /tmp/planetiler-with-deps.jar "$JAR_URL"; then
+            # bundle_resources.sh strips it to this platform's natives when it stages resources
+            cp /tmp/planetiler-with-deps.jar \
+              cairn/src-tauri/resources/planetiler-with-deps.jar
+          else
+            echo "::warning::no published jar at $JAR_URL - run the Planetiler jar workflow." \
+                 "The app will fetch one on first use instead."
+          fi
+
+      # ---------------------------------------------------------------- App
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: cairn/package-lock.json
+
+      - name: Install deps
+        working-directory: cairn
+        run: npm ci
+
+      - name: Rust setup
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "cairn -> target"
+
+      # A release that silently loses routing is worse than one that fails, and the only way to
+      # tell from outside is to ask.
+      - name: Fail if Valhalla did not link
+        working-directory: cairn
+        env:
+          VALHALLA_DIR: ${{ github.workspace }}/valhalla
+        run: |
+          set -euo pipefail
+          cargo test -p cairn-core --lib -- valhalla::routing --list > /tmp/routing-tests.txt
+          if ! grep -q reports_available_with_valhalla /tmp/routing-tests.txt; then
+            echo "Valhalla did not link; the release would ship without routing" >&2
+            cat /tmp/routing-tests.txt >&2
+            exit 1
+          fi
+
+      - name: Test the core
+        working-directory: cairn
+        env:
+          VALHALLA_DIR: ${{ github.workspace }}/valhalla
+        run: cargo test -p cairn-core
+
+      # ---------------------------------------------------------------- CLI
+      #
+      # The command line is released on its own, for anyone who wants the pipeline without the
+      # app. It is packaged *before* the bundle is built on purpose: `bundle_resources.sh`
+      # rewrites the same binary for the layout inside the .app, and a binary can only point at
+      # its libraries one way at a time.
+      - name: Build the CLI
+        working-directory: cairn
+        env:
+          VALHALLA_DIR: ${{ github.workspace }}/valhalla
+        run: cargo build --release -p cairn-cli
+
+      # `test` on a manual run, `v1.2.3` on a release; the leading v is not part of a version
+      - name: Package the CLI standalone
+        id: cli
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          # artifact names cannot carry a slash, and a dispatched version can be anything
+          echo "slug=${version//\//-}" >> "$GITHUB_OUTPUT"
+          ./scripts/package_cli.sh "$version" dist
+
+      # Attached to the same draft release the bundles go to, so one release carries the app and
+      # the tool it is a front end for.
+      - name: Attach the CLI to the release
+        if: inputs.release_id != ''
+        uses: ncipollo/release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ inputs.version }}
+          artifacts: 'dist/*.tar.gz,dist/*.sha256'
+          allowUpdates: true
+          draft: true
+          omitBodyDuringUpdate: true
+          omitNameDuringUpdate: true
+          omitPrereleaseDuringUpdate: true
+
+      # macOS needs its Homebrew libraries carried into the bundle before anything is signed.
+      #
+      # Ordering is the whole problem. Rewriting load commands invalidates a signature, so this
+      # cannot run after signing; and the .app does not exist until bundling, so it cannot run
+      # before the build either. `beforeBundleCommand` is the one point in between: the binary
+      # is linked, the bundle is not yet assembled, and nothing has been signed.
+      #
+      # tauri.conf.json points that hook at this script on macOS.
+      - name: Check the dylib bundler is wired in (macOS only)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          set -euo pipefail
+          test -x scripts/bundle_macos_dylibs.sh
+          grep -q bundle_macos_dylibs cairn/src-tauri/tauri.conf.json
+
+      - uses: tauri-apps/tauri-action@v0
+        id: tauri
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # the script re-signs ad-hoc after rewriting; passing the real identity here makes it
+          # sign with that instead, so tauri's own signing pass has less to redo
+          MACOS_SIGN_IDENTITY: ${{ secrets.APPLE_IDENTITY_ID }}
+          # build.rs reads this to find libvalhalla and the CMake link line. Unset, the app still
+          # builds and routing reports itself unavailable - so a missing secret degrades the
+          # release rather than failing it, which is worth knowing when one comes out unrouteable.
+          VALHALLA_DIR: ${{ github.workspace }}/valhalla
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          ENABLE_CODE_SIGNING: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_IDENTITY_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_PROVIDER_SHORT_NAME: ${{ secrets.APPLE_PROVIDER_SHORT_NAME }}
+        with:
+          projectPath: cairn
+          # empty on a test build, which makes tauri-action build without publishing anything
+          releaseId: ${{ inputs.release_id }}
+
+      # The load commands are rewritten before the bundle exists, against a predicted layout.
+      # That prediction has been wrong twice, and both times every static check passed while
+      # nothing in the bundle could start. This resolves them against what was actually built.
+      - name: Verify the bundle is self-contained (macOS only)
+        if: matrix.platform == 'macos-latest'
+        run: ./scripts/verify_bundle.sh "cairn/target/release/bundle/macos/Cairn.app"
+
+      # Uploaded on every run, release or not. On a test build these are the only output; on a
+      # release they are a second copy that outlives a draft being deleted after a failure.
+      - name: Upload the bundles as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cairn-${{ steps.cli.outputs.slug }}-${{ matrix.platform }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            cairn/target/release/bundle/dmg/*.dmg
+            cairn/target/release/bundle/macos/*.app.tar.gz
+            cairn/target/release/bundle/deb/*.deb
+            cairn/target/release/bundle/appimage/*.AppImage
+            cairn/target/release/bundle/rpm/*.rpm
+            dist/*.tar.gz
+            dist/*.sha256
