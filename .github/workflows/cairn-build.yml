@@ -48,11 +48,10 @@ jobs:
       matrix:
         # Windows is left out on purpose: Valhalla's support for it is poor and this pipeline has
         # never been run there.
-        # 24.04, not 22.04: Valhalla 3.8 is C++20 and midgard/logging.h includes <format>,
-        # which needs GCC 13 or later. 22.04 ships GCC 11 and the build dies on the first
-        # translation unit. The cost is glibc: binaries built here need 2.39, so they will not
-        # run on 22.04.
-        platform: [macos-latest, ubuntu-24.04]
+        # 22.04 sets the glibc floor at 2.35, which is what lets one Linux build run on 22.04,
+        # 24.04 and Debian 12 alike. Its compiler is too old for Valhalla - see below - so a
+        # newer one is installed rather than a newer runner used.
+        platform: [macos-latest, ubuntu-22.04]
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout repository
@@ -73,16 +72,41 @@ jobs:
       # Tauri v2 links against the 4.1 webkit2gtk, not the 4.0 the v1 template installed, and
       # against the ayatana fork of libappindicator
       - name: Install system dependencies (ubuntu only)
-        if: matrix.platform == 'ubuntu-24.04'
+        if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf \
-            cmake make libtool pkg-config g++ ccache \
+            cmake make libtool pkg-config ccache \
             libboost-all-dev libcurl4-openssl-dev zlib1g-dev liblz4-dev \
             libprotobuf-dev protobuf-compiler libsqlite3-dev libspatialite-dev \
             libluajit-5.1-dev libgeos++-dev libgeos-dev spatialite-bin
+
+      # Valhalla 3.8 is C++20 and midgard/logging.h includes <format>, which arrived in GCC 13.
+      # 22.04 ships GCC 11, so the build dies on the first translation unit.
+      #
+      # The compiler is installed rather than the runner moved to 24.04, because the runner sets
+      # the glibc floor: a binary built on 24.04 wants glibc 2.39 and will not start on 22.04.
+      # Building on 22.04 with a newer compiler gets both.
+      #
+      # -static-libstdc++ is the other half. GCC 13's <format> pulls in GLIBCXX_3.4.31 and .32,
+      # which 22.04's libstdc++ does not have, so a dynamically linked binary fails to start on
+      # the very release it was built on. Linked statically it needs no GLIBCXX symbols at all.
+      - name: Install a compiler new enough for Valhalla (ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          set -euo pipefail
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get install -y g++-13 gcc-13
+          g++-13 --version | head -1
+          # for everything downstream: cc-rs compiles the Valhalla shim, which includes those
+          # same headers, and cargo links the final binaries
+          {
+            echo "CC=gcc-13"
+            echo "CXX=g++-13"
+            echo "RUSTFLAGS=-C link-arg=-static-libstdc++ -C link-arg=-static-libgcc"
+          } >> "$GITHUB_ENV"
 
       # No dylibbundler: scripts/bundle_macos_dylibs.sh does the same job with otool and
       # install_name_tool, which ship with the Command Line Tools.
@@ -107,18 +131,26 @@ jobs:
         uses: actions/cache@v4
         with:
           path: valhalla/build
-          key: valhalla-${{ matrix.platform }}-${{ steps.revs.outputs.valhalla }}
+          # the compiler is part of what is cached, so it belongs in the key
+          key: valhalla-${{ matrix.platform }}-gcc13-${{ steps.revs.outputs.valhalla }}
 
       - name: Build Valhalla
         if: steps.valhalla-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
+          extra=()
+          if [ "${{ matrix.platform }}" = ubuntu-22.04 ]; then
+            extra=(-DCMAKE_C_COMPILER=gcc-13 -DCMAKE_CXX_COMPILER=g++-13
+                   -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
+                   -DCMAKE_SHARED_LINKER_FLAGS="-static-libstdc++ -static-libgcc")
+          fi
           cmake -S valhalla -B valhalla/build \
             -DCMAKE_BUILD_TYPE=Release \
             -DENABLE_SERVICES=Off \
             -DENABLE_BENCHMARKS=Off \
             -DENABLE_PYTHON_BINDINGS=Off \
-            -DENABLE_TESTS=Off
+            -DENABLE_TESTS=Off \
+            "${extra[@]}"
           cmake --build valhalla/build -j"$(getconf _NPROCESSORS_ONLN)"
 
       # ---------------------------------------------------------------- Planetiler
