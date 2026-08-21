@@ -1,12 +1,14 @@
-valhalla
+# Anchored with a leading slash: these name things at the top of the repository, and an
+# unanchored pattern matches every path segment of that name anywhere below it. `valhalla`
+# was hiding cairn/core/src/valhalla/ - the whole routing module - from git.
+/valhalla
 valhalla_tiles
 elevation_tiles
-prime_server
-planetiler
-alpimaps_mbtiles
-venv
-tippecanoe
-valhalla.json
+/prime_server
+/planetiler
+/alpimaps_mbtiles
+/venv
+/tippecanoe
 __pycache__
 cache
 *.tif
