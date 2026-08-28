@@ -187,14 +187,9 @@ alone and every zoom quantizes like the max one.
 they backfill the 1px border of a dem tile from its neighbours, and a missing
 neighbour is a seam at the edge of the covered area. The ring is a perimeter, so it
 costs ~19% more tiles at the max zoom but a lot more at the low zooms (26 -> 52 tiles
-at z9 for rhone-alpes), about 28% more bytes overall. Leave it at 0 for hillshades and
+at z9 for rhone-alpes), about 28% more bytes overall. Leave it at 0 for shaded relief and
 contours. The extra tiles needed to average a zoom from its 4 children are worked out
 separately and never written.
-
-## # Then build hillshades
-```shell
-./scripts/build_hillshades.sh --minzoom 5 --maxzoom 12 --round-digits 3 --max-round-digits 7  -o ${OUTPUT_DIR}/${AREA}/${AREA}_hillshade.mbtiles -f webp --poly-shape $POLY ${AREA}.tif
-```
 
 ## # Then build contours
 ```shell
@@ -202,15 +197,10 @@ separately and never written.
 ```
 
 ## # Cleanup contours mbtiles
-This steps ensure we have the same tiles in the area mbtiles and hillshade/contours. It is important in AlpiMaps as we merge tiles from area and contours to draw contour lines in between the map style. 
+This steps ensure we have the same tiles in the area mbtiles and terrain/contours. It is important in AlpiMaps as we merge tiles from area and contours to draw contour lines in between the map style. 
 ```shell
 python ./scripts/filter_tiles_from_other_mbtiles.py --sourcembtiles ${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles ${OUTPUT_DIR}/${AREA}/${AREA}_contours.mbtiles
 ```
-If you want you can also clear hillshade mbtiles (though it wont make much of a difference in size)
-```shell
-python ./scripts/filter_tiles_from_other_mbtiles.py --sourcembtiles ${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles ${OUTPUT_DIR}/${AREA}/${AREA}_hillshade.mbtiles
-```
-
 ## # build valhalla package
 
 ### Download the elevation tiles

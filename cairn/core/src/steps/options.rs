@@ -104,6 +104,12 @@ pub fn planetiler_common() -> Vec<OptionDef> {
             OptionKind::Bool, "Share the string dictionary across the archive.", "off"),
         opt("transportation_name_limit_merge", "transportation-name-limit-merge", "Limit name merge", "Layers",
             OptionKind::Bool, "Restrict merging of transportation_name features.", "off"),
+        opt("area_poly", "area_poly", "Clip to the area boundary", "Tiles",
+            OptionKind::Bool,
+            "Clip to the area's own .poly rather than the extract's bounding box, downloading it \
+             from Geofabrik if it is not already beside the extract. Without it a build writes \
+             half-filled tiles all around the bounding box. An explicit clip shape wins over this.",
+            "off"),
         opt("compact_db", "compact-db", "Compact archive", "Output",
             OptionKind::Bool,
             "Store each distinct tile blob once behind a `tiles` view. Measured on the current \
@@ -164,6 +170,12 @@ pub fn terrain_options() -> Vec<OptionDef> {
              otherwise silent: the renderer writes nothing there and the archive comes out with \
              a hole.",
             "on"),
+        opt("area_poly", "area_poly", "Clip to the area boundary", "Sources",
+            OptionKind::Bool,
+            "Clip to the area's own .poly rather than the extract's bounding box, downloading it \
+             from Geofabrik if it is not already beside the extract. Without it a build writes \
+             half-filled tiles all around the bounding box. An explicit clip shape wins over this.",
+            "off"),
         opt("poly_shape", "poly-shape", "Clip shape", "Sources",
             OptionKind::Text,
             "Path to an osmosis .poly. Only tiles touching the shape are written.",
@@ -402,6 +414,8 @@ mod tests {
     /// Operational flags: cairn supplies these itself, so a preset has no business setting them.
     const RUNNER_OWNED: &[&str] = &[
         "area", "mbtiles", "polygon", "jar", "download", "force", "tmpdir", "loginterval", "schema",
+        // resolves into --polygon, which is itself runner-owned
+        "area_poly",
     ];
 
     /// `0.70` in the README and `0.7` from to_args are the same flag, so compare numbers as numbers.
@@ -476,6 +490,12 @@ mod tests {
             let mut got: Vec<String> = to_args(&defs, &preset.values)
                 .iter()
                 .map(|a| canonical(a.trim_start_matches('-')))
+                // the same runner-owned keys are dropped from both sides, or area_poly would
+                // look like drift against the README's explicit --polygon
+                .filter(|t| {
+                    let key = t.split('=').next().unwrap_or_default().replace('-', "_");
+                    !RUNNER_OWNED.contains(&key.as_str())
+                })
                 .collect();
             got.sort();
             assert_eq!(got, readme_flags(marker), "`measured` preset for {step:?} has drifted from the README");

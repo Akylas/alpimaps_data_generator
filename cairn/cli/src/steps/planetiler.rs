@@ -163,6 +163,20 @@ pub async fn run(settings: &Settings, args: Args, routes: bool) -> Result<()> {
     // explicit -o wins over the preset, so a preset can be used as a starting point
     values.extend(parse_overrides(&defs, &args.options)?);
 
+    // `area_poly` is cairn's own switch, not a planetiler flag: turn it into a real --polygon
+    // before the arguments are rendered, fetching the boundary if this is the first build.
+    if let Some(path) = cairn_core::steps::download::apply_area_poly(
+        &mut values,
+        "polygon",
+        &settings.data_dir,
+        &args.area,
+        |_, _| {},
+    )
+    .await?
+    {
+        println!("clipping to {}", path.display());
+    }
+
     let jar = match args.jar.clone().or_else(|| settings.planetiler_jar_path()) {
         Some(jar) => jar,
         None => {

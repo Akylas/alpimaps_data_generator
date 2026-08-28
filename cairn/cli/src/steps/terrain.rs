@@ -1,6 +1,6 @@
 //! `cairn terrain` - terrain-RGB tiles, mirroring build_terrain_rgb.py's flags.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::Args as ClapArgs;
 use std::path::PathBuf;
 use cairn_core::elevation::Encoding;
@@ -45,6 +45,10 @@ pub struct Args {
     /// Osmosis .poly limiting which tiles are written, as in build_terrain_rgb.py.
     #[arg(long)]
     pub poly_shape: Option<PathBuf>,
+    /// Clip to the area's own boundary, downloading it from Geofabrik when it is not already
+    /// beside the extract. Ignored when --poly-shape names a shape.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub area_poly: bool,
     /// Ring of extra tiles around the shape. 3D renderers backfill a tile's 1px border from its
     /// neighbours, so a ring removes the seam at the edge of the covered area.
     #[arg(long, default_value_t = 1)]
@@ -116,8 +120,15 @@ fn parse_bounds(raw: &str) -> Result<(f64, f64, f64, f64)> {
     }
 }
 
-pub async fn run(settings: &Settings, args: Args) -> Result<()> {
+pub async fn run(settings: &Settings, mut args: Args) -> Result<()> {
     let area_dir = settings.area_dir(&args.area);
+    if args.poly_shape.is_none() && args.area_poly {
+        let path = cairn_core::steps::download::ensure_poly(&settings.data_dir, &args.area, |_, _| {})
+            .await
+            .with_context(|| format!("resolving the boundary for `{}`", args.area))?;
+        println!("clipping to {}", path.display());
+        args.poly_shape = Some(path);
+    }
     let recorded = terrain_options(&args);
     let encoding = Encoding::parse(&args.encoding)
         .ok_or_else(|| anyhow!("unknown encoding `{}`", args.encoding))?;

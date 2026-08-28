@@ -70,6 +70,59 @@ async fn fetch_index() -> Result<serde_json::Value> {
     Err(last.unwrap_or_else(|| anyhow!("could not fetch the Geofabrik index")))
 }
 
+/// Where an area's boundary polygon lives once fetched.
+pub fn poly_path(data_dir: &Path, area: &str) -> PathBuf {
+    data_dir.join(format!("{area}.poly"))
+}
+
+/// Geofabrik publishes the boundary beside the extract, but does not list it in the index: the
+/// pbf is `.../rhone-alpes-latest.osm.pbf` and the polygon `.../rhone-alpes.poly`.
+pub fn poly_url_from_pbf(pbf: &str) -> Option<String> {
+    pbf.strip_suffix("-latest.osm.pbf").map(|base| format!("{base}.poly"))
+}
+
+/// The area's boundary polygon, downloading it if it is not already there.
+///
+/// Clipping to the area's own boundary is what stops a build writing half-filled tiles all around
+/// the extract's bounding box, so it should not require hunting down a file by hand.
+pub async fn ensure_poly<F>(data_dir: &Path, area: &str, progress: F) -> Result<PathBuf>
+where
+    F: FnMut(u64, Option<u64>),
+{
+    let target = poly_path(data_dir, area);
+    if target.is_file() {
+        return Ok(target);
+    }
+    let pbf = resolve_url(area).await?;
+    let url = poly_url_from_pbf(&pbf)
+        .ok_or_else(|| anyhow!("cannot derive a .poly URL from `{pbf}`"))?;
+    fetch_url(&url, &target, progress).await
+}
+
+/// Resolve the `area_poly` switch into a concrete clip path in `values`.
+///
+/// `clip_key` is whichever key that step uses for a shape - planetiler calls it `polygon`, the
+/// terrain renderer `poly-shape`. An explicit shape always wins; `area_poly` only fills a gap.
+/// The switch itself is removed either way, since it is cairn's own and means nothing downstream.
+pub async fn apply_area_poly<F>(
+    values: &mut std::collections::BTreeMap<String, serde_json::Value>,
+    clip_key: &str,
+    data_dir: &Path,
+    area: &str,
+    progress: F,
+) -> Result<Option<PathBuf>>
+where
+    F: FnMut(u64, Option<u64>),
+{
+    let wanted = values.remove("area_poly").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !wanted || values.contains_key(clip_key) {
+        return Ok(None);
+    }
+    let path = ensure_poly(data_dir, area, progress).await?;
+    values.insert(clip_key.to_string(), serde_json::Value::String(path.display().to_string()));
+    Ok(Some(path))
+}
+
 /// Download the extract for an area, reporting `(done, total)` bytes as it goes.
 ///
 /// Writes through a `.part` file so an interrupted download cannot be mistaken for a finished
@@ -90,7 +143,10 @@ where
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let part = target.with_extension("pbf.part");
+    let part = target.with_extension(match target.extension().and_then(|e| e.to_str()) {
+        Some(ext) => format!("{ext}.part"),
+        None => "part".to_string(),
+    });
 
     let response = reqwest::get(url).await.with_context(|| format!("downloading {url}"))?;
     if !response.status().is_success() {
@@ -116,6 +172,41 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The index lists no polygon URL, so it is derived from the extract's. If Geofabrik ever
+    /// renames the extract this returns None rather than inventing a URL that 404s.
+    #[test]
+    fn poly_url_is_derived_from_the_extract_url() {
+        assert_eq!(
+            poly_url_from_pbf("https://download.geofabrik.de/europe/france/rhone-alpes-latest.osm.pbf")
+                .as_deref(),
+            Some("https://download.geofabrik.de/europe/france/rhone-alpes.poly")
+        );
+        assert_eq!(poly_url_from_pbf("https://example.invalid/rhone-alpes.osm.pbf"), None);
+    }
+
+    /// An explicit clip shape is the user's decision and must survive the switch.
+    #[tokio::test]
+    async fn area_poly_never_overrides_an_explicit_shape() {
+        let mut values = std::collections::BTreeMap::from([
+            ("area_poly".to_string(), serde_json::json!(true)),
+            ("polygon".to_string(), serde_json::json!("/tmp/mine.poly")),
+        ]);
+        let used = apply_area_poly(&mut values, "polygon", Path::new("/nope"), "rhone-alpes", |_, _| {})
+            .await
+            .expect("an explicit shape short-circuits before any download");
+        assert_eq!(used, None);
+        assert_eq!(values["polygon"], serde_json::json!("/tmp/mine.poly"));
+        // the switch is cairn's own and must not reach the tool
+        assert!(!values.contains_key("area_poly"));
+    }
+
+    /// The polygon keeps the area's own spelling; only the extract is renamed for planetiler.
+    #[test]
+    fn poly_path_keeps_the_area_name() {
+        let p = poly_path(Path::new("/data"), "rhone-alpes");
+        assert_eq!(p, Path::new("/data/rhone-alpes.poly"));
+    }
 
     /// Planetiler looks for `rhone_alpes.osm.pbf`, not `rhone-alpes.osm.pbf`. Getting this wrong
     /// means it silently downloads a second copy of a 400 MB file.

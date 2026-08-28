@@ -991,7 +991,23 @@ async fn run_steps(
         // Whatever the form holds, verbatim. The form seeds itself from the default preset on
         // load, so an untouched step already carries the README's values - and merging them in
         // again here would make a deliberately cleared field impossible to clear.
-        let values = req.values.get(&step).cloned().unwrap_or_default();
+        let mut values = req.values.get(&step).cloned().unwrap_or_default();
+        // `area_poly` is cairn's own switch: resolve it to a real clip path, fetching the
+        // boundary from Geofabrik on the first build that asks for it.
+        let clip_key = if step == StepId::TerrainRgb { "poly_shape" } else { "polygon" };
+        if let Err(e) = cairn_core::steps::download::apply_area_poly(
+            &mut values,
+            clip_key,
+            &settings.data_dir,
+            &req.area,
+            |_, _| {},
+        )
+        .await
+        {
+            let _ = tx
+                .send(StepEvent::Log { step, line: format!("could not resolve the area boundary: {e}") })
+                .await;
+        }
         let forced = req.force_all || req.force.contains(&step);
         if !forced {
             let status = build_state::status(&settings, &req.area, step, &values);
