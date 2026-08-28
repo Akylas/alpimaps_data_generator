@@ -28,6 +28,11 @@ async function devInvoke(cmd, args) {
     }
     case "step_options":
       return (await fetch(`${DEV_BASE}/step-options/${args.step}`)).json();
+    case "default_preset_name":
+      return "measured";
+    case "delete_artifact":
+      // the tile server serves the catalog read-only; deleting is the app's job
+      throw new Error("deleting is only available inside the app");
     case "download_planetiler":
       throw new Error("downloading is only available inside the app");
     case "reveal":

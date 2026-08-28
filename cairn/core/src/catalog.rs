@@ -525,8 +525,87 @@ pub fn diff_layers(a: &Artifact, b: &Artifact) -> Vec<LayerDiff> {
         .collect()
 }
 
+/// Delete one output file and the sidecars that belong to it, returning the bytes freed.
+///
+/// `root` is the configured output root and the path must be inside it. The path arrives from the
+/// front end, and a delete that removes whatever it is handed is one typo from being a problem.
+pub fn delete_artifact(root: &Path, path: &Path) -> anyhow::Result<u64> {
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("output root {}", root.display()))?;
+    let target = path
+        .canonicalize()
+        .with_context(|| format!("{}", path.display()))?;
+    if !target.starts_with(&root) {
+        anyhow::bail!("{} is outside the output root", target.display());
+    }
+    if !target.is_file() {
+        anyhow::bail!("{} is not a file", target.display());
+    }
+
+    let mut freed = 0u64;
+    // an mbtiles leaves -journal/-wal/-shm beside it; removing the archive and leaving those
+    // behind means the next open finds a half-written database
+    for suffix in ["", "-journal", "-wal", "-shm"] {
+        let sidecar = if suffix.is_empty() {
+            target.clone()
+        } else {
+            PathBuf::from(format!("{}{suffix}", target.display()))
+        };
+        if sidecar.is_file() {
+            freed += std::fs::metadata(&sidecar).map(|m| m.len()).unwrap_or(0);
+            std::fs::remove_file(&sidecar)
+                .with_context(|| format!("removing {}", sidecar.display()))?;
+        }
+    }
+    Ok(freed)
+}
+
 #[cfg(test)]
 mod tests {
+    /// A delete command that removes whatever path it is handed is one typo from being a problem,
+    /// so the guard is the part worth testing.
+    #[test]
+    fn delete_refuses_anything_outside_the_output_root() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("precious.mbtiles");
+        std::fs::write(&victim, b"do not delete me").unwrap();
+
+        let err = super::delete_artifact(root.path(), &victim).unwrap_err();
+        assert!(err.to_string().contains("outside the output root"), "{err}");
+        assert!(victim.is_file(), "the file must still be there");
+    }
+
+    #[test]
+    fn delete_takes_the_sidecars_with_the_archive() {
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("rhone-alpes.mbtiles");
+        std::fs::write(&db, vec![0u8; 100]).unwrap();
+        std::fs::write(root.path().join("rhone-alpes.mbtiles-journal"), vec![0u8; 20]).unwrap();
+        std::fs::write(root.path().join("rhone-alpes.mbtiles-wal"), vec![0u8; 30]).unwrap();
+        // a different archive must be left alone
+        let other = root.path().join("rhone-alpes_routes.mbtiles");
+        std::fs::write(&other, vec![0u8; 10]).unwrap();
+
+        let freed = super::delete_artifact(root.path(), &db).unwrap();
+        assert_eq!(freed, 150);
+        assert!(!db.exists());
+        assert!(!root.path().join("rhone-alpes.mbtiles-journal").exists());
+        assert!(!root.path().join("rhone-alpes.mbtiles-wal").exists());
+        assert!(other.is_file(), "an unrelated archive must survive");
+    }
+
+    #[test]
+    fn delete_refuses_a_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("nested");
+        std::fs::create_dir(&dir).unwrap();
+        let err = super::delete_artifact(root.path(), &dir).unwrap_err();
+        assert!(err.to_string().contains("not a file"), "{err}");
+        assert!(dir.is_dir());
+    }
+
     use super::*;
 
     /// Build a `--compact-db` style archive: `tiles_shallow` + `tiles_data` + a `tiles` view.

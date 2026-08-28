@@ -143,40 +143,12 @@ async fn list_areas(config: State<'_, Config>) -> Result<Vec<Area>, String> {
 
 /// Delete one output file, and whatever sits beside it as part of the same archive.
 ///
-/// Refuses anything outside the configured output root: the path arrives from the front end, and
-/// a delete command that will remove any path it is handed is one typo away from being a problem.
+/// The guard and the sidecar handling live in `catalog` so they can be tested; this only supplies
+/// the configured output root.
 #[tauri::command]
 async fn delete_artifact(config: State<'_, Config>, path: String) -> Result<u64, String> {
     let settings = config.get()?;
-    let root = settings
-        .output_root
-        .canonicalize()
-        .map_err(|e| format!("output root {}: {e}", settings.output_root.display()))?;
-    let target = Path::new(&path)
-        .canonicalize()
-        .map_err(|e| format!("{path}: {e}")).map_err(|e| e.to_string())?;
-    if !target.starts_with(&root) {
-        return Err(format!("{} is outside the output root", target.display()));
-    }
-    if !target.is_file() {
-        return Err(format!("{} is not a file", target.display()));
-    }
-
-    let mut freed = 0u64;
-    // an mbtiles leaves a -journal or -wal beside it; deleting the archive and leaving those
-    // behind means the next open sees a half-written database
-    for suffix in ["", "-journal", "-wal", "-shm"] {
-        let sidecar = if suffix.is_empty() {
-            target.clone()
-        } else {
-            PathBuf::from(format!("{}{suffix}", target.display()))
-        };
-        if sidecar.is_file() {
-            freed += std::fs::metadata(&sidecar).map(|m| m.len()).unwrap_or(0);
-            std::fs::remove_file(&sidecar).map_err(|e| format!("{}: {e}", sidecar.display()))?;
-        }
-    }
-    Ok(freed)
+    catalog::delete_artifact(&settings.output_root, Path::new(&path)).map_err(|e| e.to_string())
 }
 
 /// Walks the whole archive, so it is deliberately a separate call the UI makes on demand

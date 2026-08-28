@@ -44,6 +44,21 @@
   /// `rhone-alpes_terrain.mbtiles.old` to work out what it is.
   const KIND_ORDER = ["basemap", "routes", "terrain_rgb", "hillshade", "valhalla_package", "unknown"];
 
+  /// One 16px glyph per kind, drawn with currentColor so it takes the accent from the section
+  /// heading. Stroked rather than filled: at this size a filled glyph reads as a blob.
+  const KIND_ICON = {
+    // stacked layers
+    basemap: "M2 5.2 8 2.2l6 3-6 3-6-3Zm0 3.4 6 3 6-3M2 11.6l6 3 6-3",
+    // a winding way with its two ends marked
+    routes: "M4.2 13.2c0-2.2 2-2.4 3.4-3s2.6-1 2.6-2.6-1.4-2.4-2.8-2.4M4.2 13.2h.01M7.4 5.2h.01",
+    // peaks
+    terrain_rgb: "M1.6 12.8 6 5.2l2.6 4.4M6.6 12.8h7.8L10.6 6.4l-2 3.2",
+    hillshade: "M1.6 12.8 6 5.2l2.6 4.4M6.6 12.8h7.8L10.6 6.4l-2 3.2",
+    // a navigation arrow
+    valhalla_package: "M14 2.4 2 7.2l4.8 2 2 4.8L14 2.4Z",
+    unknown: "M9.2 1.8H4a1.4 1.4 0 0 0-1.4 1.4v9.6A1.4 1.4 0 0 0 4 14.2h8a1.4 1.4 0 0 0 1.4-1.4V6l-4.2-4.2Zm0 0V6h4.2",
+  };
+
   let groups = $derived.by(() => {
     if (!area) return [];
     const by = new Map();
@@ -119,6 +134,9 @@
   {#each groups as group}
     <section class="kind">
       <h3>
+        <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
+          <path d={KIND_ICON[group.kind] ?? KIND_ICON.unknown} />
+        </svg>
         {KIND_LABEL[group.kind] ?? group.kind}
         <span class="count">{group.items.length} file{group.items.length === 1 ? "" : "s"}</span>
         <span class="bytes">{mb(group.bytes)}</span>
@@ -286,13 +304,26 @@
   .bar i { display: block; height: 100%; background: var(--accent-hi); }
   .v { text-align: right; }
   .n { text-align: right; color: var(--muted-2); }
-  .kind { margin-bottom: 22px; }
-  .kind h3 { display: flex; align-items: baseline; gap: 10px; margin: 0 0 6px;
+  /* a card per kind: the heading alone was not enough separation once an area has a dozen files */
+  .kind { margin-bottom: 18px; border: 1px solid var(--line-2); border-radius: var(--r);
+    background: var(--card); overflow: hidden; }
+  .kind h3 { display: flex; align-items: center; gap: 9px; margin: 0;
+    padding: 9px 12px; background: var(--hover); border-bottom: 1px solid var(--line-2);
     font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
-    color: var(--text-2); }
+    color: var(--text); }
+  /* the accent bar is what the eye catches when scrolling past several sections */
+  .kind h3::before { content: ""; width: 3px; align-self: stretch; margin: -9px 3px -9px -12px;
+    background: var(--accent); }
+  .icon { width: 16px; height: 16px; flex: none; color: var(--accent-hi);
+    fill: none; stroke: currentColor; stroke-width: 1.4;
+    stroke-linecap: round; stroke-linejoin: round; }
   .kind .count { font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--muted-2); }
   .kind .bytes { margin-left: auto; font-weight: 500; letter-spacing: 0; text-transform: none;
-    font-variant-numeric: tabular-nums; color: var(--muted); }
+    font-variant-numeric: tabular-nums; color: var(--text-2); }
+  .kind table { font-size: 13px; }
+  .kind th { padding-top: 8px; }
+  .kind td, .kind th { padding-left: 12px; padding-right: 12px; }
+  .kind tbody tr:last-child td { border-bottom: none; }
   .actions { text-align: right; white-space: nowrap; }
   .actions button + button { margin-left: 4px; }
   .danger:hover:not(:disabled) { border-color: var(--warn); color: var(--warn); }
