@@ -54,6 +54,11 @@
   let label = $state("");
   let percent = $state(0);
   let lines = $state([]);
+  /** The subprocess argv per step, from the `command` event. */
+  let commands = $state({});
+  /// How much of the log is rendered. The whole buffer is kept and copied; painting all of it
+  /// would rebuild a megabyte-sized text node on every progress line.
+  const TAIL = 2000;
   let results = $state([]);
   /** Per-step live state, keyed by step id: what is running, what finished, how it went. */
   let status = $state({});
@@ -295,7 +300,9 @@
   let logCopied = $state(false);
   async function copyLog() {
     try {
-      await navigator.clipboard.writeText(lines.join("\n"));
+      // the commands go with it: a pasted log without them cannot be diagnosed
+      const head = Object.entries(commands).map(([step, argv]) => `$ ${argv.join(" ")}`);
+      await navigator.clipboard.writeText([...head, "", ...lines].join("\n"));
       logCopied = true;
       setTimeout(() => (logCopied = false), 1200);
     } catch {}
@@ -325,7 +332,15 @@
         label = ev.label; percent = ev.percent;
         mark(ev.step, { percent: ev.percent, label: ev.label });
         break;
-      case "log": lines = [...lines.slice(-400), ev.line]; break;
+      case "command":
+        // kept out of `lines` so it cannot scroll away: this is the record of which jar ran
+        // and which flags reached it, which is the first thing to check when the output looks
+        // like an older schema
+        commands = { ...commands, [ev.step]: ev.argv };
+        break;
+      // 20k lines is about an hour of planetiler at a 1s log interval. It used to be 400,
+      // which threw away the start of the run - including the command line - within seconds.
+      case "log": lines = [...lines.slice(-20000), ev.line]; break;
       case "finished":
         results = [...results, ev];
         runningStep = null;
@@ -339,7 +354,7 @@
   }
 
   async function run() {
-    running = true; lines = []; results = []; percent = 0; runError = ""; done = null;
+    running = true; lines = []; results = []; percent = 0; runError = ""; done = null; commands = {};
     const attempted = [...planned];
     // queued up front, so the list reads as a plan rather than filling in as it goes
     status = Object.fromEntries(planned.map((id) => [id, { state: "queued" }]));
@@ -639,14 +654,29 @@
       </div>
       <div class="bar big"><div class="fill" style="width:{percent}%"></div></div>
       <p class="muted small">{label || phase}</p>
+
+      {#each Object.entries(commands) as [step, argv]}
+        <!-- open: seeing which flags reached planetiler is the point of keeping it -->
+        <details class="group cmd" open>
+          <summary>
+            {labelFor(step)} command
+            <button class="ghost tiny" onclick={(e) => { e.preventDefault(); copy(argv.join(" ")); }}>
+              {copiedLine === argv.join(" ") ? "copied" : "copy"}
+            </button>
+          </summary>
+          <pre class="argv">{argv.join("\n  ")}</pre>
+        </details>
+      {/each}
+
       <details class="group" open={results.some((r) => !r.ok)}>
         <summary>
-          Log
+          Log <span class="lines">{lines.length} lines</span>
           <button class="ghost tiny" onclick={(e) => { e.preventDefault(); copyLog(); }}>
             {logCopied ? "copied" : "copy"}
           </button>
         </summary>
-        <pre>{lines.slice(-150).join("\n")}</pre>
+        <pre>{#if lines.length > TAIL}… {lines.length - TAIL} earlier lines, in `copy`
+{/if}{lines.slice(-TAIL).join("\n")}</pre>
       </details>
     </div>
   {/if}
@@ -780,6 +810,11 @@
   .done strong { font-size: 13px; font-weight: 600; }
   .done .detail { font-size: 11.5px; color: var(--text-2); }
   .done .tiny { margin-left: 0; }
+  /* one argument per line: a 30-flag planetiler invocation on one line is unreadable, and
+     reading it is the whole point of keeping it */
+  .cmd .argv { max-height: 320px; color: var(--text-3); font-size: 11px; white-space: pre;
+               word-break: normal; }
+  .lines { color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
   .steprow { display: flex; align-items: center; gap: 8px; padding: 6px 8px;
              border-radius: var(--r); position: relative; }
   .steprow:hover { background: var(--surface-2); }

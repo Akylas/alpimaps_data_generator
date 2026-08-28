@@ -110,9 +110,7 @@ pub async fn run_cancellable(
     }
 
     let _ = tx.send(StepEvent::Started { step, area: job.area.clone() }).await;
-    let _ = tx
-        .send(StepEvent::Log { step, line: argv.join(" ") })
-        .await;
+    let _ = tx.send(StepEvent::Command { step, argv: argv.clone() }).await;
 
     let mut child = tokio::process::Command::new(&argv[0])
         .args(&argv[1..])

@@ -189,6 +189,12 @@ pub fn shell_quote(arg: &str) -> String {
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum StepEvent {
     Started { step: StepId, area: String },
+    /// The exact argv of the subprocess this step runs.
+    ///
+    /// Separate from `Log` because it is the one line always worth keeping: it is the only
+    /// record of which jar ran and which flags actually reached it, and as a log line it
+    /// scrolled off long before anyone came looking for it.
+    Command { step: StepId, argv: Vec<String> },
     Phase { step: StepId, name: String },
     Progress { step: StepId, label: String, percent: u8 },
     Log { step: StepId, line: String },

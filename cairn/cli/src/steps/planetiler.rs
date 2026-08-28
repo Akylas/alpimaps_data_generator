@@ -320,6 +320,12 @@ pub async fn run(settings: &Settings, args: Args, routes: bool) -> Result<()> {
                     log.remove(0);
                 }
             }
+            StepEvent::Command { argv, .. } => {
+                // always printed, not only under --verbose: which jar ran and with which flags
+                // is the first thing anyone asks when the output looks wrong
+                println!("$ {}", argv.join(" "));
+                log.push(argv.join(" "));
+            }
             StepEvent::Started { .. } | StepEvent::Skipped { .. } => {}
         }
     }
