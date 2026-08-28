@@ -84,8 +84,10 @@ pub fn builtin() -> Vec<Preset> {
             name: "measured".into(),
             step: StepId::Basemap,
             description:
-                "Tuned basemap: -11.7% versus the stock flags on rhone-alpes, with vertex \
-                 removal doing the work instead of feature deletion."
+                "Tuned basemap, with vertex removal doing the work instead of feature deletion. \
+                 The landcover trio is the bulk of it; swimming pool simplification adds -0.16% \
+                 and dropping redundant name_int -0.88%, both measured on rhone-alpes. The -11.7% \
+                 headline predates those two and needs re-measuring."
                     .into(),
             values: v(&[
                 ("simplify_tolerance", serde_json::json!(0.70)),
@@ -94,6 +96,8 @@ pub fn builtin() -> Vec<Preset> {
                 ("landcover_tolerance_z11_13", serde_json::json!(1.05)),
                 ("landcover_drop_redundant_subclass", serde_json::json!(true)),
                 ("landcover_merge_maxzoom", serde_json::json!(true)),
+                ("water_pool_tolerance", serde_json::json!(1)),
+                ("drop_redundant_name_int", serde_json::json!(true)),
                 ("exclude_layers", serde_json::json!("route")),
                 ("nodemap_type", serde_json::json!("sparsearray")),
                 ("languages", serde_json::json!("")),
