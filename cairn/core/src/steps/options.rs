@@ -207,6 +207,33 @@ pub fn basemap_options() -> Vec<OptionDef> {
             "off"),
         opt("landcover_merge_maxzoom", "landcover_merge_maxzoom", "Merge landcover at max zoom", "Landcover",
             OptionKind::Bool, "Extend polygon merging to z14.", "merging stops at z13"),
+        opt("water_pool_tolerance", "water_pool_tolerance", "Swimming pool tolerance", "Water",
+            float(0.0),
+            "Extra max-zoom simplification for swimming pools, which carry about 99 vertices each \
+             for a shape a pixel or two across. Pools also switch to Douglas-Peucker here: the \
+             layer's usual Visvalingam-Whyatt drops lowest-area vertices first and deletes 78% of \
+             pools at 1px, where Douglas-Peucker keeps 97.9% of them and still removes 39% of the \
+             vertices. 1 is the measured sweet spot; past it the curve flattens.",
+            "no extra simplification"),
+        opt("drop_redundant_name_int", "drop_redundant_name_int", "Drop redundant name_int", "Names",
+            OptionKind::Bool,
+            "Omit `name_int` where it is an exact copy of `name`, which it usually is under an \
+             empty `languages`. Worth about -0.9% of tile bytes, spread over 13 layers and \
+             concentrated in transportation_name.",
+            "off"),
+        opt("transportation_surface_detail", "transportation_surface_detail", "Road surface detail", "Layers",
+            OptionKind::Bool,
+            "Emit `surface_detail`, OSM's raw surface value or the tracktype grade, on every road \
+             class. The stock `surface` attribute only fires on path and track and only ever says \
+             `paved`, so unpaved and unknown are indistinguishable. Costs about +0.8% of tile \
+             bytes and reaches 73% of tracks. Values are raw OSM, so a style needs a default \
+             branch: 75 of the 133 that appear are tagging noise.",
+            "off"),
+        opt("transportation_surface_detail_minzoom", "transportation_surface_detail_minzoom", "Surface detail min zoom", "Layers",
+            OptionKind::Int { min: Some(0), max: Some(15) },
+            "Lowest zoom carrying `surface_detail`. z13 adds roughly 0.9 MB on rhone-alpes and \
+             z12 a further 0.2 MB, to label roads that are hairlines at those zooms.",
+            "14"),
     ]);
     defs
 }
@@ -233,13 +260,14 @@ pub fn routes_options() -> Vec<OptionDef> {
             "Emit `osmc:symbol` as an integer id and write the lookup table alongside.",
             "the full symbol string is stored on every feature"),
         opt("route_symbol_table", "route_symbol_table", "Symbol table path", "Routes",
-            OptionKind::Text, "Where the symbol id table is written.", "route_symbols.json"),
-        opt("route_slim_attrs", "route_slim_attrs", "Slim attributes", "Routes",
-            OptionKind::Bool, "Keep only osmid/class/network on tile features.", "off"),
-        opt("route_drop_extent", "route_drop_extent", "Drop extent", "Routes",
-            OptionKind::Bool, "Omit `extent` entirely.", "off"),
-        opt("route_min_length", "route_min_length", "Drop short routes", "Routes",
-            OptionKind::Bool, "Filter routes below a minimum rendered length.", "off"),
+            OptionKind::Text,
+            "Where the symbol id table is written. Regenerate it with every routes build: ids are \
+             assigned from the sorted set of symbols in the extract, so a table from a different \
+             extract will not line up.",
+            "route_symbols.json"),
+        // route_slim_attrs, route_drop_extent and route_min_length were removed from planetiler:
+        // each worked by taking data out of route tiles, and the route layer should only ever get
+        // cheaper to encode, never lose content.
     ]);
     defs
 }
@@ -359,6 +387,28 @@ mod tests {
             keys.sort_unstable();
             keys.dedup();
             assert_eq!(keys.len(), before, "duplicate option key");
+        }
+    }
+
+    /// to_args silently ignores keys it does not recognise, so a preset naming an option that does
+    /// not exist - a typo, or a flag removed from planetiler - would quietly render nothing at all.
+    #[test]
+    fn every_preset_key_is_a_real_option() {
+        for preset in crate::presets::builtin() {
+            let defs = match preset.step {
+                crate::steps::StepId::Basemap => basemap_options(),
+                crate::steps::StepId::Routes => routes_options(),
+                _ => continue,
+            };
+            let known: Vec<&str> = defs.iter().map(|d| d.key.as_str()).collect();
+            for key in preset.values.keys() {
+                assert!(
+                    known.contains(&key.as_str()),
+                    "preset `{}` ({:?}) sets `{key}`, which is not an option for that step",
+                    preset.name,
+                    preset.step
+                );
+            }
         }
     }
 }
