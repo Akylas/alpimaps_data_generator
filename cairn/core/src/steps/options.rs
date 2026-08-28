@@ -242,6 +242,15 @@ pub fn basemap_options() -> Vec<OptionDef> {
              empty `languages`. Worth about -0.9% of tile bytes, spread over 13 layers and \
              concentrated in transportation_name.",
             "off"),
+        opt("drop_duplicate_names", "drop_duplicate_names", "Drop repeated names", "Names",
+            OptionKind::Bool,
+            "Omit a `name:<lang>` that copies `name`, and `name_int` where another name tag \
+             already carries the same string. Under `languages=fr,en` a French feature with an \
+             English name arrives as four tags holding two strings; this leaves two. Not a size \
+             win - only about 3% of named features carry any translation. Needs a style whose \
+             fallback reaches `name` before `name_int`, or a French reader lands on the English \
+             name instead of the local one.",
+            "off"),
         opt("transportation_surface_detail", "transportation_surface_detail", "Road surface detail", "Layers",
             OptionKind::Bool,
             "Emit `surface_detail`, OSM's raw surface value or the tracktype grade, on every road \
