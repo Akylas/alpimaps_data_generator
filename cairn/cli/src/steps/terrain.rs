@@ -21,13 +21,13 @@ pub struct Args {
     pub elevation_dir: Option<PathBuf>,
     #[arg(long, default_value_t = 5)]
     pub minzoom: u8,
-    #[arg(long, default_value_t = 13)]
+    #[arg(long, default_value_t = 12)]
     pub maxzoom: u8,
     /// Elevation packing. terrarium is a metre per step at round-digits 8.
-    #[arg(long, default_value = "terrarium")]
+    #[arg(long, default_value = "mapbox")]
     pub encoding: String,
     /// Quantisation exponent at the maximum zoom.
-    #[arg(long, default_value_t = 8)]
+    #[arg(long, default_value_t = 0)]
     pub round_digits: u32,
     /// Cap on the per-zoom quantisation ramp.
     #[arg(long, default_value_t = 15)]
@@ -47,7 +47,7 @@ pub struct Args {
     pub poly_shape: Option<PathBuf>,
     /// Ring of extra tiles around the shape. 3D renderers backfill a tile's 1px border from its
     /// neighbours, so a ring removes the seam at the edge of the covered area.
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 1)]
     pub tile_buffer: u32,
     /// Tile encoding on disk.
     #[arg(long, short = 'f', default_value = "webp", value_parser = ["webp", "png"])]
@@ -296,4 +296,63 @@ pub async fn run(settings: &Settings, args: Args, hillshade: bool) -> Result<()>
         started.elapsed().as_secs_f64()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod readme_defaults_tests {
+    use super::Args;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Wrapper {
+        #[command(flatten)]
+        args: Args,
+    }
+
+    /// An untouched `cairn terrain` must reproduce the README's build_terrain_rgb command.
+    ///
+    /// These drifted once already: cairn defaulted to maxzoom 13, terrarium, round-digits 8 and no
+    /// tile buffer, where the README asks for 12, mapbox, 0 and 1. Nothing caught it, and the two
+    /// silently produced different archives.
+    #[test]
+    fn terrain_defaults_match_the_readme_command() {
+        let readme = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md"),
+        )
+        .expect("repo README should be two levels above cairn/cli");
+        let lines: Vec<&str> = readme.lines().collect();
+        let start = lines
+            .iter()
+            // the README also mentions the script in prose; only the invocation starts with python
+            .position(|l| l.trim_start().starts_with("python") && l.contains("build_terrain_rgb.py"))
+            .expect("a README build_terrain_rgb command");
+        let mut cmd = String::new();
+        for l in &lines[start..] {
+            cmd.push_str(l.trim_end_matches('\\'));
+            cmd.push(' ');
+            if !l.trim_end().ends_with('\\') {
+                break;
+            }
+        }
+
+        let args = Wrapper::parse_from(["cairn-terrain", "--area", "test"]).args;
+        for (flag, actual) in [
+            ("--minzoom", args.minzoom.to_string()),
+            ("--maxzoom", args.maxzoom.to_string()),
+            ("--round-digits", args.round_digits.to_string()),
+            ("--encoding", args.encoding.clone()),
+            ("--blur", format!("{:.0}", args.blur)),
+            ("--tile-buffer", args.tile_buffer.to_string()),
+        ] {
+            let want = cmd
+                .split_whitespace()
+                .skip_while(|t| *t != flag)
+                .nth(1)
+                .unwrap_or_else(|| panic!("README terrain command has no {flag}"));
+            assert_eq!(
+                actual, want,
+                "cairn terrain defaults {flag}={actual}, README asks for {want}"
+            );
+        }
+    }
 }

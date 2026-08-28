@@ -132,15 +132,15 @@ pub fn terrain_options() -> Vec<OptionDef> {
             OptionKind::Int { min: Some(0), max: Some(15) }, "Lowest zoom rendered.", "5"),
         opt("maxzoom", "maxzoom", "Max zoom", "Zooms",
             OptionKind::Int { min: Some(0), max: Some(15) },
-            "Highest zoom rendered, and the zoom the quantisation ramp is anchored to.", "13"),
+            "Highest zoom rendered, and the zoom the quantisation ramp is anchored to.", "12"),
         opt("encoding", "encoding", "Encoding", "Packing",
             OptionKind::Choice { choices: vec!["terrarium".into(), "mapbox".into()] },
             "How elevation is packed into RGB. terrarium is 1 m per step at round-digits 8;              mapbox is 0.1 m, which is what the older `_hillshade` archives use.",
-            "terrarium"),
+            "mapbox"),
         opt("round_digits", "round-digits", "Round digits", "Packing",
             OptionKind::Int { min: Some(0), max: Some(16) },
             "Quantisation exponent at the maximum zoom. The step is `interval * 2^round_digits`,              so raising it coarsens elevation and compresses far better.",
-            "8"),
+            "0"),
         opt("max_round_digits", "max-round-digits", "Max round digits", "Packing",
             OptionKind::Int { min: Some(0), max: Some(16) },
             "Cap on the per-zoom ramp: lower zooms quantise more coarsely, up to this.",
@@ -171,7 +171,7 @@ pub fn terrain_options() -> Vec<OptionDef> {
         opt("tile_buffer", "tile-buffer", "Tile buffer", "Sources",
             OptionKind::Int { min: Some(0), max: Some(8) },
             "Ring of extra tiles around the shape. 3D renderers backfill a DEM tile's 1px border              from its neighbours, so without a ring there is a seam where coverage stops.",
-            "0"),
+            "1"),
         opt("bounds", "bounds", "Bounds", "Sources",
             OptionKind::Text, "west,south,east,north.",
             "the shape's bounds, else the area's basemap bounds"),
@@ -404,6 +404,17 @@ mod tests {
         "area", "mbtiles", "polygon", "jar", "download", "force", "tmpdir", "loginterval", "schema",
     ];
 
+    /// `0.70` in the README and `0.7` from to_args are the same flag, so compare numbers as numbers.
+    fn canonical(flag: &str) -> String {
+        match flag.split_once('=') {
+            Some((k, v)) => match v.parse::<f64>() {
+                Ok(n) => format!("{k}={n}"),
+                Err(_) => flag.to_string(),
+            },
+            None => flag.to_string(),
+        }
+    }
+
     /// Pull the flag set out of one of the README's build command lines.
     fn readme_flags(marker: &str) -> Vec<String> {
         let readme = std::fs::read_to_string(
@@ -441,6 +452,7 @@ mod tests {
             })
             // the README quotes the empty languages value; to_args does not
             .map(|t| t.replace("=\"\"", "="))
+            .map(|t| canonical(&t))
             .collect();
         flags.sort();
         flags
@@ -463,7 +475,7 @@ mod tests {
                 .expect("a `measured` preset for this step");
             let mut got: Vec<String> = to_args(&defs, &preset.values)
                 .iter()
-                .map(|a| a.trim_start_matches('-').to_string())
+                .map(|a| canonical(a.trim_start_matches('-')))
                 .collect();
             got.sort();
             assert_eq!(got, readme_flags(marker), "`measured` preset for {step:?} has drifted from the README");

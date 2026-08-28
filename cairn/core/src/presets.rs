@@ -72,6 +72,12 @@ impl PresetStore {
         self.presets.len() != before
     }
 }
+/// The preset applied when a run does not name one.
+///
+/// cairn exists to reproduce this repository's tiles, so an untouched run should produce them.
+/// `stock` is the opt-out that gives planetiler's own defaults.
+pub const DEFAULT_PRESET: &str = "measured";
+
 
 /// The flag sets this repository actually measured, shipped so a fresh install starts from the
 /// tuned configuration rather than from nothing.
@@ -101,6 +107,7 @@ pub fn builtin() -> Vec<Preset> {
                 ("transportation_z13_paths", serde_json::json!(true)),
                 ("mlt_shared_dict", serde_json::json!(true)),
                 ("parallel_tmp_io", serde_json::json!(true)),
+                ("simplify_tolerance", serde_json::json!(0.70)),
                 ("simplify_tolerance_at_max_zoom", serde_json::json!(0.25)),
                 ("min_feature_size_at_max_zoom", serde_json::json!(0.25)),
                 ("landcover_tolerance_z11_13", serde_json::json!(1.05)),
@@ -227,9 +234,8 @@ mod tests {
 
     /// The measured basemap set must render the flags it was measured with.
     ///
-    /// simplify-tolerance is deliberately absent: the preset now mirrors the README build command,
-    /// which never sets it. max-point-buffer is the one to watch - the place layer declares a 256px
-    /// buffer, so leaving it uncapped costs tens of MB.
+    /// max-point-buffer is the one to watch: the place layer declares a 256px buffer, nine times a
+    /// tile's own area, so leaving it uncapped costs tens of MB.
     #[test]
     fn measured_basemap_renders_its_flags() {
         let preset = builtin()
@@ -245,10 +251,10 @@ mod tests {
             "--drop_redundant_name_int=true",
             "--transportation_surface_detail=true",
             "--transportation-name-limit-merge=true",
+            "--simplify-tolerance=0.7",
             "--languages=",
         ] {
             assert!(args.contains(&expected.to_string()), "missing {expected} from {args:?}");
         }
-        assert!(!args.iter().any(|a| a.starts_with("--simplify-tolerance=")));
     }
 }

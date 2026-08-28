@@ -982,7 +982,18 @@ async fn run_steps(
     let area_dir = settings.area_dir(&req.area);
     let mut completed = Vec::new();
     for step in ordered {
-        let values = req.values.get(&step).cloned().unwrap_or_default();
+        // The form only holds what the user actually touched, so an untouched step would otherwise
+        // run on planetiler's bare defaults and produce a differently-tuned map than the README.
+        // Start from the default preset and let the form override it, key by key.
+        let values = {
+            let mut merged = cairn_core::presets::builtin()
+                .into_iter()
+                .find(|p| p.step == step && p.name == cairn_core::presets::DEFAULT_PRESET)
+                .map(|p| p.values)
+                .unwrap_or_default();
+            merged.extend(req.values.get(&step).cloned().unwrap_or_default());
+            merged
+        };
         let forced = req.force_all || req.force.contains(&step);
         if !forced {
             let status = build_state::status(&settings, &req.area, step, &values);

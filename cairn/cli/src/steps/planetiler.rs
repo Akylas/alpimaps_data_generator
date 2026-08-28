@@ -141,16 +141,24 @@ pub async fn run(settings: &Settings, args: Args, routes: bool) -> Result<()> {
     let step = if routes { StepId::Routes } else { StepId::Basemap };
     let defs = if routes { options::routes_options() } else { options::basemap_options() };
 
+    // With no --preset, start from the README's own build command rather than planetiler's bare
+    // defaults: cairn exists to reproduce this repository's tiles, and an untouched run producing
+    // a differently-tuned map is a trap. `--preset stock` opts out.
     let mut values = BTreeMap::new();
-    if let Some(name) = &args.preset {
+    {
+        let name = args.preset.as_deref().unwrap_or(cairn_core::presets::DEFAULT_PRESET);
         let mut store = PresetStore::default();
         for preset in cairn_core::presets::builtin() {
             store.upsert(preset);
         }
-        let preset = store
-            .get(step, name)
-            .ok_or_else(|| anyhow!("no preset `{name}` for {}", step.label()))?;
-        values.extend(preset.values.clone());
+        match store.get(step, name) {
+            Some(preset) => values.extend(preset.values.clone()),
+            // an explicitly named preset must exist; the default one simply may not for this step
+            None if args.preset.is_some() => {
+                return Err(anyhow!("no preset `{name}` for {}", step.label()))
+            }
+            None => {}
+        }
     }
     // explicit -o wins over the preset, so a preset can be used as a starting point
     values.extend(parse_overrides(&defs, &args.options)?);
