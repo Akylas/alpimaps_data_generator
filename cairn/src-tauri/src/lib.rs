@@ -1013,6 +1013,7 @@ async fn run_steps(
     });
 
     let area_dir = settings.area_dir(&req.area);
+    let planned = ordered.len();
     let mut completed = Vec::new();
     for step in ordered {
         // Whatever the form holds, verbatim. The form seeds itself from the default preset on
@@ -1170,7 +1171,36 @@ async fn run_steps(
         completed.push(step);
     }
 
+    notify_run_finished(&app, &req.area, &completed, planned);
     Ok(completed)
+}
+
+/// Tell the desktop the build is over.
+///
+/// A basemap takes tens of minutes, so nobody is watching the window when it ends. The in-app
+/// banner only helps someone already looking at it; this is for the far more common case of
+/// having switched away an hour ago.
+fn notify_run_finished(app: &AppHandle, area: &str, completed: &[StepId], planned: usize) {
+    use tauri_plugin_notification::NotificationExt;
+
+    let done = completed.len();
+    let (title, body) = if done == planned {
+        (
+            format!("{area} is built"),
+            match completed {
+                [] => "nothing to do".to_string(),
+                [one] => one.label().to_string(),
+                _ => completed.iter().map(|s| s.label()).collect::<Vec<_>>().join(", "),
+            },
+        )
+    } else {
+        (
+            format!("{area} stopped early"),
+            format!("{done} of {planned} steps ran - the log has the reason"),
+        )
+    };
+    // best-effort: an unnotifiable desktop is not a reason to fail a build that succeeded
+    let _ = app.notification().builder().title(title).body(body).show();
 }
 
 /// Bridge the run-wide cancel broadcast onto one step's channel.
@@ -1646,6 +1676,7 @@ fn cancel_run(running: State<'_, Running>) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(Running::default())
         .manage(Tiles::default())
         .manage(Routing::default())

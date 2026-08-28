@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the Cairn window is allowed to call. Without a capability file Tauri v2 denies every core-plugin command, which silently broke `listen()` - builds ran, and the UI received no progress, no log and no completion.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "notification:default"
+  ]
+}
