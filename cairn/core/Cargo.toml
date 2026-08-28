@@ -25,6 +25,8 @@ image = { version = "0.25", default-features = false, features = ["webp", "png",
 
 [dev-dependencies]
 tempfile = "3"
+# mtime is what picks the jar now, so the tests set it rather than racing two writes
+filetime = "0.2"
 tokio = { version = "1", features = ["full"] }
 
 [build-dependencies]

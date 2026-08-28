@@ -72,6 +72,12 @@ impl PresetStore {
         self.presets.len() != before
     }
 }
+/// The preset applied when a run does not name one.
+///
+/// cairn exists to reproduce this repository's tiles, so an untouched run should produce them.
+/// `stock` is the opt-out that gives planetiler's own defaults.
+pub const DEFAULT_PRESET: &str = "measured";
+
 
 /// The flag sets this repository actually measured, shipped so a fresh install starts from the
 /// tuned configuration rather than from nothing.
@@ -84,12 +90,24 @@ pub fn builtin() -> Vec<Preset> {
             name: "measured".into(),
             step: StepId::Basemap,
             description:
-                "Tuned basemap, with vertex removal doing the work instead of feature deletion. \
-                 The landcover trio is the bulk of it; swimming pool simplification adds -0.16% \
-                 and dropping redundant name_int -0.88%, both measured on rhone-alpes. The -11.7% \
-                 headline predates those two and needs re-measuring."
+                "The basemap command from the repo README - the flag set that produces the \
+                 shipped tiles. -8.8% of tile bytes against a build with none of it, with vertex \
+                 removal doing the work rather than feature deletion, plus road surface detail."
                     .into(),
             values: v(&[
+                // mirrors the basemap command in the repo README - the set that produced the
+                // shipped tiles. Operational flags (area, polygon, mbtiles, force, download) are
+                // cairn's to supply.
+                ("languages", serde_json::json!("")),
+                ("compact_db", serde_json::json!(true)),
+                ("transportation_name_limit_merge", serde_json::json!(true)),
+                ("area_poly", serde_json::json!(true)),
+                ("exclude_layers", serde_json::json!("route")),
+                ("nodemap_type", serde_json::json!("sparsearray")),
+                ("max_point_buffer", serde_json::json!(4)),
+                ("transportation_z13_paths", serde_json::json!(true)),
+                ("mlt_shared_dict", serde_json::json!(true)),
+                ("parallel_tmp_io", serde_json::json!(true)),
                 ("simplify_tolerance", serde_json::json!(0.70)),
                 ("simplify_tolerance_at_max_zoom", serde_json::json!(0.25)),
                 ("min_feature_size_at_max_zoom", serde_json::json!(0.25)),
@@ -98,27 +116,33 @@ pub fn builtin() -> Vec<Preset> {
                 ("landcover_merge_maxzoom", serde_json::json!(true)),
                 ("water_pool_tolerance", serde_json::json!(1)),
                 ("drop_redundant_name_int", serde_json::json!(true)),
-                ("exclude_layers", serde_json::json!("route")),
-                ("nodemap_type", serde_json::json!("sparsearray")),
-                ("languages", serde_json::json!("")),
+                ("transportation_surface_detail", serde_json::json!(true)),
             ]),
         },
         Preset {
             name: "measured".into(),
             step: StepId::Routes,
             description:
-                "Tuned routes: -19.4%, keeping name/extent/symbol, with simplification matched \
-                 to the transportation layer so routes stay aligned with their tracks."
+                "The routes command from the repo README. Keeps name, extent and symbol - \
+                 nothing is dropped - with simplification matched to the transportation layer so \
+                 routes stay aligned with the tracks they follow."
                     .into(),
             values: v(&[
+                // mirrors the routes command in the repo README.
+                ("languages", serde_json::json!("")),
+                ("compact_db", serde_json::json!(true)),
+                ("transportation_name_limit_merge", serde_json::json!(true)),
+                ("area_poly", serde_json::json!(true)),
                 ("only_layers", serde_json::json!("route")),
+                ("nodemap_type", serde_json::json!("sparsearray")),
+                ("max_point_buffer", serde_json::json!(4)),
+                ("mlt_shared_dict", serde_json::json!(true)),
+                ("parallel_tmp_io", serde_json::json!(true)),
+                ("simplify_tolerance_at_max_zoom", serde_json::json!(0.25)),
+                ("min_feature_size_at_max_zoom", serde_json::json!(0.25)),
                 ("route_road_tolerance", serde_json::json!(true)),
                 ("route_extent_digits", serde_json::json!(2)),
                 ("route_symbol_id", serde_json::json!(true)),
-                ("simplify_tolerance_at_max_zoom", serde_json::json!(0.25)),
-                ("min_feature_size_at_max_zoom", serde_json::json!(0.25)),
-                ("nodemap_type", serde_json::json!("sparsearray")),
-                ("languages", serde_json::json!("")),
             ]),
         },
         Preset {
@@ -210,7 +234,10 @@ mod tests {
         }
     }
 
-    /// And the measured basemap set must still render the flags it was measured with.
+    /// The measured basemap set must render the flags it was measured with.
+    ///
+    /// max-point-buffer is the one to watch: the place layer declares a 256px buffer, nine times a
+    /// tile's own area, so leaving it uncapped costs tens of MB.
     #[test]
     fn measured_basemap_renders_its_flags() {
         let preset = builtin()
@@ -218,8 +245,18 @@ mod tests {
             .find(|p| p.step == StepId::Basemap && p.name == "measured")
             .unwrap();
         let args = options::to_args(&options::basemap_options(), &preset.values);
-        assert!(args.contains(&"--simplify-tolerance=0.7".to_string()));
-        assert!(args.contains(&"--landcover_tolerance_z11_13=1.05".to_string()));
-        assert!(args.contains(&"--languages=".to_string()));
+        for expected in [
+            "--max-point-buffer=4",
+            "--landcover_tolerance_z11_13=1.05",
+            "--landcover_merge_maxzoom=true",
+            "--water_pool_tolerance=1",
+            "--drop_redundant_name_int=true",
+            "--transportation_surface_detail=true",
+            "--transportation-name-limit-merge=true",
+            "--simplify-tolerance=0.7",
+            "--languages=",
+        ] {
+            assert!(args.contains(&expected.to_string()), "missing {expected} from {args:?}");
+        }
     }
 }

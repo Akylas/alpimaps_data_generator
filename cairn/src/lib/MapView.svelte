@@ -16,6 +16,10 @@
   import { COSTING_MODELS, readTrip, tripToGeoJson, formatDuration } from "./valhalla.js";
   import { MAP_MODES, TERRAIN_MODE_HELP } from "./modes.js";
 
+  /// Which area to open on. The Build tab hands over the one it has just finished, so the map
+  /// shows what was actually built rather than whichever area sorts first.
+  let { area: wantedArea = "" } = $props();
+
   let base = $state("");
   let areas = $state([]);
   let areaName = $state("");
@@ -112,7 +116,7 @@
     try {
       base = await invoke("start_tiles");
       areas = await invoke("list_areas");
-      areaName = areas[0]?.name ?? "";
+      areaName = areas.find((a) => a.name === wantedArea)?.name ?? areas[0]?.name ?? "";
       routingInfo = await invoke("routing_status");
       valhallaBuilt = routingInfo?.available ?? false;
     } catch (err) {

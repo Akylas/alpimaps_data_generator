@@ -5,7 +5,7 @@
   import { buildConfig } from "./buildconfig.svelte.js";
   import { commandFor } from "./cli.js";
 
-  let { onFinished } = $props();
+  let { onFinished, onShowOnMap } = $props();
 
   let java = $state(null);
   let javaError = $state("");
@@ -44,6 +44,7 @@
   let optionDefs = $state({});
   let values = $state({});
   let presets = $state([]);
+  let defaultPreset = $state("measured");
   let presetName = $state({});
   /// Free-text arguments per step, for the flags this app has no form for.
   let extraArgs = $state({});
@@ -53,6 +54,11 @@
   let label = $state("");
   let percent = $state(0);
   let lines = $state([]);
+  /** The subprocess argv per step, from the `command` event. */
+  let commands = $state({});
+  /// How much of the log is rendered. The whole buffer is kept and copied; painting all of it
+  /// would rebuild a megabyte-sized text node on every progress line.
+  const TAIL = 2000;
   let results = $state([]);
   /** Per-step live state, keyed by step id: what is running, what finished, how it went. */
   let status = $state({});
@@ -61,6 +67,16 @@
   let built = $state({});
   let force = $state(new Set());
   let forceAll = $state(false);
+  /** Why a run refused to start, surfaced next to Run rather than only in the log. */
+  let runError = $state("");
+  /**
+   * How the last run ended, kept on screen after it stops.
+   *
+   * The backend also raises a desktop notification, which is what reaches someone who walked
+   * away from an hour-long basemap. This is the same news for someone still looking at the
+   * window - without it a finished run looks identical to one that never started.
+   */
+  let done = $state(null);
 
   onMount(async () => {
     await detect();
@@ -77,9 +93,14 @@
       area = areas[0] ?? settings.areas?.[0]?.name ?? "";
       steps = await invoke("list_steps", { area });
       presets = await invoke("list_presets");
+      defaultPreset = await invoke("default_preset_name");
       for (const s of steps) {
         optionDefs[s.id] = await invoke("step_options", { step: s.id });
-        values[s.id] = {};
+        // Seed from the default preset rather than leaving the form blank. cairn is here to
+        // rebuild this repository's tiles, so the fields should show the values that will
+        // actually be used - a blank form that silently builds something else is a trap.
+        const seed = presets.find((p) => p.step === s.id && p.name === defaultPreset);
+        values[s.id] = seed ? { ...seed.values } : {};
       }
       selected = new Set(["basemap"]);
       await replan();
@@ -128,9 +149,75 @@
 
   function toggleForce(step) {
     const next = new Set(force);
-    next.has(step) ? next.delete(step) : next.add(step);
+    if (next.has(step)) {
+      next.delete(step);
+    } else {
+      next.add(step);
+      // forcing a step that is not selected does nothing at all: only selected steps are sent to
+      // the runner, so the button looked like it armed a rebuild while quietly changing nothing
+      if (!selected.has(step)) {
+        selected = new Set(selected).add(step);
+        replan();
+      }
+    }
     force = next;
   }
+
+  /// Seven steps in one flat list is how someone ends up running the basemap without the
+  /// extract it reads. Grouping by what a step produces puts the prerequisites above the
+  /// things that consume them, and gives the eye something to land on other than seven
+  /// identical rows.
+  const STAGES = [
+    {
+      id: "source",
+      label: "Source data",
+      note: "downloaded once, read by everything below",
+      // an arrow into a tray
+      icon: "M8 1.8v7.6m0 0 2.8-2.8M8 9.4 5.2 6.6M2.4 10.8v2.4h11.2v-2.4",
+      steps: ["download_osm", "elevation_tiles"],
+    },
+    {
+      id: "tiles",
+      label: "Tiles",
+      note: "what the map renders",
+      // stacked layers
+      icon: "M2 5.2 8 2.2l6 3-6 3-6-3Zm0 3.4 6 3 6-3M2 11.6l6 3 6-3",
+      steps: ["basemap", "routes", "terrain_rgb"],
+    },
+    {
+      id: "routing",
+      label: "Routing",
+      note: "the graph the phone routes on",
+      // a navigation arrow
+      icon: "M14 2.4 2 7.2l4.8 2 2 4.8L14 2.4Z",
+      steps: ["valhalla_tiles", "valhalla_package"],
+    },
+  ];
+
+  let stepGroups = $derived.by(() => {
+    const placed = new Set(STAGES.flatMap((g) => g.steps));
+    const groups = STAGES.map((g) => ({
+      ...g,
+      items: g.steps.map((id) => steps.find((s) => s.id === id)).filter(Boolean),
+    }));
+    // a step the backend grows before this list catches up still has to be reachable
+    const rest = steps.filter((s) => !placed.has(s.id));
+    if (rest.length) {
+      groups.push({ id: "other", label: "Other", note: "", icon: STAGES[1].icon, items: rest });
+    }
+    return groups
+      .filter((g) => g.items.length)
+      .map((g) => ({
+        ...g,
+        chosen: g.items.filter((s) => selected.has(s.id) || planned.includes(s.id)).length,
+        active: g.items.some((s) => status[s.id]?.state === "running"),
+        broken: g.items.some((s) => status[s.id]?.state === "failed"),
+      }));
+  });
+
+  /// Steps whose output the map can draw. A run of only `download_osm` has nothing new to
+  /// show, so it should not yank anyone over to the map tab.
+  const MAPPABLE = ["basemap", "routes", "terrain_rgb"];
 
   const fmtSize = (b) => (b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${(b / 1024).toFixed(0)} KB`);
   const fmtWhen = (secs) => (secs ? new Date(secs * 1000).toLocaleString() : "");
@@ -213,7 +300,9 @@
   let logCopied = $state(false);
   async function copyLog() {
     try {
-      await navigator.clipboard.writeText(lines.join("\n"));
+      // the commands go with it: a pasted log without them cannot be diagnosed
+      const head = Object.entries(commands).map(([step, argv]) => `$ ${argv.join(" ")}`);
+      await navigator.clipboard.writeText([...head, "", ...lines].join("\n"));
       logCopied = true;
       setTimeout(() => (logCopied = false), 1200);
     } catch {}
@@ -243,7 +332,15 @@
         label = ev.label; percent = ev.percent;
         mark(ev.step, { percent: ev.percent, label: ev.label });
         break;
-      case "log": lines = [...lines.slice(-400), ev.line]; break;
+      case "command":
+        // kept out of `lines` so it cannot scroll away: this is the record of which jar ran
+        // and which flags reached it, which is the first thing to check when the output looks
+        // like an older schema
+        commands = { ...commands, [ev.step]: ev.argv };
+        break;
+      // 20k lines is about an hour of planetiler at a 1s log interval. It used to be 400,
+      // which threw away the start of the run - including the command line - within seconds.
+      case "log": lines = [...lines.slice(-20000), ev.line]; break;
       case "finished":
         results = [...results, ev];
         runningStep = null;
@@ -257,7 +354,8 @@
   }
 
   async function run() {
-    running = true; lines = []; results = []; percent = 0;
+    running = true; lines = []; results = []; percent = 0; runError = ""; done = null; commands = {};
+    const attempted = [...planned];
     // queued up front, so the list reads as a plan rather than filling in as it goes
     status = Object.fromEntries(planned.map((id) => [id, { state: "queued" }]));
     try {
@@ -271,12 +369,35 @@
         },
       });
     } catch (err) {
+      // shown beside the button as well as logged: a run refused up front produces no
+      // events at all, so the log alone leaves the UI looking simply inert
+      runError = String(err);
       lines = [...lines, `ERROR: ${err}`];
     } finally {
       running = false;
       await refreshBuilt();
       onFinished?.();
+      done = outcome(attempted);
+      // the map is where a finished build is actually inspected, and it is two clicks away at
+      // the moment the log stops moving. Only for runs that produced something drawable.
+      if (done.ok && attempted.some((id) => MAPPABLE.includes(id))) onShowOnMap?.(area);
     }
+  }
+
+  /// Read the run's result off the per-step state rather than the `finished` events alone:
+  /// a step that was skipped because its output was already there never emits one.
+  function outcome(attempted) {
+    const of = (state) => attempted.filter((id) => status[id]?.state === state);
+    const failed = of("failed");
+    const untouched = attempted.filter((id) => !["done", "skipped", "failed"].includes(status[id]?.state));
+    return {
+      ok: !runError && !failed.length && !untouched.length,
+      built: of("done"),
+      skipped: of("skipped"),
+      failed,
+      stopped: untouched,
+      note: runError,
+    };
   }
 
   function groupsFor(step) {
@@ -379,8 +500,16 @@
 </Section>
 
 <Section title="2 · Steps" subtitle={planned.length ? `${planned.length} to run` : "nothing selected"}>
+  {#each stepGroups as g}
+    <section class="stage" class:active={g.active} class:broken={g.broken}>
+      <h3>
+        <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d={g.icon} /></svg>
+        {g.label}
+        {#if g.note}<span class="note">{g.note}</span>{/if}
+        <span class="chosen">{g.chosen ? `${g.chosen} of ${g.items.length}` : "none"}</span>
+      </h3>
   <ul class="steplist">
-    {#each steps as s}
+    {#each g.items as s}
       {@const st = status[s.id] ?? {}}
       {@const auto = !selected.has(s.id) && planned.includes(s.id)}
       {@const disk = built[s.id]}
@@ -468,6 +597,8 @@
       {/if}
     {/each}
   </ul>
+    </section>
+  {/each}
 
   <div class="runbar">
     <label class="forceall" title="ignore what is on disk and rebuild the whole plan">
@@ -481,6 +612,74 @@
       <span class="plan">{planned.map(labelFor).join(" → ")}</span>
     {/if}
   </div>
+
+  {#if runError}
+    <p class="warn runerr">{runError}</p>
+  {/if}
+
+  {#if done && !running}
+    <div class="done" class:bad={!done.ok}>
+      <span class="dot"></span>
+      <div class="what">
+        <strong>{done.ok ? `${area} is built` : "The run stopped early"}</strong>
+        <span class="detail">
+          {#if done.built.length}{done.built.map(labelFor).join(", ")} built{/if}
+          {#if done.skipped.length}
+            {done.built.length ? " · " : ""}{done.skipped.length} already on disk
+          {/if}
+          {#if done.failed.length}
+            {done.built.length || done.skipped.length ? " · " : ""}{done.failed.map(labelFor).join(", ")} failed
+          {/if}
+          {#if done.stopped.length}
+            {" · "}{done.stopped.map(labelFor).join(", ")} never ran
+          {/if}
+          {#if done.note}{done.note}{/if}
+        </span>
+      </div>
+      {#if done.built.length || done.skipped.length}
+        <button class="ghost" onclick={() => onShowOnMap?.(area)}>Show on map</button>
+      {/if}
+      <button class="ghost tiny" onclick={() => (done = null)} title="dismiss">×</button>
+    </div>
+  {/if}
+
+  <!-- progress belongs with the button that starts it: as its own section it sat below every
+       per-step options panel, off the bottom of the window, so a run that failed instantly
+       looked like a run that did nothing -->
+  {#if running || lines.length || results.length}
+    <div class="progress">
+      <div class="phead">
+        <span class="pstep">{running ? `${labelFor(runningStep) || ""} · ${phase}` : summaryLine}</span>
+        <span class="pct">{percent}%</span>
+      </div>
+      <div class="bar big"><div class="fill" style="width:{percent}%"></div></div>
+      <p class="muted small">{label || phase}</p>
+
+      {#each Object.entries(commands) as [step, argv]}
+        <!-- open: seeing which flags reached planetiler is the point of keeping it -->
+        <details class="group cmd" open>
+          <summary>
+            {labelFor(step)} command
+            <button class="ghost tiny" onclick={(e) => { e.preventDefault(); copy(argv.join(" ")); }}>
+              {copiedLine === argv.join(" ") ? "copied" : "copy"}
+            </button>
+          </summary>
+          <pre class="argv">{argv.join("\n  ")}</pre>
+        </details>
+      {/each}
+
+      <details class="group" open={results.some((r) => !r.ok)}>
+        <summary>
+          Log <span class="lines">{lines.length} lines</span>
+          <button class="ghost tiny" onclick={(e) => { e.preventDefault(); copyLog(); }}>
+            {logCopied ? "copied" : "copy"}
+          </button>
+        </summary>
+        <pre>{#if lines.length > TAIL}… {lines.length - TAIL} earlier lines, in `copy`
+{/if}{lines.slice(-TAIL).join("\n")}</pre>
+      </details>
+    </div>
+  {/if}
 </Section>
 
 {#each optionSteps as step, i}
@@ -556,27 +755,12 @@
   </Section>
 {/each}
 
-{#if running || lines.length || results.length}
-  <Section title="4 · Progress"
-           subtitle={running ? `${labelFor(runningStep) || ""} · ${phase}` : summaryLine}>
-    <div class="prog">
-      <div class="bar big"><div class="fill" style="width:{percent}%"></div></div>
-      <span class="pct">{percent}%</span>
-    </div>
-    <p class="muted small">{label || phase}</p>
-    <details class="group" open={results.some((r) => !r.ok)}>
-      <summary>
-        Log
-        <button class="ghost tiny" onclick={(e) => { e.preventDefault(); copyLog(); }}>
-          {logCopied ? "copied" : "copy"}
-        </button>
-      </summary>
-      <pre>{lines.slice(-150).join("\n")}</pre>
-    </details>
-  </Section>
-{/if}
-
 <style>
+  .progress { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line-2); }
+  .phead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; font-size: 12px; }
+  .pstep { color: var(--text-2); }
+  .phead .pct { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text); }
+  .runerr { margin: 10px 0 0; }
   .group { border-top: 1px solid var(--line); }
   .group summary { cursor: pointer; padding: 8px 0; font-size: 11px; text-transform: uppercase;
                    letter-spacing: .05em; color: var(--muted); list-style: none; display: flex;
@@ -593,8 +777,44 @@
   input[type="checkbox"] { width: auto; }
   .pair { display: flex; gap: 8px; margin-top: 10px; }
   .pair label { flex: 1; }
-  .steplist { list-style: none; margin: 0 0 12px; padding: 0; display: flex;
+  /* One card per stage, matching the Output tab: the accent bar and the icon are what the eye
+     catches when scrolling past, which a row of seven identical checkboxes never gave it. */
+  .stage { margin-bottom: 10px; border: 1px solid var(--line-2); border-radius: var(--r);
+           background: var(--surface); overflow: hidden; }
+  .stage h3 { display: flex; align-items: center; gap: 9px; margin: 0; padding: 8px 12px;
+              background: var(--hover); border-bottom: 1px solid var(--line-2);
+              font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+              color: var(--text); }
+  .stage h3::before { content: ""; width: 3px; align-self: stretch; margin: -8px 3px -8px -12px;
+                      background: var(--accent); }
+  .stage.active h3::before { background: var(--ok); }
+  .stage.broken h3::before { background: var(--danger); }
+  .stage .icon { width: 16px; height: 16px; flex: none; color: var(--accent-hi); fill: none;
+                 stroke: currentColor; stroke-width: 1.4; stroke-linecap: round;
+                 stroke-linejoin: round; }
+  .stage .note { font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--muted-2);
+                 font-size: 12px; }
+  .stage .chosen { margin-left: auto; font-weight: 500; letter-spacing: 0; text-transform: none;
+                   font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .steplist { list-style: none; margin: 0; padding: 6px; display: flex;
               flex-direction: column; gap: 2px; }
+  /* the completion banner: a run that ends while you are looking at the window should say so */
+  .done { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding: 9px 12px;
+          border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent); border-radius: var(--r);
+          background: color-mix(in srgb, var(--ok) 9%, transparent); }
+  .done.bad { border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+              background: color-mix(in srgb, var(--danger) 9%, transparent); }
+  .done .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
+  .done.bad .dot { background: var(--danger); }
+  .done .what { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+  .done strong { font-size: 13px; font-weight: 600; }
+  .done .detail { font-size: 11.5px; color: var(--text-2); }
+  .done .tiny { margin-left: 0; }
+  /* one argument per line: a 30-flag planetiler invocation on one line is unreadable, and
+     reading it is the whole point of keeping it */
+  .cmd .argv { max-height: 320px; color: var(--text-3); font-size: 11px; white-space: pre;
+               word-break: normal; }
+  .lines { color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
   .steprow { display: flex; align-items: center; gap: 8px; padding: 6px 8px;
              border-radius: var(--r); position: relative; }
   .steprow:hover { background: var(--surface-2); }

@@ -16,19 +16,17 @@ pub enum StepId {
     Basemap,
     Routes,
     TerrainRgb,
-    Hillshade,
     ValhallaTiles,
     ValhallaPackage,
 }
 
 /// Every step, in a stable order for listing.
-pub const ALL_STEPS: [StepId; 8] = [
+pub const ALL_STEPS: [StepId; 7] = [
     StepId::DownloadOsm,
     StepId::ElevationTiles,
     StepId::Basemap,
     StepId::Routes,
     StepId::TerrainRgb,
-    StepId::Hillshade,
     StepId::ValhallaTiles,
     StepId::ValhallaPackage,
 ];
@@ -39,7 +37,6 @@ impl StepId {
             StepId::Basemap => "Basemap",
             StepId::Routes => "Routes",
             StepId::TerrainRgb => "Terrain RGB",
-            StepId::Hillshade => "Hillshade",
             StepId::ValhallaTiles => "Valhalla tiles",
             StepId::ValhallaPackage => "Valhalla package",
             StepId::DownloadOsm => "Download OSM",
@@ -81,10 +78,6 @@ impl StepId {
                  first, blended over `blur` metres at each source's coverage edge. The map draws \
                  hillshade and 3D terrain from these; there is no contour archive any more."
             }
-            StepId::Hillshade => {
-                "The same renderer packed the mapbox way (0.1 m per step instead of 1 m). It \
-                 exists because older archives are named `_hillshade` and are still read."
-            }
             StepId::ValhallaTiles => {
                 "`valhalla_build_tiles` over the OSM extract, using the configured valhalla.json. \
                  Slow, and shared between areas: it is usually built once for a parent area \
@@ -104,7 +97,7 @@ impl StepId {
             StepId::DownloadOsm => "the network",
             StepId::ElevationTiles => "an area to cover, and the network",
             StepId::Basemap | StepId::Routes => "the OSM extract, the planetiler jar, Java 21+",
-            StepId::TerrainRgb | StepId::Hillshade => "sources.json and the elevation tiles",
+            StepId::TerrainRgb => "sources.json and the elevation tiles",
             StepId::ValhallaTiles => "the OSM extract, valhalla.json, the elevation tiles",
             StepId::ValhallaPackage => "the Valhalla graph, and a shape or tile list",
         }
@@ -118,7 +111,6 @@ impl StepId {
             StepId::Basemap => "basemap",
             StepId::Routes => "routes",
             StepId::TerrainRgb => "terrain",
-            StepId::Hillshade => "hillshade",
             StepId::ValhallaTiles => "valhalla-tiles",
             StepId::ValhallaPackage => "package",
         }
@@ -129,7 +121,7 @@ impl StepId {
         match self {
             StepId::DownloadOsm | StepId::ElevationTiles => &[],
             StepId::Basemap | StepId::Routes => &[StepId::DownloadOsm],
-            StepId::TerrainRgb | StepId::Hillshade => &[StepId::ElevationTiles],
+            StepId::TerrainRgb => &[StepId::ElevationTiles],
             StepId::ValhallaTiles => &[StepId::DownloadOsm, StepId::ElevationTiles],
             StepId::ValhallaPackage => &[StepId::ValhallaTiles],
         }
@@ -197,6 +189,12 @@ pub fn shell_quote(arg: &str) -> String {
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum StepEvent {
     Started { step: StepId, area: String },
+    /// The exact argv of the subprocess this step runs.
+    ///
+    /// Separate from `Log` because it is the one line always worth keeping: it is the only
+    /// record of which jar ran and which flags actually reached it, and as a log line it
+    /// scrolled off long before anyone came looking for it.
+    Command { step: StepId, argv: Vec<String> },
     Phase { step: StepId, name: String },
     Progress { step: StepId, label: String, percent: u8 },
     Log { step: StepId, line: String },

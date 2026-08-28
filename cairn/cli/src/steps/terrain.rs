@@ -1,6 +1,6 @@
 //! `cairn terrain` - terrain-RGB tiles, mirroring build_terrain_rgb.py's flags.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::Args as ClapArgs;
 use std::path::PathBuf;
 use cairn_core::elevation::Encoding;
@@ -21,13 +21,13 @@ pub struct Args {
     pub elevation_dir: Option<PathBuf>,
     #[arg(long, default_value_t = 5)]
     pub minzoom: u8,
-    #[arg(long, default_value_t = 13)]
+    #[arg(long, default_value_t = 12)]
     pub maxzoom: u8,
     /// Elevation packing. terrarium is a metre per step at round-digits 8.
-    #[arg(long, default_value = "terrarium")]
+    #[arg(long, default_value = "mapbox")]
     pub encoding: String,
     /// Quantisation exponent at the maximum zoom.
-    #[arg(long, default_value_t = 8)]
+    #[arg(long, default_value_t = 0)]
     pub round_digits: u32,
     /// Cap on the per-zoom quantisation ramp.
     #[arg(long, default_value_t = 15)]
@@ -45,9 +45,13 @@ pub struct Args {
     /// Osmosis .poly limiting which tiles are written, as in build_terrain_rgb.py.
     #[arg(long)]
     pub poly_shape: Option<PathBuf>,
+    /// Clip to the area's own boundary, downloading it from Geofabrik when it is not already
+    /// beside the extract. Ignored when --poly-shape names a shape.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub area_poly: bool,
     /// Ring of extra tiles around the shape. 3D renderers backfill a tile's 1px border from its
     /// neighbours, so a ring removes the seam at the edge of the covered area.
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 1)]
     pub tile_buffer: u32,
     /// Tile encoding on disk.
     #[arg(long, short = 'f', default_value = "webp", value_parser = ["webp", "png"])]
@@ -116,18 +120,19 @@ fn parse_bounds(raw: &str) -> Result<(f64, f64, f64, f64)> {
     }
 }
 
-pub async fn run(settings: &Settings, args: Args, hillshade: bool) -> Result<()> {
+pub async fn run(settings: &Settings, mut args: Args) -> Result<()> {
     let area_dir = settings.area_dir(&args.area);
+    if args.poly_shape.is_none() && args.area_poly {
+        let path = cairn_core::steps::download::ensure_poly(&settings.data_dir, &args.area, |_, _| {})
+            .await
+            .with_context(|| format!("resolving the boundary for `{}`", args.area))?;
+        println!("clipping to {}", path.display());
+        args.poly_shape = Some(path);
+    }
     let recorded = terrain_options(&args);
-    // `_hillshade` is this pipeline's older mapbox-packed terrain; same renderer, different
-    // packing and name, which is all the hillshade step ever was
-    let encoding = if hillshade && args.encoding == "terrarium" {
-        Encoding::Mapbox
-    } else {
-        Encoding::parse(&args.encoding)
-            .ok_or_else(|| anyhow!("unknown encoding `{}`", args.encoding))?
-    };
-    let suffix = if hillshade { "hillshade" } else { "terrain" };
+    let encoding = Encoding::parse(&args.encoding)
+        .ok_or_else(|| anyhow!("unknown encoding `{}`", args.encoding))?;
+    let suffix = "terrain";
     let sources_path = args.sources.clone().unwrap_or_else(|| settings.sources_json.clone());
     let hgt_dir = args
         .elevation_dir
@@ -296,4 +301,63 @@ pub async fn run(settings: &Settings, args: Args, hillshade: bool) -> Result<()>
         started.elapsed().as_secs_f64()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod readme_defaults_tests {
+    use super::Args;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Wrapper {
+        #[command(flatten)]
+        args: Args,
+    }
+
+    /// An untouched `cairn terrain` must reproduce the reference build_terrain_rgb command.
+    ///
+    /// These drifted once already: cairn defaulted to maxzoom 13, terrarium, round-digits 8 and no
+    /// tile buffer, where the README asks for 12, mapbox, 0 and 1. Nothing caught it, and the two
+    /// silently produced different archives.
+    #[test]
+    fn terrain_defaults_match_the_readme_command() {
+        let readme = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/pipeline-reference.md"),
+        )
+        .expect("docs/pipeline-reference.md should be two levels above cairn/cli");
+        let lines: Vec<&str> = readme.lines().collect();
+        let start = lines
+            .iter()
+            // the doc also mentions the script in prose; only the invocation starts with python
+            .position(|l| l.trim_start().starts_with("python") && l.contains("build_terrain_rgb.py"))
+            .expect("a build_terrain_rgb command in docs/pipeline-reference.md");
+        let mut cmd = String::new();
+        for l in &lines[start..] {
+            cmd.push_str(l.trim_end_matches('\\'));
+            cmd.push(' ');
+            if !l.trim_end().ends_with('\\') {
+                break;
+            }
+        }
+
+        let args = Wrapper::parse_from(["cairn-terrain", "--area", "test"]).args;
+        for (flag, actual) in [
+            ("--minzoom", args.minzoom.to_string()),
+            ("--maxzoom", args.maxzoom.to_string()),
+            ("--round-digits", args.round_digits.to_string()),
+            ("--encoding", args.encoding.clone()),
+            ("--blur", format!("{:.0}", args.blur)),
+            ("--tile-buffer", args.tile_buffer.to_string()),
+        ] {
+            let want = cmd
+                .split_whitespace()
+                .skip_while(|t| *t != flag)
+                .nth(1)
+                .unwrap_or_else(|| panic!("the reference terrain command has no {flag}"));
+            assert_eq!(
+                actual, want,
+                "cairn terrain defaults {flag}={actual}, the reference asks for {want}"
+            );
+        }
+    }
 }

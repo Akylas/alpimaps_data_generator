@@ -7,6 +7,14 @@
 
   let tab = $state("areas");
   let areasRef = $state(null);
+  /// Which area the map should open on. A build that just finished is the one worth looking at,
+  /// not whichever area happens to sort first.
+  let mapArea = $state("");
+
+  function showOnMap(area) {
+    mapArea = area;
+    tab = "map";
+  }
 
   const TABS = [
     ["areas", "Output"], ["map", "Map"], ["build", "Build"],
@@ -29,28 +37,35 @@
 
 <main class:wide={tab === "map"}>
   <header>
-    <h1><span class="mark"></span>Cairn</h1>
-    <nav role="tablist">
-      {#each TABS as [id, label], i}
-        <button role="tab" aria-selected={tab === id} class:active={tab === id}
-                title={`${label}  (${i + 1})`} onclick={() => (tab = id)}>
-          {label}<kbd>{i + 1}</kbd>
-        </button>
-      {/each}
-    </nav>
+    <div class="headinner">
+      <h1><span class="mark"></span>Cairn</h1>
+      <nav role="tablist">
+        {#each TABS as [id, label], i}
+          <button role="tab" aria-selected={tab === id} class:active={tab === id}
+                  title={`${label}  (${i + 1})`} onclick={() => (tab = id)}>
+            {label}<kbd>{i + 1}</kbd>
+          </button>
+        {/each}
+      </nav>
+    </div>
   </header>
 
-  {#if tab === "areas"}
-    <Areas bind:this={areasRef} />
-  {:else if tab === "map"}
-    <MapView />
-  {:else if tab === "build"}
-    <Build onFinished={() => areasRef?.refresh()} />
-  {:else if tab === "settings"}
-    <Settings />
-  {:else}
-    <Docs />
-  {/if}
+  <div class="page">
+    <!-- Build and Output stay mounted: a finished run switches to the map, and destroying Build
+         on the way out would take the log and the result banner with it. The map is the one tab
+         worth tearing down, because it holds two WebGL contexts and a tile server connection. -->
+    <div class="inner" hidden={tab !== "areas"}><Areas bind:this={areasRef} /></div>
+    <div class="inner" hidden={tab !== "build"}>
+      <Build onFinished={() => areasRef?.refresh()} onShowOnMap={showOnMap} />
+    </div>
+    {#if tab === "map"}
+      <div class="inner"><MapView area={mapArea} /></div>
+    {:else if tab === "settings"}
+      <div class="inner"><Settings /></div>
+    {:else if tab === "docs"}
+      <div class="inner"><Docs /></div>
+    {/if}
+  </div>
 </main>
 
 <style>
@@ -113,13 +128,23 @@
                                        border: 2px solid var(--bg); }
   :global(::-webkit-scrollbar-thumb:hover) { background: var(--border); }
   :global(::-webkit-scrollbar-track) { background: transparent; }
-  main { max-width: 1100px; margin: 0 auto; padding: 20px 20px 60px; }
+  /* The window is the frame: the header is pinned to it and only the page below scrolls.
+     Scrolling the tab bar away meant losing the way out of a long Build form. */
+  main { height: 100vh; display: flex; flex-direction: column; box-sizing: border-box; }
+  header { flex: none; padding: 14px 20px 12px; border-bottom: 1px solid var(--line-2);
+           background: var(--bg); }
+  .headinner { display: flex; align-items: center; justify-content: space-between;
+               max-width: 1100px; margin: 0 auto; width: 100%; }
+  .page { flex: 1; min-height: 0; overflow-y: auto; }
+  .inner { max-width: 1100px; margin: 0 auto; padding: 18px 20px 60px; }
+  .inner[hidden] { display: none; }
   /* the map wants the whole window; every other tab reads better in a column */
-  main.wide { max-width: none; height: 100vh; padding: 16px 16px 12px; box-sizing: border-box;
-              display: flex; flex-direction: column; }
-  main.wide header { flex: none; }
-  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;
-           padding-bottom: 12px; border-bottom: 1px solid var(--line-2); }
+  main.wide .headinner { max-width: none; }
+  main.wide .page { overflow: hidden; display: flex; flex-direction: column; }
+  /* :not([hidden]) so the panes kept mounted behind the map stay collapsed - a plain
+     `.inner` rule here outranks `[hidden]` and would draw all three at once */
+  main.wide .inner:not([hidden]) { max-width: none; flex: 1; min-height: 0; padding: 12px 16px;
+                                   box-sizing: border-box; display: flex; flex-direction: column; }
   h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: -.01em;
        display: flex; align-items: center; gap: 9px; }
   .mark { width: 9px; height: 9px; border-radius: 2px; background: var(--accent-hi);

@@ -78,6 +78,11 @@ pub struct Settings {
 
 /// The newest `-with-deps.jar` in a directory. Several versions can sit side by side in a
 /// submodule build; the highest name is the most recent.
+/// Markers a checkout has and nothing else does.
+fn is_checkout(dir: &Path) -> bool {
+    dir.join("valhalla.json").is_file() || dir.join("planetiler").is_dir()
+}
+
 fn newest_jar(dir: &Path) -> Option<PathBuf> {
     let mut jars: Vec<PathBuf> = std::fs::read_dir(dir)
         .ok()?
@@ -105,8 +110,7 @@ impl Settings {
     pub fn locate_repo(start: &Path) -> PathBuf {
         let mut dir = start.to_path_buf();
         for _ in 0..4 {
-            // markers a checkout has and nothing else does
-            if dir.join("valhalla.json").is_file() || dir.join("planetiler").is_dir() {
+            if is_checkout(&dir) {
                 return dir;
             }
             match dir.parent() {
@@ -140,10 +144,21 @@ impl Settings {
     }
 
     /// Load from disk, falling back to defaults when the file does not exist yet.
+    ///
+    /// `repo_root` is stored, so renaming or moving the working copy leaves it naming a
+    /// directory that no longer holds a checkout - and then the submodule's planetiler build is
+    /// invisible and the process runs with a working directory that does not exist. A stored
+    /// root that has lost its markers is replaced by the one located at load time.
     pub fn load_or_default(path: &Path, repo_root: PathBuf) -> Result<Self> {
         match std::fs::read_to_string(path) {
-            Ok(text) => serde_json::from_str(&text)
-                .with_context(|| format!("parsing settings at {}", path.display())),
+            Ok(text) => {
+                let mut settings: Self = serde_json::from_str(&text)
+                    .with_context(|| format!("parsing settings at {}", path.display()))?;
+                if !is_checkout(&settings.repo_root) && is_checkout(&repo_root) {
+                    settings.repo_root = repo_root;
+                }
+                Ok(settings)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::for_repo(repo_root)),
             Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
         }
@@ -169,22 +184,34 @@ impl Settings {
 
     /// The planetiler jar to run.
     ///
-    /// Configured first, then one downloaded into the app's own data directory, then the copy
-    /// shipped inside the bundle, then the one the submodule builds. A packaged install has no
-    /// submodule; a developer checkout has no bundle; either finds a jar without being told.
+    /// A configured path wins outright. Otherwise the candidates are ranked by modification
+    /// time and the newest one runs.
+    ///
+    /// It used to be a fixed order with the submodule's own build placed last, behind the copy
+    /// in the bundle's resources. That was written believing "a developer checkout has no
+    /// bundle" - but `cargo tauri dev` stages resources into `target/debug/resources`, so a
+    /// checkout has both, and the staged copy is only refreshed when the app is rebuilt. The
+    /// result was a fork change that was compiled, and then silently not run: the app kept
+    /// using a weeks-old jar, and the only trace was a `planetiler:githash` in the output
+    /// nobody reads. Newest-wins makes "I just rebuilt the jar" mean what it says.
     pub fn planetiler_jar_path(&self) -> Option<PathBuf> {
         if let Some(jar) = &self.planetiler_jar {
             if jar.is_file() {
                 return Some(jar.clone());
             }
         }
-        if let Some(jar) = self.jar_dir.as_ref().and_then(|dir| newest_jar(dir)) {
-            return Some(jar);
-        }
-        if let Some(jar) = self.resource_dir.as_ref().and_then(|dir| newest_jar(dir)) {
-            return Some(jar);
-        }
-        newest_jar(&self.repo_root.join("planetiler/planetiler-dist/target"))
+        [
+            self.jar_dir.as_ref().and_then(|dir| newest_jar(dir)),
+            self.resource_dir.as_ref().and_then(|dir| newest_jar(dir)),
+            newest_jar(&self.repo_root.join("planetiler/planetiler-dist/target")),
+        ]
+        .into_iter()
+        .flatten()
+        .max_by_key(|jar| {
+            std::fs::metadata(jar)
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        })
     }
 
     /// Where the Valhalla config template lives.
@@ -263,6 +290,52 @@ mod tests {
         let s = Settings::load_or_default(&path, "/repo".into()).unwrap();
         assert_eq!(s.heap_mb, 4096);
         assert_eq!(s.log_interval, "1s", "unspecified fields fall back to defaults");
+    }
+
+    /// The bug this ranking exists for: a fork change is compiled into the submodule's jar, the
+    /// app keeps running the copy staged in `target/*/resources`, and nothing says so. The output
+    /// carries the old schema and the only clue is a `planetiler:githash` nobody reads.
+    #[test]
+    fn a_freshly_built_jar_beats_the_one_staged_in_resources() {
+        let dir = tempfile::tempdir().unwrap();
+        let resources = dir.path().join("resources");
+        let built = dir.path().join("repo/planetiler/planetiler-dist/target");
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::create_dir_all(&built).unwrap();
+
+        let stale = resources.join("planetiler-dist-0.10.3-with-deps.jar");
+        let fresh = built.join("planetiler-dist-0.10.3-SNAPSHOT-with-deps.jar");
+        std::fs::write(&stale, b"old").unwrap();
+        // an explicit old mtime, so the test does not depend on how fast two writes land
+        filetime::set_file_mtime(&stale, filetime::FileTime::from_unix_time(1_000_000, 0)).unwrap();
+        std::fs::write(&fresh, b"new").unwrap();
+        filetime::set_file_mtime(&fresh, filetime::FileTime::from_unix_time(2_000_000, 0)).unwrap();
+
+        let mut settings = Settings::for_repo(dir.path().join("repo"));
+        settings.resource_dir = Some(resources.clone());
+        assert_eq!(settings.planetiler_jar_path(), Some(fresh));
+
+        // and the other way round: a bundled jar newer than a stale checkout build wins
+        filetime::set_file_mtime(&stale, filetime::FileTime::from_unix_time(3_000_000, 0)).unwrap();
+        assert_eq!(settings.planetiler_jar_path(), Some(stale));
+    }
+
+    /// A configured path is a decision, not a candidate: it is not ranked against anything.
+    #[test]
+    fn a_configured_jar_wins_however_old_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let resources = dir.path().join("resources");
+        std::fs::create_dir_all(&resources).unwrap();
+        let chosen = dir.path().join("chosen-with-deps.jar");
+        std::fs::write(&chosen, b"x").unwrap();
+        filetime::set_file_mtime(&chosen, filetime::FileTime::from_unix_time(1, 0)).unwrap();
+        let newer = resources.join("planetiler-with-deps.jar");
+        std::fs::write(&newer, b"y").unwrap();
+
+        let mut settings = Settings::for_repo(dir.path().join("nowhere"));
+        settings.resource_dir = Some(resources);
+        settings.planetiler_jar = Some(chosen.clone());
+        assert_eq!(settings.planetiler_jar_path(), Some(chosen));
     }
 
     /// The app is launched from wherever, and `tauri dev` launches it one level inside the

@@ -39,6 +39,66 @@
     }
   }
 
+  /// Output is a flat list of files whose names carry the meaning, which reads as noise once an
+  /// area has a dozen of them. Group by kind so the eye lands on "Basemap" rather than parsing
+  /// `rhone-alpes_terrain.mbtiles.old` to work out what it is.
+  const KIND_ORDER = ["basemap", "routes", "terrain_rgb", "hillshade", "valhalla_package", "unknown"];
+
+  /// One 16px glyph per kind, drawn with currentColor so it takes the accent from the section
+  /// heading. Stroked rather than filled: at this size a filled glyph reads as a blob.
+  const KIND_ICON = {
+    // stacked layers
+    basemap: "M2 5.2 8 2.2l6 3-6 3-6-3Zm0 3.4 6 3 6-3M2 11.6l6 3 6-3",
+    // a winding way with its two ends marked
+    routes: "M4.2 13.2c0-2.2 2-2.4 3.4-3s2.6-1 2.6-2.6-1.4-2.4-2.8-2.4M4.2 13.2h.01M7.4 5.2h.01",
+    // peaks
+    terrain_rgb: "M1.6 12.8 6 5.2l2.6 4.4M6.6 12.8h7.8L10.6 6.4l-2 3.2",
+    hillshade: "M1.6 12.8 6 5.2l2.6 4.4M6.6 12.8h7.8L10.6 6.4l-2 3.2",
+    // a navigation arrow
+    valhalla_package: "M14 2.4 2 7.2l4.8 2 2 4.8L14 2.4Z",
+    unknown: "M9.2 1.8H4a1.4 1.4 0 0 0-1.4 1.4v9.6A1.4 1.4 0 0 0 4 14.2h8a1.4 1.4 0 0 0 1.4-1.4V6l-4.2-4.2Zm0 0V6h4.2",
+  };
+
+  let groups = $derived.by(() => {
+    if (!area) return [];
+    const by = new Map();
+    for (const art of area.artifacts) {
+      if (!by.has(art.kind)) by.set(art.kind, []);
+      by.get(art.kind).push(art);
+    }
+    return [...by.entries()]
+      .sort((a, b) => {
+        const ia = KIND_ORDER.indexOf(a[0]), ib = KIND_ORDER.indexOf(b[0]);
+        return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+      })
+      .map(([kind, items]) => ({
+        kind,
+        items: [...items].sort((x, y) => Number(!!x.variant) - Number(!!y.variant)
+          || x.file_name.localeCompare(y.file_name)),
+        bytes: items.reduce((sum, x) => sum + x.size_bytes, 0),
+      }));
+  });
+
+  let deleting = $state({});
+
+  async function remove(artifact) {
+    const what = artifact.variant ? `${artifact.file_name} (${artifact.variant})` : artifact.file_name;
+    if (!confirm(`Delete ${what}?\n\nThis cannot be undone.`)) return;
+    deleting = { ...deleting, [artifact.path]: true };
+    try {
+      await invoke("delete_artifact", { path: artifact.path });
+      // drop any stats held for it, then rescan so every total is recomputed from disk rather
+      // than adjusted by hand and left to drift from what is actually there
+      const { [artifact.path]: _gone, ...rest } = stats;
+      stats = rest;
+      await refresh();
+    } catch (err) {
+      error = String(err);
+    } finally {
+      deleting = { ...deleting, [artifact.path]: false };
+    }
+  }
+
   async function runCompare() {
     if (!compareA || !compareB || compareA === compareB) return;
     comparing = true;
@@ -71,66 +131,86 @@
 {/if}
 
 {#if area}
-  <table>
-    <thead>
-      <tr><th>File</th><th>Kind</th><th>Format</th><th>Zooms</th><th class="num">Size</th><th></th></tr>
-    </thead>
-    <tbody>
-      {#each area.artifacts as art}
-        <tr class:variant={art.variant}>
-          <td>
-            <code>{art.file_name}</code>
-            {#if art.variant}<span class="tag">{art.variant}</span>{/if}
-            {#if art.probe_error}<span class="tag err">unreadable</span>{/if}
-          </td>
-          <td>{KIND_LABEL[art.kind] ?? art.kind}</td>
-          <td>
-            {formatLabel(art.format)}
-            {#if art.encoding}<span class="tag">{art.encoding}</span>{/if}
-          </td>
-          <td>{art.minzoom ?? "—"}–{art.maxzoom ?? "—"}</td>
-          <td class="num">{mb(art.size_bytes)}</td>
-          <td><button class="ghost" onclick={() => loadStats(art)} disabled={loading[art.path]}>
-            {loading[art.path] ? "…" : stats[art.path] ? "↻" : "stats"}
-          </button></td>
-        </tr>
-        {#if stats[art.path]}
-          {@const s = stats[art.path]}
-          <tr class="detail">
-            <td colspan="6">
-              {#if s.error}
-                <span class="warn">{s.error}</span>
-              {:else}
-                <p>
-                  {s.addressed_tiles.toLocaleString()} tiles addressed &middot; {mb(s.addressed_bytes)}
-                  {#if s.unique_tiles != null}
-                    &nbsp;|&nbsp; {s.unique_tiles.toLocaleString()} unique &middot; {mb(s.unique_bytes)}
-                    <span class="tag">dedup {((1 - s.unique_tiles / s.addressed_tiles) * 100).toFixed(1)}%</span>
-                  {/if}
-                </p>
-                <div class="zoombars">
-                  {#each s.per_zoom.slice().reverse() as z}
-                    {@const share = z.bytes / s.addressed_bytes}
-                    <div class="zoomrow">
-                      <span class="z">z{z.zoom}</span>
-                      <span class="bar"><i style="width:{(share * 100).toFixed(1)}%"></i></span>
-                      <span class="v">{mb(z.bytes)}</span>
-                      <span class="n">{z.tiles.toLocaleString()}</span>
-                    </div>
-                  {/each}
-                </div>
-              {/if}
-            </td>
+  {#each groups as group}
+    <section class="kind">
+      <h3>
+        <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
+          <path d={KIND_ICON[group.kind] ?? KIND_ICON.unknown} />
+        </svg>
+        {KIND_LABEL[group.kind] ?? group.kind}
+        <span class="count">{group.items.length} file{group.items.length === 1 ? "" : "s"}</span>
+        <span class="bytes">{mb(group.bytes)}</span>
+      </h3>
+      <table>
+        <thead>
+          <tr>
+            <th>File</th><th>Format</th><th>Zooms</th>
+            <th class="num">Size</th><th class="actions"></th>
           </tr>
-        {/if}
-        {#if art.layers?.length}
-          <tr class="detail muted"><td colspan="6">
-            {art.layers.length} layers: {art.layers.map((l) => l.id).join(", ")}
-          </td></tr>
-        {/if}
-      {/each}
-    </tbody>
-  </table>
+        </thead>
+        <tbody>
+          {#each group.items as art}
+            <tr class:variant={art.variant}>
+              <td>
+                <code>{art.file_name}</code>
+                {#if art.variant}<span class="tag">{art.variant}</span>{/if}
+                {#if art.probe_error}<span class="tag err">unreadable</span>{/if}
+              </td>
+              <td>
+                {formatLabel(art.format)}
+                {#if art.encoding}<span class="tag">{art.encoding}</span>{/if}
+              </td>
+              <td>{art.minzoom ?? "—"}–{art.maxzoom ?? "—"}</td>
+              <td class="num">{mb(art.size_bytes)}</td>
+              <td class="actions">
+                <button class="ghost" onclick={() => loadStats(art)} disabled={loading[art.path]}>
+                  {loading[art.path] ? "…" : stats[art.path] ? "↻" : "stats"}
+                </button>
+                <button class="ghost danger" onclick={() => remove(art)}
+                        disabled={deleting[art.path]} title="Delete this file">
+                  {deleting[art.path] ? "…" : "delete"}
+                </button>
+              </td>
+            </tr>
+            {#if stats[art.path]}
+              {@const st = stats[art.path]}
+              <tr class="detail">
+                <td colspan="5">
+                  {#if st.error}
+                    <span class="warn">{st.error}</span>
+                  {:else}
+                    <p>
+                      {st.addressed_tiles.toLocaleString()} tiles addressed &middot; {mb(st.addressed_bytes)}
+                      {#if st.unique_tiles != null}
+                        &nbsp;|&nbsp; {st.unique_tiles.toLocaleString()} unique &middot; {mb(st.unique_bytes)}
+                        <span class="tag">dedup {((1 - st.unique_tiles / st.addressed_tiles) * 100).toFixed(1)}%</span>
+                      {/if}
+                    </p>
+                    <div class="zoombars">
+                      {#each st.per_zoom.slice().reverse() as z}
+                        {@const share = z.bytes / st.addressed_bytes}
+                        <div class="zoomrow">
+                          <span class="z">z{z.zoom}</span>
+                          <span class="bar"><i style="width:{(share * 100).toFixed(1)}%"></i></span>
+                          <span class="v">{mb(z.bytes)}</span>
+                          <span class="n">{z.tiles.toLocaleString()}</span>
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                </td>
+              </tr>
+            {/if}
+            {#if art.layers?.length}
+              <tr class="detail muted"><td colspan="5">
+                {art.layers.length} layers: {art.layers.map((l) => l.id).join(", ")}
+              </td></tr>
+            {/if}
+          {/each}
+        </tbody>
+      </table>
+    </section>
+  {/each}
 
   <section class="compare">
     <h3>Compare two builds</h3>
@@ -224,6 +304,29 @@
   .bar i { display: block; height: 100%; background: var(--accent-hi); }
   .v { text-align: right; }
   .n { text-align: right; color: var(--muted-2); }
+  /* a card per kind: the heading alone was not enough separation once an area has a dozen files */
+  .kind { margin-bottom: 18px; border: 1px solid var(--line-2); border-radius: var(--r);
+    background: var(--card); overflow: hidden; }
+  .kind h3 { display: flex; align-items: center; gap: 9px; margin: 0;
+    padding: 9px 12px; background: var(--hover); border-bottom: 1px solid var(--line-2);
+    font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--text); }
+  /* the accent bar is what the eye catches when scrolling past several sections */
+  .kind h3::before { content: ""; width: 3px; align-self: stretch; margin: -9px 3px -9px -12px;
+    background: var(--accent); }
+  .icon { width: 16px; height: 16px; flex: none; color: var(--accent-hi);
+    fill: none; stroke: currentColor; stroke-width: 1.4;
+    stroke-linecap: round; stroke-linejoin: round; }
+  .kind .count { font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--muted-2); }
+  .kind .bytes { margin-left: auto; font-weight: 500; letter-spacing: 0; text-transform: none;
+    font-variant-numeric: tabular-nums; color: var(--text-2); }
+  .kind table { font-size: 13px; }
+  .kind th { padding-top: 8px; }
+  .kind td, .kind th { padding-left: 12px; padding-right: 12px; }
+  .kind tbody tr:last-child td { border-bottom: none; }
+  .actions { text-align: right; white-space: nowrap; }
+  .actions button + button { margin-left: 4px; }
+  .danger:hover:not(:disabled) { border-color: var(--warn); color: var(--warn); }
   .compare { margin-top: 22px; border-top: 1px solid var(--line-2); padding-top: 16px; }
   h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; }
   h4 { font-size: 12px; color: var(--muted); margin: 16px 0 6px; }

@@ -141,6 +141,16 @@ async fn list_areas(config: State<'_, Config>) -> Result<Vec<Area>, String> {
     catalog::discover(&settings.output_root).map_err(|e| e.to_string())
 }
 
+/// Delete one output file, and whatever sits beside it as part of the same archive.
+///
+/// The guard and the sidecar handling live in `catalog` so they can be tested; this only supplies
+/// the configured output root.
+#[tauri::command]
+async fn delete_artifact(config: State<'_, Config>, path: String) -> Result<u64, String> {
+    let settings = config.get()?;
+    catalog::delete_artifact(&settings.output_root, Path::new(&path)).map_err(|e| e.to_string())
+}
+
 /// Walks the whole archive, so it is deliberately a separate call the UI makes on demand
 /// rather than something `list_areas` pays for. About 18s for 1.4 GB of output.
 #[tauri::command]
@@ -475,7 +485,7 @@ fn step_options(step: StepId) -> Vec<OptionDef> {
     match step {
         StepId::Routes => options::routes_options(),
         StepId::Basemap => options::basemap_options(),
-        StepId::TerrainRgb | StepId::Hillshade => options::terrain_options(),
+        StepId::TerrainRgb => options::terrain_options(),
         StepId::ValhallaPackage => options::package_options(),
         // the download and the two Valhalla binaries take paths and bounds, which are settings
         // rather than per-run choices; showing planetiler's options here was simply wrong
@@ -490,6 +500,12 @@ fn plan_steps(steps: Vec<StepId>) -> Vec<StepId> {
 
 fn presets_path(config: &Config) -> PathBuf {
     config.path.with_file_name("presets.json")
+}
+
+/// Which preset the form seeds itself from, so the UI shows the values a run will actually use.
+#[tauri::command]
+async fn default_preset_name() -> Result<String, String> {
+    Ok(cairn_core::presets::DEFAULT_PRESET.to_string())
 }
 
 #[tauri::command]
@@ -936,6 +952,22 @@ async fn clear_build_state(
     }
 }
 
+/// Releases the runner slot however `run_steps` exits.
+///
+/// The slot used to be cleared only at the very end, so any early `?` on the way out - a jar that
+/// will not spawn, a failed tmpdir - left it occupied for the lifetime of the app. Every later run
+/// was then refused with "a build is already running" the instant it started, which from the
+/// outside looks like nothing happening at all.
+struct RunGuard(AppHandle);
+
+impl Drop for RunGuard {
+    fn drop(&mut self) {
+        if let Ok(mut slot) = self.0.state::<Running>().0.lock() {
+            *slot = None;
+        }
+    }
+}
+
 /// Run a selection of steps, in dependency order.
 ///
 /// Steps run one at a time on purpose. The two planetiler steps write into a temp tree, and
@@ -970,6 +1002,7 @@ async fn run_steps(
         }
         *slot = Some(cancel_tx.clone());
     }
+    let _slot_guard = RunGuard(app.clone());
 
     let (tx, mut rx) = mpsc::channel::<StepEvent>(512);
     let emitter = app.clone();
@@ -980,9 +1013,29 @@ async fn run_steps(
     });
 
     let area_dir = settings.area_dir(&req.area);
+    let planned = ordered.len();
     let mut completed = Vec::new();
     for step in ordered {
-        let values = req.values.get(&step).cloned().unwrap_or_default();
+        // Whatever the form holds, verbatim. The form seeds itself from the default preset on
+        // load, so an untouched step already carries the README's values - and merging them in
+        // again here would make a deliberately cleared field impossible to clear.
+        let mut values = req.values.get(&step).cloned().unwrap_or_default();
+        // `area_poly` is cairn's own switch: resolve it to a real clip path, fetching the
+        // boundary from Geofabrik on the first build that asks for it.
+        let clip_key = if step == StepId::TerrainRgb { "poly_shape" } else { "polygon" };
+        if let Err(e) = cairn_core::steps::download::apply_area_poly(
+            &mut values,
+            clip_key,
+            &settings.data_dir,
+            &req.area,
+            |_, _| {},
+        )
+        .await
+        {
+            let _ = tx
+                .send(StepEvent::Log { step, line: format!("could not resolve the area boundary: {e}") })
+                .await;
+        }
         let forced = req.force_all || req.force.contains(&step);
         if !forced {
             let status = build_state::status(&settings, &req.area, step, &values);
@@ -1057,7 +1110,7 @@ async fn run_steps(
             }
             continue;
         }
-        if step == StepId::TerrainRgb || step == StepId::Hillshade {
+        if step == StepId::TerrainRgb {
             match run_terrain(&settings, &req.area, step, &values, tx.clone()).await {
                 Ok(()) => {
                     record(true);
@@ -1118,10 +1171,36 @@ async fn run_steps(
         completed.push(step);
     }
 
-    if let Ok(mut slot) = app.state::<Running>().0.lock() {
-        *slot = None;
-    }
+    notify_run_finished(&app, &req.area, &completed, planned);
     Ok(completed)
+}
+
+/// Tell the desktop the build is over.
+///
+/// A basemap takes tens of minutes, so nobody is watching the window when it ends. The in-app
+/// banner only helps someone already looking at it; this is for the far more common case of
+/// having switched away an hour ago.
+fn notify_run_finished(app: &AppHandle, area: &str, completed: &[StepId], planned: usize) {
+    use tauri_plugin_notification::NotificationExt;
+
+    let done = completed.len();
+    let (title, body) = if done == planned {
+        (
+            format!("{area} is built"),
+            match completed {
+                [] => "nothing to do".to_string(),
+                [one] => one.label().to_string(),
+                _ => completed.iter().map(|s| s.label()).collect::<Vec<_>>().join(", "),
+            },
+        )
+    } else {
+        (
+            format!("{area} stopped early"),
+            format!("{done} of {planned} steps ran - the log has the reason"),
+        )
+    };
+    // best-effort: an unnotifiable desktop is not a reason to fail a build that succeeded
+    let _ = app.notification().builder().title(title).body(body).show();
 }
 
 /// Bridge the run-wide cancel broadcast onto one step's channel.
@@ -1355,10 +1434,7 @@ async fn run_terrain(
 
     let sources_json = settings.sources_json.clone();
     let hgt_dir = settings.elevation_tiles_dir.clone();
-    // the two differ only in packing: `_hillshade` is this pipeline's older mapbox-encoded
-    // terrain, kept because the app still reads those archives
-    let suffix = if step == StepId::Hillshade { "hillshade" } else { "terrain" };
-    let output = settings.area_dir(area).join(format!("{area}_{suffix}.mbtiles"));
+    let output = settings.area_dir(area).join(format!("{area}_terrain.mbtiles"));
     // the form's values, with the schema's own "unset means the default" rule: an absent key
     // leaves `TerrainOptions::default()` standing rather than asserting a guess at it
     let num = |key: &str| values.get(key).and_then(|v| v.as_f64());
@@ -1366,7 +1442,6 @@ async fn run_terrain(
     let defaults = render::TerrainOptions::default();
     let encoding = match text("encoding").as_deref() {
         Some(name) => Encoding::parse(name).ok_or_else(|| format!("unknown encoding `{name}`"))?,
-        None if step == StepId::Hillshade => Encoding::Mapbox,
         None => defaults.encoding,
     };
     let opts = render::TerrainOptions {
@@ -1453,7 +1528,7 @@ async fn run_terrain(
             .await;
     }
 
-    let name = format!("{area}_{suffix}");
+    let name = format!("{area}_terrain");
     let progress = tx.clone();
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         // sources.json is the pipeline's own definition of what to read, in priority order;
@@ -1601,6 +1676,7 @@ fn cancel_run(running: State<'_, Running>) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(Running::default())
         .manage(Tiles::default())
         .manage(Routing::default())
@@ -1617,6 +1693,7 @@ pub fn run() {
             save_settings,
             list_areas,
             artifact_stats,
+            delete_artifact,
             compare_artifacts,
             start_tiles,
             elevation_profile,
@@ -1626,6 +1703,7 @@ pub fn run() {
             step_options,
             plan_steps,
             list_presets,
+            default_preset_name,
             build_state,
             clear_build_state,
             resolved_defaults,

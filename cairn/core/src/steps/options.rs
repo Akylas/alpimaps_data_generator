@@ -93,6 +93,23 @@ pub fn planetiler_common() -> Vec<OptionDef> {
             "planetiler picks based on input size"),
         opt("parallel_tmp_io", "parallel-tmp-io", "Parallel temp IO", "Performance",
             OptionKind::Bool, "Read and write sort chunks in parallel.", "off"),
+        opt("max_point_buffer", "max-point-buffer", "Max point buffer", "Geometry",
+            float(0.0),
+            "Caps how far outside its own edge a tile carries POINT features. Layers such as \
+             `place` declare a 256px buffer, which is nine times the tile's own area - capping it \
+             at 4 is worth tens of MB. Applies to points only; lines and polygons keep their \
+             layer's buffer.",
+            "no cap, every layer's own buffer applies"),
+        opt("mlt_shared_dict", "mlt-shared-dict", "MLT shared dictionary", "Output",
+            OptionKind::Bool, "Share the string dictionary across the archive.", "off"),
+        opt("transportation_name_limit_merge", "transportation-name-limit-merge", "Limit name merge", "Layers",
+            OptionKind::Bool, "Restrict merging of transportation_name features.", "off"),
+        opt("area_poly", "area_poly", "Clip to the area boundary", "Tiles",
+            OptionKind::Bool,
+            "Clip to the area's own .poly rather than the extract's bounding box, downloading it \
+             from Geofabrik if it is not already beside the extract. Without it a build writes \
+             half-filled tiles all around the bounding box. An explicit clip shape wins over this.",
+            "off"),
         opt("compact_db", "compact-db", "Compact archive", "Output",
             OptionKind::Bool,
             "Store each distinct tile blob once behind a `tiles` view. Measured on the current \
@@ -121,15 +138,15 @@ pub fn terrain_options() -> Vec<OptionDef> {
             OptionKind::Int { min: Some(0), max: Some(15) }, "Lowest zoom rendered.", "5"),
         opt("maxzoom", "maxzoom", "Max zoom", "Zooms",
             OptionKind::Int { min: Some(0), max: Some(15) },
-            "Highest zoom rendered, and the zoom the quantisation ramp is anchored to.", "13"),
+            "Highest zoom rendered, and the zoom the quantisation ramp is anchored to.", "12"),
         opt("encoding", "encoding", "Encoding", "Packing",
             OptionKind::Choice { choices: vec!["terrarium".into(), "mapbox".into()] },
             "How elevation is packed into RGB. terrarium is 1 m per step at round-digits 8;              mapbox is 0.1 m, which is what the older `_hillshade` archives use.",
-            "terrarium"),
+            "mapbox"),
         opt("round_digits", "round-digits", "Round digits", "Packing",
             OptionKind::Int { min: Some(0), max: Some(16) },
             "Quantisation exponent at the maximum zoom. The step is `interval * 2^round_digits`,              so raising it coarsens elevation and compresses far better.",
-            "8"),
+            "0"),
         opt("max_round_digits", "max-round-digits", "Max round digits", "Packing",
             OptionKind::Int { min: Some(0), max: Some(16) },
             "Cap on the per-zoom ramp: lower zooms quantise more coarsely, up to this.",
@@ -153,6 +170,12 @@ pub fn terrain_options() -> Vec<OptionDef> {
              otherwise silent: the renderer writes nothing there and the archive comes out with \
              a hole.",
             "on"),
+        opt("area_poly", "area_poly", "Clip to the area boundary", "Sources",
+            OptionKind::Bool,
+            "Clip to the area's own .poly rather than the extract's bounding box, downloading it \
+             from Geofabrik if it is not already beside the extract. Without it a build writes \
+             half-filled tiles all around the bounding box. An explicit clip shape wins over this.",
+            "off"),
         opt("poly_shape", "poly-shape", "Clip shape", "Sources",
             OptionKind::Text,
             "Path to an osmosis .poly. Only tiles touching the shape are written.",
@@ -160,7 +183,7 @@ pub fn terrain_options() -> Vec<OptionDef> {
         opt("tile_buffer", "tile-buffer", "Tile buffer", "Sources",
             OptionKind::Int { min: Some(0), max: Some(8) },
             "Ring of extra tiles around the shape. 3D renderers backfill a DEM tile's 1px border              from its neighbours, so without a ring there is a seam where coverage stops.",
-            "0"),
+            "1"),
         opt("bounds", "bounds", "Bounds", "Sources",
             OptionKind::Text, "west,south,east,north.",
             "the shape's bounds, else the area's basemap bounds"),
@@ -190,8 +213,6 @@ pub fn basemap_options() -> Vec<OptionDef> {
             OptionKind::Text, "Comma-separated layers to leave out. The basemap excludes `route`.", "none"),
         opt("only_layers", "only_layers", "Only layers", "Layers",
             OptionKind::Text, "Comma-separated allow-list.", "all layers"),
-        opt("transportation_name_limit_merge", "transportation-name-limit-merge", "Limit name merge", "Layers",
-            OptionKind::Bool, "Restrict merging of transportation_name features.", "off"),
         opt("transportation_z13_paths", "transportation_z13_paths", "Paths at z13", "Layers",
             OptionKind::Bool, "Keep paths down to z13.", "off"),
         opt("landcover_tolerance_z11_13", "landcover_tolerance_z11_13", "Landcover tolerance z11-13", "Landcover",
@@ -215,7 +236,7 @@ pub fn basemap_options() -> Vec<OptionDef> {
              pools at 1px, where Douglas-Peucker keeps 97.9% of them and still removes 39% of the \
              vertices. 1 is the measured sweet spot; past it the curve flattens.",
             "no extra simplification"),
-        opt("drop_redundant_name_int", "drop_redundant_name_int", "Drop redundant name_int", "Names",
+        opt("drop_redundant_name_int", "drop_redundant_name_int", "Drop duplicate international name", "Names",
             OptionKind::Bool,
             "Omit `name_int` where it is an exact copy of `name`, which it usually is under an \
              empty `languages`. Worth about -0.9% of tile bytes, spread over 13 layers and \
@@ -387,6 +408,97 @@ mod tests {
             keys.sort_unstable();
             keys.dedup();
             assert_eq!(keys.len(), before, "duplicate option key");
+        }
+    }
+
+    /// Operational flags: cairn supplies these itself, so a preset has no business setting them.
+    const RUNNER_OWNED: &[&str] = &[
+        "area", "mbtiles", "polygon", "jar", "download", "force", "tmpdir", "loginterval", "schema",
+        // resolves into --polygon, which is itself runner-owned
+        "area_poly",
+    ];
+
+    /// `0.70` in the doc and `0.7` from to_args are the same flag, so compare numbers as numbers.
+    fn canonical(flag: &str) -> String {
+        match flag.split_once('=') {
+            Some((k, v)) => match v.parse::<f64>() {
+                Ok(n) => format!("{k}={n}"),
+                Err(_) => flag.to_string(),
+            },
+            None => flag.to_string(),
+        }
+    }
+
+    /// Pull the flag set out of one of the reference pipeline's build command lines.
+    fn readme_flags(marker: &str) -> Vec<String> {
+        let readme = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/pipeline-reference.md"),
+        )
+        .expect("docs/pipeline-reference.md should be two levels above cairn/core");
+        // first match wins: the README gives an area build and a parent-area variant that differ
+        // only by --skip_filled_tiles, and the area build is the one the presets mirror
+        let lines: Vec<&str> = readme.lines().collect();
+        let start = lines
+            .iter()
+            .position(|l| l.contains(marker) && l.contains("PLANETILER_JAR"))
+            .unwrap_or_else(|| panic!("no build command containing `{marker}` in docs/pipeline-reference.md"));
+        // commands continue onto following lines with a trailing backslash
+        let mut line = String::new();
+        for l in &lines[start..] {
+            line.push_str(l.trim_end_matches('\\'));
+            line.push(' ');
+            if !l.trim_end().ends_with('\\') {
+                break;
+            }
+        }
+        let line = line.as_str();
+        let mut flags: Vec<String> = line
+            .split_whitespace()
+            .filter(|t| t.starts_with('-') && !t.starts_with("-Xmx"))
+            .map(|t| {
+                let t = t.trim_start_matches('-');
+                // a bare boolean flag in the README is the same as `=true` from to_args
+                if t.contains('=') { t.to_string() } else { format!("{t}=true") }
+            })
+            .filter(|t| {
+                let key = t.split('=').next().unwrap_or_default().replace('-', "_");
+                !RUNNER_OWNED.contains(&key.as_str())
+            })
+            // the README quotes the empty languages value; to_args does not
+            .map(|t| t.replace("=\"\"", "="))
+            .map(|t| canonical(&t))
+            .collect();
+        flags.sort();
+        flags
+    }
+
+    /// The presets exist to reproduce the reference pipeline's builds. Nothing enforced that, so the two drifted:
+    /// the basemap preset was missing max-point-buffer, mlt-shared-dict, transportation_z13_paths,
+    /// compact-db and transportation-name-limit-merge, and carried a simplify_tolerance the README
+    /// never set. Missing max-point-buffer alone is tens of MB, because the place layer declares a
+    /// 256px buffer.
+    #[test]
+    fn measured_presets_match_the_readme_build_commands() {
+        for (marker, step, defs) in [
+            ("${AREA}.mbtiles", crate::steps::StepId::Basemap, basemap_options()),
+            ("_routes.mbtiles", crate::steps::StepId::Routes, routes_options()),
+        ] {
+            let preset = crate::presets::builtin()
+                .into_iter()
+                .find(|p| p.step == step && p.name == "measured")
+                .expect("a `measured` preset for this step");
+            let mut got: Vec<String> = to_args(&defs, &preset.values)
+                .iter()
+                .map(|a| canonical(a.trim_start_matches('-')))
+                // the same runner-owned keys are dropped from both sides, or area_poly would
+                // look like drift against the reference's explicit --polygon
+                .filter(|t| {
+                    let key = t.split('=').next().unwrap_or_default().replace('-', "_");
+                    !RUNNER_OWNED.contains(&key.as_str())
+                })
+                .collect();
+            got.sort();
+            assert_eq!(got, readme_flags(marker), "`measured` preset for {step:?} has drifted from docs/pipeline-reference.md");
         }
     }
 
