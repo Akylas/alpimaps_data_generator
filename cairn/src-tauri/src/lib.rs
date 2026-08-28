@@ -952,6 +952,22 @@ async fn clear_build_state(
     }
 }
 
+/// Releases the runner slot however `run_steps` exits.
+///
+/// The slot used to be cleared only at the very end, so any early `?` on the way out - a jar that
+/// will not spawn, a failed tmpdir - left it occupied for the lifetime of the app. Every later run
+/// was then refused with "a build is already running" the instant it started, which from the
+/// outside looks like nothing happening at all.
+struct RunGuard(AppHandle);
+
+impl Drop for RunGuard {
+    fn drop(&mut self) {
+        if let Ok(mut slot) = self.0.state::<Running>().0.lock() {
+            *slot = None;
+        }
+    }
+}
+
 /// Run a selection of steps, in dependency order.
 ///
 /// Steps run one at a time on purpose. The two planetiler steps write into a temp tree, and
@@ -986,6 +1002,7 @@ async fn run_steps(
         }
         *slot = Some(cancel_tx.clone());
     }
+    let _slot_guard = RunGuard(app.clone());
 
     let (tx, mut rx) = mpsc::channel::<StepEvent>(512);
     let emitter = app.clone();
@@ -1153,9 +1170,6 @@ async fn run_steps(
         completed.push(step);
     }
 
-    if let Ok(mut slot) = app.state::<Running>().0.lock() {
-        *slot = None;
-    }
     Ok(completed)
 }
 

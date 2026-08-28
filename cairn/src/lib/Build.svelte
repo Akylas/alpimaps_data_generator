@@ -62,6 +62,8 @@
   let built = $state({});
   let force = $state(new Set());
   let forceAll = $state(false);
+  /** Why a run refused to start, surfaced next to Run rather than only in the log. */
+  let runError = $state("");
 
   onMount(async () => {
     await detect();
@@ -134,7 +136,17 @@
 
   function toggleForce(step) {
     const next = new Set(force);
-    next.has(step) ? next.delete(step) : next.add(step);
+    if (next.has(step)) {
+      next.delete(step);
+    } else {
+      next.add(step);
+      // forcing a step that is not selected does nothing at all: only selected steps are sent to
+      // the runner, so the button looked like it armed a rebuild while quietly changing nothing
+      if (!selected.has(step)) {
+        selected = new Set(selected).add(step);
+        replan();
+      }
+    }
     force = next;
   }
 
@@ -263,7 +275,7 @@
   }
 
   async function run() {
-    running = true; lines = []; results = []; percent = 0;
+    running = true; lines = []; results = []; percent = 0; runError = "";
     // queued up front, so the list reads as a plan rather than filling in as it goes
     status = Object.fromEntries(planned.map((id) => [id, { state: "queued" }]));
     try {
@@ -277,6 +289,9 @@
         },
       });
     } catch (err) {
+      // shown beside the button as well as logged: a run refused up front produces no
+      // events at all, so the log alone leaves the UI looking simply inert
+      runError = String(err);
       lines = [...lines, `ERROR: ${err}`];
     } finally {
       running = false;
@@ -487,6 +502,33 @@
       <span class="plan">{planned.map(labelFor).join(" → ")}</span>
     {/if}
   </div>
+
+  {#if runError}
+    <p class="warn runerr">{runError}</p>
+  {/if}
+
+  <!-- progress belongs with the button that starts it: as its own section it sat below every
+       per-step options panel, off the bottom of the window, so a run that failed instantly
+       looked like a run that did nothing -->
+  {#if running || lines.length || results.length}
+    <div class="progress">
+      <div class="phead">
+        <span class="pstep">{running ? `${labelFor(runningStep) || ""} · ${phase}` : summaryLine}</span>
+        <span class="pct">{percent}%</span>
+      </div>
+      <div class="bar big"><div class="fill" style="width:{percent}%"></div></div>
+      <p class="muted small">{label || phase}</p>
+      <details class="group" open={results.some((r) => !r.ok)}>
+        <summary>
+          Log
+          <button class="ghost tiny" onclick={(e) => { e.preventDefault(); copyLog(); }}>
+            {logCopied ? "copied" : "copy"}
+          </button>
+        </summary>
+        <pre>{lines.slice(-150).join("\n")}</pre>
+      </details>
+    </div>
+  {/if}
 </Section>
 
 {#each optionSteps as step, i}
@@ -562,27 +604,12 @@
   </Section>
 {/each}
 
-{#if running || lines.length || results.length}
-  <Section title="4 · Progress"
-           subtitle={running ? `${labelFor(runningStep) || ""} · ${phase}` : summaryLine}>
-    <div class="prog">
-      <div class="bar big"><div class="fill" style="width:{percent}%"></div></div>
-      <span class="pct">{percent}%</span>
-    </div>
-    <p class="muted small">{label || phase}</p>
-    <details class="group" open={results.some((r) => !r.ok)}>
-      <summary>
-        Log
-        <button class="ghost tiny" onclick={(e) => { e.preventDefault(); copyLog(); }}>
-          {logCopied ? "copied" : "copy"}
-        </button>
-      </summary>
-      <pre>{lines.slice(-150).join("\n")}</pre>
-    </details>
-  </Section>
-{/if}
-
 <style>
+  .progress { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line-2); }
+  .phead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; font-size: 12px; }
+  .pstep { color: var(--text-2); }
+  .phead .pct { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text); }
+  .runerr { margin: 10px 0 0; }
   .group { border-top: 1px solid var(--line); }
   .group summary { cursor: pointer; padding: 8px 0; font-size: 11px; text-transform: uppercase;
                    letter-spacing: .05em; color: var(--muted); list-style: none; display: flex;
