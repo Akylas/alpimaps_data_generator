@@ -13,6 +13,7 @@ export const KIND_LABEL = {
   basemap: "Basemap",
   routes: "Routes",
   terrain_rgb: "Terrain RGB",
+  // a legacy artifact kind, not a build step: older archives are named `_hillshade`
   hillshade: "Hillshade",
   valhalla_package: "Valhalla",
   unknown: "Unknown",

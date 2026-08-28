@@ -55,8 +55,6 @@ enum Command {
     Routes(steps::planetiler::Args),
     /// Build terrain-RGB tiles from the sources in sources.json.
     Terrain(steps::terrain::Args),
-    /// Build terrain-RGB tiles with the older mapbox packing, named _hillshade.
-    Hillshade(steps::terrain::Args),
     /// Build the Valhalla routing graph from the OSM extract.
     ValhallaTiles(steps::tools::ToolArgs),
     /// Pack a Valhalla tile directory into a .vtiles routing package.
@@ -87,8 +85,7 @@ async fn main() -> Result<()> {
         Command::ValhallaTiles(args) => steps::tools::valhalla_tiles(&settings, args).await,
         Command::Basemap(args) => steps::planetiler::run(&settings, args, false).await,
         Command::Routes(args) => steps::planetiler::run(&settings, args, true).await,
-        Command::Terrain(args) => steps::terrain::run(&settings, args, false).await,
-        Command::Hillshade(args) => steps::terrain::run(&settings, args, true).await,
+        Command::Terrain(args) => steps::terrain::run(&settings, args).await,
         Command::Package(args) => steps::valhalla::package(&settings, args),
         Command::Unpack(args) => steps::valhalla::unpack(args),
         Command::Route(args) => steps::valhalla::route(&settings, args),

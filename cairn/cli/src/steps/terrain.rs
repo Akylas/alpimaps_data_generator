@@ -116,18 +116,12 @@ fn parse_bounds(raw: &str) -> Result<(f64, f64, f64, f64)> {
     }
 }
 
-pub async fn run(settings: &Settings, args: Args, hillshade: bool) -> Result<()> {
+pub async fn run(settings: &Settings, args: Args) -> Result<()> {
     let area_dir = settings.area_dir(&args.area);
     let recorded = terrain_options(&args);
-    // `_hillshade` is this pipeline's older mapbox-packed terrain; same renderer, different
-    // packing and name, which is all the hillshade step ever was
-    let encoding = if hillshade && args.encoding == "terrarium" {
-        Encoding::Mapbox
-    } else {
-        Encoding::parse(&args.encoding)
-            .ok_or_else(|| anyhow!("unknown encoding `{}`", args.encoding))?
-    };
-    let suffix = if hillshade { "hillshade" } else { "terrain" };
+    let encoding = Encoding::parse(&args.encoding)
+        .ok_or_else(|| anyhow!("unknown encoding `{}`", args.encoding))?;
+    let suffix = "terrain";
     let sources_path = args.sources.clone().unwrap_or_else(|| settings.sources_json.clone());
     let hgt_dir = args
         .elevation_dir

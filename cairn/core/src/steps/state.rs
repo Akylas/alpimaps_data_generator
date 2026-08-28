@@ -47,7 +47,6 @@ pub fn outputs_for(settings: &Settings, area: &str, step: StepId) -> Vec<PathBuf
         StepId::Basemap => in_area(format!("{area}.mbtiles")),
         StepId::Routes => in_area(format!("{area}_routes.mbtiles")),
         StepId::TerrainRgb => in_area(format!("{area}_terrain.mbtiles")),
-        StepId::Hillshade => in_area(format!("{area}_hillshade.mbtiles")),
         StepId::ValhallaPackage => in_area(format!("{area}.vtiles")),
         // planetiler names its downloads with underscores
         StepId::DownloadOsm => {

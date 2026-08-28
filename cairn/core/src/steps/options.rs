@@ -224,7 +224,7 @@ pub fn basemap_options() -> Vec<OptionDef> {
              pools at 1px, where Douglas-Peucker keeps 97.9% of them and still removes 39% of the \
              vertices. 1 is the measured sweet spot; past it the curve flattens.",
             "no extra simplification"),
-        opt("drop_redundant_name_int", "drop_redundant_name_int", "Drop redundant name_int", "Names",
+        opt("drop_redundant_name_int", "drop_redundant_name_int", "Drop duplicate international name", "Names",
             OptionKind::Bool,
             "Omit `name_int` where it is an exact copy of `name`, which it usually is under an \
              empty `languages`. Worth about -0.9% of tile bytes, spread over 13 layers and \

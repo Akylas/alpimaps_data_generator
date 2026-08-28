@@ -11,7 +11,6 @@ const COMMANDS = {
   basemap: { name: "basemap", style: "o" },
   routes: { name: "routes", style: "o" },
   terrain_rgb: { name: "terrain", style: "flags" },
-  hillshade: { name: "hillshade", style: "flags" },
   valhalla_tiles: { name: "valhalla-tiles", style: "none" },
   valhalla_package: { name: "package", style: "flags" },
 };

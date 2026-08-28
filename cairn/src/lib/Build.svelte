@@ -44,6 +44,7 @@
   let optionDefs = $state({});
   let values = $state({});
   let presets = $state([]);
+  let defaultPreset = $state("measured");
   let presetName = $state({});
   /// Free-text arguments per step, for the flags this app has no form for.
   let extraArgs = $state({});
@@ -77,9 +78,14 @@
       area = areas[0] ?? settings.areas?.[0]?.name ?? "";
       steps = await invoke("list_steps", { area });
       presets = await invoke("list_presets");
+      defaultPreset = await invoke("default_preset_name");
       for (const s of steps) {
         optionDefs[s.id] = await invoke("step_options", { step: s.id });
-        values[s.id] = {};
+        // Seed from the default preset rather than leaving the form blank. cairn is here to
+        // rebuild this repository's tiles, so the fields should show the values that will
+        // actually be used - a blank form that silently builds something else is a trap.
+        const seed = presets.find((p) => p.step === s.id && p.name === defaultPreset);
+        values[s.id] = seed ? { ...seed.values } : {};
       }
       selected = new Set(["basemap"]);
       await replan();

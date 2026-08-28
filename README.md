@@ -15,8 +15,7 @@ any of the three ways produces the same bytes.
 | `valhalla_build_elevation -v -d -b $BOUNDS -o ./elevation_tiles` | `cairn elevation --area ${AREA}` (native, no Python) |
 | `java -jar $PLANETILER_JAR --area=${AREA} ... --exclude_layers=route` | `cairn basemap --area ${AREA}` |
 | `java -jar $PLANETILER_JAR --area=${AREA} ... --only_layers=route` | `cairn routes --area ${AREA}` |
-| `scripts/build_terrain_rgb.py --sources sources.json ...` | `cairn terrain --area ${AREA} --poly-shape $POLY` |
-| `scripts/build_hillshades.sh ...` | `cairn hillshade --area ${AREA} --poly-shape $POLY` |
+| `scripts/build_terrain_rgb.py --sources sources.json ...` | `cairn terrain --area ${AREA} --poly-shape $POLY` (also replaces `build_hillshades.sh`: same renderer, mapbox packing) |
 | `valhalla_build_tiles -c valhalla.json data/sources/...osm.pbf` | `cairn valhalla-tiles --area ${AREA}` |
 | `scripts/build_valhalla_package.py --id $AREA --poly $POLY ...` | `cairn package --area ${AREA} --poly $POLY` |
 

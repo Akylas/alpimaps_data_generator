@@ -475,7 +475,7 @@ fn step_options(step: StepId) -> Vec<OptionDef> {
     match step {
         StepId::Routes => options::routes_options(),
         StepId::Basemap => options::basemap_options(),
-        StepId::TerrainRgb | StepId::Hillshade => options::terrain_options(),
+        StepId::TerrainRgb => options::terrain_options(),
         StepId::ValhallaPackage => options::package_options(),
         // the download and the two Valhalla binaries take paths and bounds, which are settings
         // rather than per-run choices; showing planetiler's options here was simply wrong
@@ -490,6 +490,12 @@ fn plan_steps(steps: Vec<StepId>) -> Vec<StepId> {
 
 fn presets_path(config: &Config) -> PathBuf {
     config.path.with_file_name("presets.json")
+}
+
+/// Which preset the form seeds itself from, so the UI shows the values a run will actually use.
+#[tauri::command]
+async fn default_preset_name() -> Result<String, String> {
+    Ok(cairn_core::presets::DEFAULT_PRESET.to_string())
 }
 
 #[tauri::command]
@@ -982,18 +988,10 @@ async fn run_steps(
     let area_dir = settings.area_dir(&req.area);
     let mut completed = Vec::new();
     for step in ordered {
-        // The form only holds what the user actually touched, so an untouched step would otherwise
-        // run on planetiler's bare defaults and produce a differently-tuned map than the README.
-        // Start from the default preset and let the form override it, key by key.
-        let values = {
-            let mut merged = cairn_core::presets::builtin()
-                .into_iter()
-                .find(|p| p.step == step && p.name == cairn_core::presets::DEFAULT_PRESET)
-                .map(|p| p.values)
-                .unwrap_or_default();
-            merged.extend(req.values.get(&step).cloned().unwrap_or_default());
-            merged
-        };
+        // Whatever the form holds, verbatim. The form seeds itself from the default preset on
+        // load, so an untouched step already carries the README's values - and merging them in
+        // again here would make a deliberately cleared field impossible to clear.
+        let values = req.values.get(&step).cloned().unwrap_or_default();
         let forced = req.force_all || req.force.contains(&step);
         if !forced {
             let status = build_state::status(&settings, &req.area, step, &values);
@@ -1068,7 +1066,7 @@ async fn run_steps(
             }
             continue;
         }
-        if step == StepId::TerrainRgb || step == StepId::Hillshade {
+        if step == StepId::TerrainRgb {
             match run_terrain(&settings, &req.area, step, &values, tx.clone()).await {
                 Ok(()) => {
                     record(true);
@@ -1366,10 +1364,7 @@ async fn run_terrain(
 
     let sources_json = settings.sources_json.clone();
     let hgt_dir = settings.elevation_tiles_dir.clone();
-    // the two differ only in packing: `_hillshade` is this pipeline's older mapbox-encoded
-    // terrain, kept because the app still reads those archives
-    let suffix = if step == StepId::Hillshade { "hillshade" } else { "terrain" };
-    let output = settings.area_dir(area).join(format!("{area}_{suffix}.mbtiles"));
+    let output = settings.area_dir(area).join(format!("{area}_terrain.mbtiles"));
     // the form's values, with the schema's own "unset means the default" rule: an absent key
     // leaves `TerrainOptions::default()` standing rather than asserting a guess at it
     let num = |key: &str| values.get(key).and_then(|v| v.as_f64());
@@ -1377,7 +1372,6 @@ async fn run_terrain(
     let defaults = render::TerrainOptions::default();
     let encoding = match text("encoding").as_deref() {
         Some(name) => Encoding::parse(name).ok_or_else(|| format!("unknown encoding `{name}`"))?,
-        None if step == StepId::Hillshade => Encoding::Mapbox,
         None => defaults.encoding,
     };
     let opts = render::TerrainOptions {
@@ -1464,7 +1458,7 @@ async fn run_terrain(
             .await;
     }
 
-    let name = format!("{area}_{suffix}");
+    let name = format!("{area}_terrain");
     let progress = tx.clone();
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         // sources.json is the pipeline's own definition of what to read, in priority order;
@@ -1637,6 +1631,7 @@ pub fn run() {
             step_options,
             plan_steps,
             list_presets,
+            default_preset_name,
             build_state,
             clear_build_state,
             resolved_defaults,
