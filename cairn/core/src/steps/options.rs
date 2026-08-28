@@ -418,7 +418,7 @@ mod tests {
         "area_poly",
     ];
 
-    /// `0.70` in the README and `0.7` from to_args are the same flag, so compare numbers as numbers.
+    /// `0.70` in the doc and `0.7` from to_args are the same flag, so compare numbers as numbers.
     fn canonical(flag: &str) -> String {
         match flag.split_once('=') {
             Some((k, v)) => match v.parse::<f64>() {
@@ -429,19 +429,19 @@ mod tests {
         }
     }
 
-    /// Pull the flag set out of one of the README's build command lines.
+    /// Pull the flag set out of one of the reference pipeline's build command lines.
     fn readme_flags(marker: &str) -> Vec<String> {
         let readme = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/pipeline-reference.md"),
         )
-        .expect("repo README should be two levels above cairn/core");
+        .expect("docs/pipeline-reference.md should be two levels above cairn/core");
         // first match wins: the README gives an area build and a parent-area variant that differ
         // only by --skip_filled_tiles, and the area build is the one the presets mirror
         let lines: Vec<&str> = readme.lines().collect();
         let start = lines
             .iter()
             .position(|l| l.contains(marker) && l.contains("PLANETILER_JAR"))
-            .unwrap_or_else(|| panic!("no README build command containing `{marker}`"));
+            .unwrap_or_else(|| panic!("no build command containing `{marker}` in docs/pipeline-reference.md"));
         // commands continue onto following lines with a trailing backslash
         let mut line = String::new();
         for l in &lines[start..] {
@@ -472,7 +472,7 @@ mod tests {
         flags
     }
 
-    /// The presets exist to reproduce the README's builds. Nothing enforced that, so the two drifted:
+    /// The presets exist to reproduce the reference pipeline's builds. Nothing enforced that, so the two drifted:
     /// the basemap preset was missing max-point-buffer, mlt-shared-dict, transportation_z13_paths,
     /// compact-db and transportation-name-limit-merge, and carried a simplify_tolerance the README
     /// never set. Missing max-point-buffer alone is tens of MB, because the place layer declares a
@@ -491,14 +491,14 @@ mod tests {
                 .iter()
                 .map(|a| canonical(a.trim_start_matches('-')))
                 // the same runner-owned keys are dropped from both sides, or area_poly would
-                // look like drift against the README's explicit --polygon
+                // look like drift against the reference's explicit --polygon
                 .filter(|t| {
                     let key = t.split('=').next().unwrap_or_default().replace('-', "_");
                     !RUNNER_OWNED.contains(&key.as_str())
                 })
                 .collect();
             got.sort();
-            assert_eq!(got, readme_flags(marker), "`measured` preset for {step:?} has drifted from the README");
+            assert_eq!(got, readme_flags(marker), "`measured` preset for {step:?} has drifted from docs/pipeline-reference.md");
         }
     }
 

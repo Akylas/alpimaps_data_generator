@@ -314,7 +314,7 @@ mod readme_defaults_tests {
         args: Args,
     }
 
-    /// An untouched `cairn terrain` must reproduce the README's build_terrain_rgb command.
+    /// An untouched `cairn terrain` must reproduce the reference build_terrain_rgb command.
     ///
     /// These drifted once already: cairn defaulted to maxzoom 13, terrarium, round-digits 8 and no
     /// tile buffer, where the README asks for 12, mapbox, 0 and 1. Nothing caught it, and the two
@@ -322,15 +322,15 @@ mod readme_defaults_tests {
     #[test]
     fn terrain_defaults_match_the_readme_command() {
         let readme = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/pipeline-reference.md"),
         )
-        .expect("repo README should be two levels above cairn/cli");
+        .expect("docs/pipeline-reference.md should be two levels above cairn/cli");
         let lines: Vec<&str> = readme.lines().collect();
         let start = lines
             .iter()
-            // the README also mentions the script in prose; only the invocation starts with python
+            // the doc also mentions the script in prose; only the invocation starts with python
             .position(|l| l.trim_start().starts_with("python") && l.contains("build_terrain_rgb.py"))
-            .expect("a README build_terrain_rgb command");
+            .expect("a build_terrain_rgb command in docs/pipeline-reference.md");
         let mut cmd = String::new();
         for l in &lines[start..] {
             cmd.push_str(l.trim_end_matches('\\'));
@@ -353,10 +353,10 @@ mod readme_defaults_tests {
                 .split_whitespace()
                 .skip_while(|t| *t != flag)
                 .nth(1)
-                .unwrap_or_else(|| panic!("README terrain command has no {flag}"));
+                .unwrap_or_else(|| panic!("the reference terrain command has no {flag}"));
             assert_eq!(
                 actual, want,
-                "cairn terrain defaults {flag}={actual}, README asks for {want}"
+                "cairn terrain defaults {flag}={actual}, the reference asks for {want}"
             );
         }
     }
