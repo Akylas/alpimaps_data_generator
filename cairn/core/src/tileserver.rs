@@ -41,7 +41,15 @@ pub struct Source {
     pub encoding: Option<String>,
     pub tile_size: u32,
     pub vector_layers: Option<serde_json::Value>,
-    conn: Mutex<Option<Connection>>,
+    /// Opened on the first tile asked for, and kept. Which one it is follows the extension: a
+    /// PMTiles is not SQLite and opening it as one is how a perfectly good archive came back as
+    /// "file is not a database" and vanished from the map.
+    reader: Mutex<Option<Reader>>,
+}
+
+enum Reader {
+    MBTiles(Box<Connection>),
+    PMTiles(Box<crate::terrain::pmtiles::Archive>),
 }
 
 impl Source {
@@ -65,7 +73,7 @@ impl Source {
             // terrain RGB is rendered at 512px; vector tiles use the 512 convention too
             tile_size: if art.format.is_vector() { 512 } else { 512 },
             vector_layers,
-            conn: Mutex::new(None),
+            reader: Mutex::new(None),
         }
     }
 
@@ -80,30 +88,40 @@ impl Source {
         }
     }
 
-    /// Fetch one XYZ tile, flipping to the TMS row mbtiles actually stores.
+    /// Fetch one XYZ tile.
+    ///
+    /// XYZ is what the URL and the map use. An mbtiles stores the row the other way up and a
+    /// PMTiles does not, so the flip belongs to the mbtiles branch alone.
     pub fn tile(&self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>> {
-        let tms_row = ((1u32 << z).checked_sub(1)).and_then(|max| max.checked_sub(y));
-        let Some(tms_row) = tms_row else { return Ok(None) };
-
-        let mut guard = self.conn.lock().map_err(|_| anyhow::anyhow!("source lock poisoned"))?;
+        let mut guard = self.reader.lock().map_err(|_| anyhow::anyhow!("source lock poisoned"))?;
         if guard.is_none() {
-            *guard = Some(
-                Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-                    .with_context(|| format!("opening {}", self.path.display()))?,
-            );
+            *guard = Some(if crate::catalog::is_pmtiles(&self.path) {
+                Reader::PMTiles(Box::new(crate::terrain::pmtiles::Archive::open(&self.path)?))
+            } else {
+                Reader::MBTiles(Box::new(
+                    Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                        .with_context(|| format!("opening {}", self.path.display()))?,
+                ))
+            });
         }
-        let conn = guard.as_ref().expect("just opened");
-        let mut stmt = conn.prepare_cached(
-            "SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?",
-        )?;
-        let blob: Option<Vec<u8>> = stmt
-            .query_row((z, x, tms_row), |r| r.get(0))
-            .map(Some)
-            .or_else(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                other => Err(other),
-            })?;
-        Ok(blob)
+        match guard.as_ref().expect("just opened") {
+            Reader::PMTiles(archive) => archive.tile(z, x, y),
+            Reader::MBTiles(conn) => {
+                let tms_row = ((1u32 << z).checked_sub(1)).and_then(|max| max.checked_sub(y));
+                let Some(tms_row) = tms_row else { return Ok(None) };
+                let mut stmt = conn.prepare_cached(
+                    "SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?",
+                )?;
+                let blob: Option<Vec<u8>> = stmt
+                    .query_row((z, x, tms_row), |r| r.get(0))
+                    .map(Some)
+                    .or_else(|e| match e {
+                        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                        other => Err(other),
+                    })?;
+                Ok(blob)
+            }
+        }
     }
 }
 
@@ -466,6 +484,36 @@ mod tests {
         let src = Source::from_artifact(&catalog::probe(&path, "a"));
         assert_eq!(src.tile(2, 1, 1).unwrap().as_deref(), Some(&b"top-ish"[..]));
         assert_eq!(src.tile(2, 1, 2).unwrap(), None, "unflipped lookup must miss");
+    }
+
+    /// A PMTiles addresses tiles in XYZ, so the flip the mbtiles branch does must not happen
+    /// here - and the archive has to be opened as a PMTiles at all, which is what it was not:
+    /// every one of them came back "file is not a database" and never reached the map.
+    #[test]
+    fn serves_pmtiles_without_flipping_rows() {
+        use ::pmtiles::{Compression, PmTilesWriter, TileCoord, TileType as WriterType};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a_terrain.pmtiles");
+        let file = std::fs::File::create(&path).unwrap();
+        let mut writer = PmTilesWriter::new(WriterType::Webp)
+            .tile_compression(Compression::None)
+            .min_zoom(0)
+            .max_zoom(2)
+            .metadata(r#"{"encoding":"terrarium"}"#)
+            .create(file)
+            .unwrap();
+        writer.add_raw_tile(TileCoord::new(2, 1, 1).unwrap(), b"RIFFxx").unwrap();
+        writer.finalize().unwrap();
+
+        let art = catalog::probe(&path, "a");
+        assert_eq!(art.probe_error, None);
+        let src = Source::from_artifact(&art);
+        assert_eq!(src.content_type(), "image/webp");
+        assert_eq!(src.encoding.as_deref(), Some("terrarium"), "hillshade needs this");
+        assert_eq!(src.tile(2, 1, 1).unwrap().as_deref(), Some(&b"RIFFxx"[..]));
+        // the mbtiles flip would have found the tile here instead
+        assert_eq!(src.tile(2, 1, 2).unwrap(), None);
     }
 
     #[test]

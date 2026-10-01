@@ -4,9 +4,18 @@
   import Build from "./lib/Build.svelte";
   import Settings from "./lib/Settings.svelte";
   import Docs from "./lib/Docs.svelte";
+  import Runs from "./lib/Runs.svelte";
 
   let tab = $state("areas");
   let areasRef = $state(null);
+  let buildRef = $state(null);
+
+  /// Open a running build. The run strip is visible from every tab, so this is how a click on
+  /// it gets to the log and the options that run belongs to.
+  function openRun(area) {
+    tab = "build";
+    buildRef?.showArea(area);
+  }
   /// Which area the map should open on. A build that just finished is the one worth looking at,
   /// not whichever area happens to sort first.
   let mapArea = $state("");
@@ -50,13 +59,17 @@
     </div>
   </header>
 
+  <!-- pinned under the header, not inside a tab: a build is the one thing that has to stay
+       visible while you are looking at the map it will redraw -->
+  <Runs onOpen={openRun} />
+
   <div class="page">
     <!-- Build and Output stay mounted: a finished run switches to the map, and destroying Build
          on the way out would take the log and the result banner with it. The map is the one tab
          worth tearing down, because it holds two WebGL contexts and a tile server connection. -->
     <div class="inner" hidden={tab !== "areas"}><Areas bind:this={areasRef} /></div>
     <div class="inner" hidden={tab !== "build"}>
-      <Build onFinished={() => areasRef?.refresh()} onShowOnMap={showOnMap} />
+      <Build bind:this={buildRef} onFinished={() => areasRef?.refresh()} onShowOnMap={showOnMap} />
     </div>
     {#if tab === "map"}
       <div class="inner"><MapView area={mapArea} /></div>

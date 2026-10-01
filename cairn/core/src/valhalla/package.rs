@@ -9,6 +9,7 @@
 //!   thousands of overflow pages, each spending four bytes on a next-page pointer.
 
 use super::GraphTile;
+use crate::cancel::Cancel;
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::io::Write;
@@ -85,7 +86,26 @@ pub fn resolve(tile_dir: &Path, tiles: &[GraphTile]) -> (Vec<(GraphTile, PathBuf
 }
 
 /// Compress and write a package. `on_progress` receives `(done, total)`.
-pub fn build<F>(opts: &PackageOptions, tiles: &[GraphTile], mut on_progress: F) -> Result<PackageReport>
+pub fn build<F>(opts: &PackageOptions, tiles: &[GraphTile], on_progress: F) -> Result<PackageReport>
+where
+    F: FnMut(usize, usize),
+{
+    build_cancellable(opts, tiles, &Cancel::never(), on_progress)
+        .map(|report| report.expect("a token that is never cancelled cannot cancel"))
+}
+
+/// As [`build`], but gives up when the run is cancelled. `Ok(None)` is a cancellation.
+///
+/// Checked in both loops: zopfli over a few thousand graph tiles is minutes of CPU, and the
+/// write that follows is not instant either, so a flag read only at the end would make Cancel a
+/// no-op for exactly as long as this step takes. A cancelled build leaves no package behind -
+/// the half-written file would otherwise read as a finished one on the next run.
+pub fn build_cancellable<F>(
+    opts: &PackageOptions,
+    tiles: &[GraphTile],
+    cancel: &Cancel,
+    mut on_progress: F,
+) -> Result<Option<PackageReport>>
 where
     F: FnMut(usize, usize),
 {
@@ -102,14 +122,20 @@ where
     let total = found.len();
     let how = opts.compression;
     // compression dominates the runtime and every tile is independent
-    let compressed: Vec<Result<(GraphTile, u64, Vec<u8>)>> = found
+    let compressed: Vec<Result<Option<(GraphTile, u64, Vec<u8>)>>> = found
         .par_iter()
         .map(|(tile, path)| {
+            if cancel.is_cancelled() {
+                return Ok(None);
+            }
             let raw = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
             let blob = compress(&raw, how)?;
-            Ok((*tile, raw.len() as u64, blob))
+            Ok(Some((*tile, raw.len() as u64, blob)))
         })
         .collect();
+    if cancel.is_cancelled() {
+        return Ok(None);
+    }
 
     let conn = Connection::open(&opts.output)?;
     conn.execute_batch(
@@ -142,7 +168,10 @@ where
             "INSERT INTO tiles(zoom_level, tile_column, tile_row, tile_data) VALUES (?, ?, ?, ?)",
         )?;
         for (done, entry) in compressed.into_iter().enumerate() {
-            let (tile, raw_len, blob) = entry?;
+            let Some((tile, raw_len, blob)) = entry? else { break };
+            if cancel.is_cancelled() {
+                break;
+            }
             report.raw_bytes += raw_len;
             report.compressed_bytes += blob.len() as u64;
             stmt.execute((tile.level, tile.x, tile.y, &blob))?;
@@ -150,12 +179,17 @@ where
             on_progress(done + 1, total);
         }
     }
+    if cancel.is_cancelled() {
+        drop(conn);
+        let _ = std::fs::remove_file(&opts.output);
+        return Ok(None);
+    }
     conn.execute_batch("CREATE UNIQUE INDEX tiles_index ON tiles (zoom_level, tile_column, tile_row);")?;
     drop(conn);
 
     // VACUUM needs its own connection with no open statements
     Connection::open(&opts.output)?.execute_batch("VACUUM")?;
-    Ok(report)
+    Ok(Some(report))
 }
 
 /// Expand a package back into a Valhalla tile directory.

@@ -108,7 +108,8 @@ edge of its coverage. `sources.json`:
 
 ```json
 [
-  {"name": "tilezen", "type": "valhalla", "path": "./elevation_tiles", "clamp_min": -10},
+  {"name": "mapterhorn", "type": "xyz", "url": "https://tiles.mapterhorn.com/{z}/{x}/{y}.webp",
+   "encoding": "terrarium", "maxzoom": 12, "clamp_min": -10},
   {"name": "ignrge5", "type": "raster", "path": "work_france_ign/out/*.tif"}
 ]
 ```
@@ -117,7 +118,37 @@ edge of its coverage. `sources.json`:
 | --- | --- |
 | `valhalla` | the `.hgt` already downloaded for valhalla. Missing tiles are fetched with `valhalla_build_elevation` unless `"download": false`. 1 arc-second, and they carry bathymetry, hence `clamp_min` |
 | `raster` | local file, glob or list of globs, in any CRS |
-| `mapterhorn` | a [mapterhorn source-catalog](https://github.com/mapterhorn/mapterhorn/tree/main/source-catalog) source. `path` is a catalog name, a url to a `file_list.txt`, or a local one |
+| `xyz` | **cairn only.** A terrain-RGB tile endpoint, `url` being a `{z}/{x}/{y}` template |
+| `pmtiles` | **cairn only.** A PMTiles archive of terrain-RGB tiles: `path` for a local one, `url` for one read over HTTP by byte range |
+| `mapterhorn` | **python only.** A [mapterhorn source-catalog](https://github.com/mapterhorn/mapterhorn/tree/main/source-catalog) source of raw DEM deliveries - not the tile pyramid above. `path` is a catalog name, a url to a `file_list.txt`, or a local one |
+
+`xyz` and `pmtiles` read an already-built terrain pyramid rather than a DEM, which is what
+[mapterhorn](https://mapterhorn.com/data-access/) publishes: terrarium-encoded webp, 512 px,
+z0-z12 worldwide, from Copernicus GLO-30 and national lidar where there is any. It replaces
+the `.hgt` fallback - same coverage, better data, nothing to download first. The zoom read is
+chosen from the output tile's ground resolution, so a z7 tile never decodes z12 tiles.
+
+The same archive can be read either way. These two are interchangeable, and produce
+byte-identical output:
+
+```json
+{"name": "mapterhorn", "type": "xyz", "url": "https://tiles.mapterhorn.com/{z}/{x}/{y}.webp"}
+{"name": "mapterhorn", "type": "pmtiles", "url": "https://download.mapterhorn.com/planet.pmtiles"}
+```
+
+The 355 GB planet archive is *not* downloaded: only its directories and the tiles the render
+actually samples are transferred. A local `.pmtiles` works the same way, with `path` - which is
+how the regional z13-z17 packages (`6-33-22.pmtiles`) are read.
+
+Fetched tiles are cached under `.cache/terrain-tiles/<name>/` beside `sources.json`, keyed by
+`z/x/y`, with an empty `.absent` file where the source has no tile. A rebuild of the same area
+makes no requests at all; delete the directory to force a refetch. `"cache_dir"` moves it.
+Nothing is read from a public endpoint twice, which matters because these are free services -
+one alpine build at z5-z12 is a few thousand tiles, and re-fetching that on every run is how a
+pipeline gets blocked.
+
+Both are cairn's, not `build_terrain_rgb.py`'s: the python script fails on a `type` it does not
+know.
 
 A `mapterhorn` source downloads what the area needs and extracts the archives (`zip`,
 `tar`, `7z`, including the split `.7z.001/.002` deliveries, which need the `7z` cli).

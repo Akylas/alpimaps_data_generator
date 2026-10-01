@@ -75,7 +75,11 @@ impl PlanetilerJob {
         if let Schema::Yaml { path } = &self.schema {
             argv.push(format!("--schema={}", path.display()));
         }
-        argv.push(format!("--mbtiles={}", self.output.display()));
+        // `--output`, not the legacy `--mbtiles`: planetiler picks the container from the
+        // extension, so this is the one flag that has to change for a .pmtiles run. The old
+        // name is still accepted (`getString("output|mbtiles", ...)`) but it names the mbtiles
+        // writer, which is exactly what PMTiles must not go through.
+        argv.push(format!("--output={}", self.output.display()));
         argv.push(format!("--tmpdir={}", self.tmp_dir.display()));
         argv.push(format!("--loginterval={}", self.log_interval));
         argv.extend(self.extra_args.iter().cloned());
@@ -227,7 +231,7 @@ mod tests {
         let argv = job().command_line();
         assert_eq!(argv[1], "-Xmx12288m");
         assert_eq!(argv[4], "openmaptiles");
-        assert!(argv.contains(&"--mbtiles=out/rhone-alpes.mbtiles".to_string()));
+        assert!(argv.contains(&"--output=out/rhone-alpes.mbtiles".to_string()));
         assert!(argv.contains(&"--area=rhone-alpes".to_string()));
     }
 

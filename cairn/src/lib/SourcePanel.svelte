@@ -6,8 +6,22 @@
   let {
     sources = [], title = "", collapsed = false, emptyHint = "no layers — use + to add one",
     onToggleSource, onToggleLayer, onSetAllLayers, onOpacity, onMove, onRemove, onFit,
-    onTerrainMode, onAdd, addable = [],
+    onTerrainMode, onMaxzoomCap, onAdd, addable = [],
   } = $props();
+
+  /**
+   * The zooms a terrain source can be pretended to stop at.
+   *
+   * Four below what it holds is enough to answer the question this exists for - "is z13 worth
+   * four times the tiles?" - and the archive's own maxzoom is offered as the way back.
+   */
+  function capChoices(source) {
+    const top = source.maxzoom ?? 14;
+    const bottom = Math.max(source.minzoom ?? 0, top - 4);
+    const zooms = [];
+    for (let z = bottom; z <= top; z++) zooms.push(z);
+    return zooms;
+  }
 
   let expanded = $state(new Set());
   let adding = $state(false);
@@ -101,6 +115,32 @@
             </button>
           {/each}
         </div>
+
+        <!-- Stop the source short and let MapLibre overzoom the rest, which is what a shallower
+             archive would look like on the phone. The point is answering "is the top zoom worth
+             building?" by looking, without building it twice. -->
+        {#if onMaxzoomCap && source.tiles?.length}
+          <div class="zcap" role="group" aria-label="data maxzoom">
+            <span class="zlabel" title="pretend the archive stops here; above it is overzoomed">
+              data z
+            </span>
+            {#each capChoices(source) as z}
+              {@const real = z === source.maxzoom}
+              <button class:on={real ? source.maxzoomCap == null : source.maxzoomCap === z}
+                      title={real
+                        ? `${z} — everything this archive holds`
+                        : `render as if the archive stopped at z${z}`}
+                      onclick={() => onMaxzoomCap(source, real ? null : z)}>
+                {z}
+              </button>
+            {/each}
+          </div>
+          {#if source.maxzoomCap != null}
+            <p class="capnote">
+              capped at z{source.maxzoomCap} — z{source.maxzoomCap + 1}+ is overzoomed, not data
+            </p>
+          {/if}
+        {/if}
       {/if}
 
       {#if expanded.has(source.id) && source.vector}
@@ -174,6 +214,16 @@
   .modes button:first-child { border-radius: 4px 0 0 4px; }
   .modes button:last-child { border-radius: 0 4px 4px 0; }
   .modes button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  /* the zoom cap: same strip as the mode buttons, with the zoom numbers as the choices */
+  .zcap { display: flex; align-items: center; gap: 1px; margin-top: 4px; }
+  .zlabel { font-size: 10px; color: var(--faint); margin-right: 5px; white-space: nowrap; }
+  .zcap button { flex: 1; background: var(--bg); border: 1px solid var(--border);
+                 color: var(--text-3); font-size: 10px; padding: 3px 0; cursor: pointer;
+                 font-variant-numeric: tabular-nums; }
+  .zcap button:first-of-type { border-radius: 4px 0 0 4px; }
+  .zcap button:last-of-type { border-radius: 0 4px 4px 0; }
+  .zcap button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .capnote { margin: 4px 0 0; font-size: 10px; color: var(--warn); }
   .bulk { display: flex; gap: 8px; margin-top: 6px; }
   .layers { margin-top: 4px; max-height: 210px; overflow: auto; display: flex;
             flex-direction: column; gap: 1px; }

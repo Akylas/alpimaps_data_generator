@@ -1,3 +1,4 @@
+pub mod bathymap;
 pub mod catalog;
 pub mod options;
 pub mod planetiler;

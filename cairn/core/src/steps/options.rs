@@ -134,6 +134,7 @@ pub fn planetiler_common() -> Vec<OptionDef> {
 /// `TerrainOptions::default()` regardless of what the form said.
 pub fn terrain_options() -> Vec<OptionDef> {
     vec![
+        pmtiles_option(),
         opt("minzoom", "minzoom", "Min zoom", "Zooms",
             OptionKind::Int { min: Some(0), max: Some(15) }, "Lowest zoom rendered.", "5"),
         opt("maxzoom", "maxzoom", "Max zoom", "Zooms",
@@ -208,6 +209,7 @@ pub fn package_options() -> Vec<OptionDef> {
 /// Basemap-only options, including the fork's landcover work.
 pub fn basemap_options() -> Vec<OptionDef> {
     let mut defs = planetiler_common();
+    defs.push(pmtiles_option());
     defs.extend([
         opt("exclude_layers", "exclude_layers", "Exclude layers", "Layers",
             OptionKind::Text, "Comma-separated layers to leave out. The basemap excludes `route`.", "none"),
@@ -271,6 +273,7 @@ pub fn basemap_options() -> Vec<OptionDef> {
 /// Route-layer options from the fork.
 pub fn routes_options() -> Vec<OptionDef> {
     let mut defs = planetiler_common();
+    defs.push(pmtiles_option());
     defs.extend([
         opt("only_layers", "only_layers", "Only layers", "Layers",
             OptionKind::Text, "Set to `route` for a routes-only build.", "all layers"),
@@ -302,6 +305,124 @@ pub fn routes_options() -> Vec<OptionDef> {
     defs
 }
 
+/// The archive-format switch, shared by every step whose tool can write both.
+///
+/// One key, one meaning, so a preset that sets it once applies everywhere it is offered.
+fn pmtiles_option() -> OptionDef {
+    opt(crate::steps::archive::PMTILES_KEY, "", "PMTiles output", "Output",
+        OptionKind::Bool,
+        "Write a single-file PMTiles archive instead of MBTiles. The tool decides from the \
+         output extension, so this only renames the file it was going to write - the tiles are \
+         identical - except for terrain, which has no external tool and writes both containers \
+         itself. Two things it costs: cairn's own tile server reads SQLite, so the map preview \
+         and `cairn serve` cannot show a PMTiles archive, and the catalog can only classify it \
+         by filename because there is no metadata table to open.",
+        "MBTiles")
+}
+
+/// Options for `scripts/make_bathymap.py`.
+///
+/// Unlike the planetiler schema these `flag` names take a separate value rather than `=`, which
+/// is why `bathymap::script_args` renders them and `to_args` does not. `pmtiles` carries an
+/// empty flag because the job turns it into an output path, not a switch.
+///
+/// The hints are the script's own defaults, and they are the measured ones - every number here
+/// was chosen against a global build and a render, not guessed.
+pub fn bathymap_options() -> Vec<OptionDef> {
+    vec![
+        opt("extent", "", "Extent", "Zooms",
+            OptionKind::Choice { choices: vec!["area".into(), "global".into()] },
+            "`area` builds only the selected area's bounding box; `global` builds the whole \
+             world. The layer is meant to be global - it is what fills the zooms below the \
+             basemap, and it does not read the OSM extract - so one global build serves every \
+             area. `area` is for trying settings without waiting half an hour, and needs the \
+             area's basemap to have been built so there are bounds to read.",
+            "global"),
+        opt("min_zoom", "min-zoom", "Min zoom", "Zooms",
+            OptionKind::Int { min: Some(0), max: Some(14) },
+            "Lowest zoom built.", "0"),
+        opt("max_zoom", "max-zoom", "Max zoom", "Zooms",
+            OptionKind::Int { min: Some(0), max: Some(14) },
+            "Highest zoom built. This dominates the size: on a global build z7 alone was 61% of \
+             the file and z6 a further 22%. If the basemap takes over at z8 the client can \
+             overzoom z6 for free, so 6 is worth trying before any other size lever.",
+            "7"),
+        opt("landcover_smooth_pixels", "landcover-smooth-pixels", "Landcover smoothing", "Landcover",
+            float(0.0),
+            "Radius of the close-then-open pass that welds neighbouring patches into zones and \
+             shaves the tendrils, in tile units at each zoom. 0 disables it and leaves the raw \
+             patchwork - at z7 that is confetti rather than landcover.",
+            "12"),
+        opt("landcover_simplify_pixels", "landcover-simplify-pixels", "Landcover simplification", "Landcover",
+            float(0.0),
+            "Douglas-Peucker tolerance, applied to every class at once through a coverage \
+             simplification so classes that share a border keep sharing it. Simplifying classes \
+             separately opens slivers between them. 4 px keeps 100% of the area for 75% of the \
+             vertices.",
+            "4"),
+        opt("landcover_min_zone_pixels", "landcover-min-zone-pixels", "Smallest landcover zone", "Landcover",
+            float(0.0),
+            "Smallest zone kept, squared tile units. What is dropped is not a hole: the zoom \
+             below fills it, which is what makes an aggressive value safe here.",
+            "4096"),
+        opt("bathymetry_simplify_pixels", "bathymetry-simplify-pixels", "Depth simplification", "Depth",
+            float(0.0),
+            "Douglas-Peucker tolerance for the isobaths. Unconditionally safe because the depth \
+             polygons are nested rather than abutting, so nothing shares an edge that could come \
+             apart.",
+            "14"),
+        opt("bathymetry_min_zone_pixels", "bathymetry-min-zone-pixels", "Smallest depth polygon", "Depth",
+            float(0.0),
+            "Smallest depth polygon kept, squared tile units. Smoothness comes from the \
+             tolerance above; this only decides what is too small to draw, and a depth polygon \
+             is a real basin rather than speckle. At 16384 the Mediterranean lost a fifth of its \
+             3000 m contour at z2.",
+            "1024"),
+        opt("detail", "detail", "Tile detail", "Output",
+            OptionKind::Int { min: Some(8), max: Some(14) },
+            "Coordinate resolution inside a tile, as a power of two. Tippecanoe's own default is \
+             12, which is eight units per screen pixel at 512px. Measured on a global build: 12 \
+             gave 115 MB, 11 gave 101 MB, 10 gave 87 MB.",
+            "11"),
+        opt("chunk_zoom", "chunk-zoom", "Processing grid", "Performance",
+            OptionKind::Int { min: Some(0), max: Some(14) },
+            "Zoom of the grid the landcover is dissolved on. Unset picks the coarsest grid that \
+             both fits in memory and keeps the workers busy. 0 forces a single seamless chunk \
+             and no parallelism - a regional build went from 18 s to 296 s that way.",
+            "chosen from the region and the job count"),
+        opt("jobs", "jobs", "Worker processes", "Performance",
+            OptionKind::Int { min: Some(1), max: Some(64) },
+            "Processes building landcover chunks. A global build was 2h20m at 1 and 25 min at 16.",
+            "cores minus two, capped at 16"),
+        opt("refresh_source", "refresh-source", "Re-fetch the landcover extract", "Sources",
+            OptionKind::Bool,
+            "Download the regional landcover container again rather than reusing the cached one. \
+             Natural Earth is always cached; this is only the VersaTiles extract.",
+            "reuse whatever is cached"),
+        pmtiles_option(),
+    ]
+}
+
+/// The options one step accepts.
+///
+/// The single mapping from step to schema. It used to exist twice - once in the Tauri command
+/// and once in `cairn options` - and the two had already drifted: the CLI knew about basemap
+/// and routes only, so `cairn options terrain` said no such step while the GUI happily rendered
+/// its form.
+pub fn for_step(step: crate::steps::StepId) -> Vec<OptionDef> {
+    use crate::steps::StepId;
+    match step {
+        StepId::Basemap => basemap_options(),
+        StepId::Routes => routes_options(),
+        StepId::Bathymap => bathymap_options(),
+        StepId::TerrainRgb => terrain_options(),
+        StepId::ValhallaPackage => package_options(),
+        // the download and the two Valhalla binaries take paths and bounds, which are settings
+        // rather than per-run choices
+        StepId::DownloadOsm | StepId::ElevationTiles | StepId::ValhallaTiles => Vec::new(),
+    }
+}
+
 /// Render a values map into planetiler arguments.
 ///
 /// Only keys actually present are emitted, so an untouched form adds nothing to the command line
@@ -309,6 +430,11 @@ pub fn routes_options() -> Vec<OptionDef> {
 pub fn to_args(defs: &[OptionDef], values: &BTreeMap<String, Value>) -> Vec<String> {
     let mut args = Vec::new();
     for def in defs {
+        // An empty flag is an option the runner acts on itself rather than passing through -
+        // `pmtiles` picks an output path. Emitting it would hand planetiler `--=true`.
+        if def.flag.is_empty() {
+            continue;
+        }
         let Some(value) = values.get(&def.key) else { continue };
         let rendered = match value {
             Value::Null => continue,
@@ -392,6 +518,14 @@ mod tests {
     #[test]
     fn null_is_treated_as_unset() {
         assert!(to_args(&basemap_options(), &values(&[("simplify_tolerance", json!(null))])).is_empty());
+    }
+
+    /// `pmtiles` renames the output; it is not a planetiler flag, and emitting it produced
+    /// `--=true`, which planetiler rejects.
+    #[test]
+    fn the_archive_switch_is_never_passed_through() {
+        let args = to_args(&basemap_options(), &values(&[("pmtiles", json!(true))]));
+        assert!(args.is_empty(), "got {args:?}");
     }
 
     #[test]
@@ -530,6 +664,32 @@ mod tests {
                     preset.step
                 );
             }
+        }
+    }
+
+    /// Every step with a form must have a schema behind it, and every step without one must
+    /// have an empty schema rather than somebody else's.
+    #[test]
+    fn every_step_maps_to_its_own_schema() {
+        use crate::steps::{StepId, ALL_STEPS};
+        for step in ALL_STEPS {
+            let defs = for_step(step);
+            let expected_empty = matches!(
+                step,
+                StepId::DownloadOsm | StepId::ElevationTiles | StepId::ValhallaTiles
+            );
+            assert_eq!(defs.is_empty(), expected_empty, "{step:?}");
+        }
+        assert_ne!(for_step(StepId::Bathymap).len(), 0);
+    }
+
+    /// The archive switch is offered exactly where the tool can honour it.
+    #[test]
+    fn the_archive_switch_is_offered_where_it_works() {
+        use crate::steps::{archive, StepId, ALL_STEPS};
+        for step in ALL_STEPS {
+            let offered = find(&for_step(step), archive::PMTILES_KEY).is_some();
+            assert_eq!(offered, archive::supports_pmtiles(step), "{step:?}");
         }
     }
 }

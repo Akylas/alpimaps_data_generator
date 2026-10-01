@@ -93,6 +93,9 @@ export function makeSource(artifact, tilejson, base, prefs = {}) {
     tileEncoding: tilejson.tileEncoding ?? "mvt",
     demEncoding: artifact.encoding ?? tilejson.encoding ?? null,
     url: `${base}/tilejson/${artifact.area}/${artifact.file_name}`,
+    // the tile template, kept so a source can be defined without its TileJSON - which is the
+    // only way to override what the TileJSON says (see `tileSpec`)
+    tiles: tilejson.tiles ?? [],
     bounds: tilejson.bounds,
     minzoom: tilejson.minzoom,
     maxzoom: tilejson.maxzoom,
@@ -100,6 +103,8 @@ export function makeSource(artifact, tilejson, base, prefs = {}) {
     visible: prefs.visible ?? true,
     opacity: prefs.opacity ?? 1,
     terrainMode: prefs.terrainMode ?? "hillshade",
+    /// Pretend the archive stops at this zoom. `null` uses what it actually holds.
+    maxzoomCap: prefs.maxzoomCap ?? null,
     layers,
   };
 }
@@ -114,6 +119,29 @@ export function setAllLayers(source, visible) {
 export function layerSummary(source) {
   const on = source.layers.filter((l) => l.visible).length;
   return { on, total: source.layers.length };
+}
+
+/**
+ * How a raster or DEM source names its tiles: by TileJSON, or by template with a lower maxzoom.
+ *
+ * Capping has to bypass the TileJSON. MapLibre loads it and then copies its fields over the
+ * source, so a `maxzoom` passed beside `url` is overwritten by the archive's real one and the
+ * cap silently does nothing. Given `tiles` instead, MapLibre has nothing to fetch and the
+ * maxzoom stands - and everything above it is overzoomed from the capped level, which is
+ * exactly what an archive built only that far would look like.
+ */
+export function tileSpec(source) {
+  const cap = source.maxzoomCap;
+  if (cap == null || cap >= source.maxzoom || !source.tiles?.length) {
+    return { url: source.url };
+  }
+  return {
+    tiles: [...source.tiles],
+    minzoom: source.minzoom ?? 0,
+    maxzoom: cap,
+    // without the TileJSON there is nothing else telling MapLibre where the data stops
+    ...(source.bounds ? { bounds: source.bounds } : {}),
+  };
 }
 
 export function addSourceToMap(map, source) {
@@ -166,12 +194,16 @@ export function addSourceToMap(map, source) {
   if (source.terrain) {
     if (source.terrainMode === "raster") {
       // painted as ordinary imagery: what the encoded bytes actually look like
-      map.addSource(source.id, { type: "raster", url: source.url, tileSize: source.tileSize });
+      map.addSource(source.id, {
+        type: "raster",
+        ...tileSpec(source),
+        tileSize: source.tileSize,
+      });
       map.addLayer({ id: layerId, type: "raster", source: source.id });
     } else {
       map.addSource(source.id, {
         type: "raster-dem",
-        url: source.url,
+        ...tileSpec(source),
         // terrarium and mapbox pack heights differently; the wrong one renders plausible nonsense
         encoding: source.demEncoding ?? "terrarium",
         tileSize: source.tileSize,
@@ -182,7 +214,7 @@ export function addSourceToMap(map, source) {
       }
     }
   } else {
-    map.addSource(source.id, { type: "raster", url: source.url, tileSize: source.tileSize });
+    map.addSource(source.id, { type: "raster", ...tileSpec(source), tileSize: source.tileSize });
     map.addLayer({ id: layerId, type: "raster", source: source.id });
   }
   source.layers[0].mapLayers = { ...emptyMapLayers(), rasters: [layerId] };

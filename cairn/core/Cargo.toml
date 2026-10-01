@@ -22,6 +22,9 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 axum = "0.7"
 tower-http = { version = "0.6", features = ["cors"] }
 image = { version = "0.25", default-features = false, features = ["webp", "png", "jpeg"] }
+pmtiles = { version = "0.24.0", default-features = false, features = ["write"] }
+webp = { version = "0.3", default-features = false }
+libwebp-sys = "0.9"
 
 [dev-dependencies]
 tempfile = "3"

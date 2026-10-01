@@ -42,6 +42,9 @@ pub struct Args {
     pub bounds: Option<String>,
     #[arg(long)]
     pub output: Option<PathBuf>,
+    /// Write PMTiles instead of MBTiles.
+    #[arg(long)]
+    pub pmtiles: bool,
     /// Osmosis .poly limiting which tiles are written, as in build_terrain_rgb.py.
     #[arg(long)]
     pub poly_shape: Option<PathBuf>,
@@ -87,6 +90,9 @@ fn terrain_options(args: &Args) -> std::collections::BTreeMap<String, serde_json
     values.insert("blur".into(), args.blur.into());
     values.insert("tile_size".into(), args.tile_size.into());
     values.insert("format".into(), args.format.clone().into());
+    if args.pmtiles {
+        values.insert(cairn_core::steps::archive::PMTILES_KEY.into(), true.into());
+    }
     values.insert("tile_buffer".into(), args.tile_buffer.into());
     values.insert("nodata_elevation".into(), args.nodata_elevation.into());
     if let Some(poly) = &args.poly_shape {
@@ -110,6 +116,29 @@ fn touches(shape: &cairn_core::poly::Polygon, z: u8, x: u32, y: u32, buffer: u32
     let dx = (e - w) * buffer as f64;
     let dy = (n - s) * buffer as f64;
     shape.intersects_rect(w - dx, s - dy, e + dx, n + dy)
+}
+
+/// Tiles rendered per batch. The batch is what bounds how many encoded tiles are held in memory
+/// at once; big enough that every worker has a contiguous run to walk, small enough that a zoom
+/// of thirty thousand tiles is not all resident.
+const BATCH: usize = 256;
+
+/// Add up what every worker's copy of a source did, so the run reports one figure per source
+/// rather than one per thread.
+fn totals(
+    pool: &render::RenderPool,
+) -> Vec<(String, cairn_core::terrain::tiles::TileStats)> {
+    let mut out: Vec<(String, cairn_core::terrain::tiles::TileStats)> = Vec::new();
+    for source in pool.sources() {
+        let Ok(source) = source.lock() else { continue };
+        for (name, stats) in source.reports() {
+            match out.iter_mut().find(|(known, _)| *known == name) {
+                Some((_, total)) => total.merge(&stats),
+                None => out.push((name, stats)),
+            }
+        }
+    }
+    out
 }
 
 fn parse_bounds(raw: &str) -> Result<(f64, f64, f64, f64)> {
@@ -150,11 +179,12 @@ pub async fn run(settings: &Settings, mut args: Args) -> Result<()> {
                 path: hgt_dir.clone(),
                 clamp_min: Some(-10.0),
                 download: None,
+                ..Default::default()
             }]
         }
         Err(e) => return Err(e),
     };
-    let (mut composite, skipped) = source::CompositeSource::open(&specs)?;
+    let (composite, skipped) = source::CompositeSource::open(&specs)?;
     println!("sources, highest priority first: {:?}", composite.names());
     for note in &skipped {
         println!("  skipped {note}");
@@ -162,6 +192,7 @@ pub async fn run(settings: &Settings, mut args: Args) -> Result<()> {
     if composite.names().is_empty() {
         return Err(anyhow!("no usable elevation sources in {}", sources_path.display()));
     }
+    drop(composite);
 
     // the basemap's bounds keep terrain and vector coverage identical
     // the shape, when given, is both the clip and the default extent
@@ -202,10 +233,14 @@ pub async fn run(settings: &Settings, mut args: Args) -> Result<()> {
         blur_m: args.blur,
         nodata_elevation: args.nodata_elevation,
     };
-    let output = args
-        .output
-        .clone()
-        .unwrap_or_else(|| area_dir.join(format!("{}_{suffix}.mbtiles", args.area)));
+    let archive_format = if args.pmtiles {
+        cairn_core::steps::archive::ArchiveFormat::PMTiles
+    } else {
+        cairn_core::steps::archive::ArchiveFormat::MBTiles
+    };
+    let output = args.output.clone().unwrap_or_else(|| {
+        area_dir.join(format!("{}_{suffix}.{}", args.area, archive_format.extension()))
+    });
     if args.skip_existing && output.is_file() {
         println!("{} is already there", output.display());
         return Ok(());
@@ -228,8 +263,11 @@ pub async fn run(settings: &Settings, mut args: Args) -> Result<()> {
     }
 
     // a missing .hgt is silent - the renderer writes nothing there and the archive comes out
-    // with a hole - so the tiles this render needs are fetched first
-    if !args.no_elevation_download {
+    // with a hole - so the tiles this render needs are fetched first. A source list that names
+    // no .hgt source at all wants none of them: downloading 25 MB a degree for a run that will
+    // never open them is pure waste.
+    let wants_hgt = specs.iter().any(|s| source::is_hgt(&s.kind));
+    if !args.no_elevation_download && wants_hgt {
         let (got, total) =
             cairn_core::steps::elevation::ensure(&hgt_dir, bounds, |done, total| {
                 print!("\r  elevation {done}/{total}   ");
@@ -247,45 +285,51 @@ pub async fn run(settings: &Settings, mut args: Args) -> Result<()> {
         bounds.0, bounds.1, bounds.2, bounds.3, opts.minzoom, opts.maxzoom, output.display()
     );
 
-    let conn = render::create_archive(&output, &format!("{}_{suffix}", args.area), &opts, bounds)?;
-    let mut stmt = conn.prepare("INSERT INTO tiles VALUES (?, ?, ?, ?)")?;
+    let mut archive = cairn_core::terrain::archive::TerrainArchive::create(
+        &output,
+        archive_format,
+        &format!("{}_{suffix}", args.area),
+        &opts,
+        bounds,
+        &args.format,
+    )?;
     let started = std::time::Instant::now();
     let mut written = 0u64;
 
+    // One renderer per worker. Opening them costs a GeoTIFF directory read apiece, so no more are
+    // made than there are tiles to render - a three-tile build must not pay for eighteen.
+    let biggest = {
+        let (x0, y0, x1, y1) = render::tile_range(opts.maxzoom, bounds);
+        ((x1 - x0 + 1) as usize) * ((y1 - y0 + 1) as usize)
+    };
+    let pool = render::RenderPool::new(biggest, || Ok(source::CompositeSource::open(&specs)?.0))?;
+    println!("  {} render threads", pool.len());
+
     for zoom in opts.minzoom..=opts.maxzoom {
         let (x0, y0, x1, y1) = render::tile_range(zoom, bounds);
-        let total = ((x1 - x0 + 1) as u64) * ((y1 - y0 + 1) as u64);
         let step = render::step_for(opts.encoding, zoom, opts.maxzoom, opts.round_digits, opts.max_round_digits);
-        let mut done = 0u64;
-        for x in x0..=x1 {
-            for y in y0..=y1 {
-                done += 1;
-                if let Some(shape) = &shape {
-                    if !touches(shape, zoom, x, y, args.tile_buffer) {
-                        continue;
-                    }
-                }
-                if let Some(rgb) = render::render_tile(&mut composite, zoom, x, y, &opts) {
-                    let webp = if args.format == "png" {
-                        render::to_png(&rgb, opts.tile_size)?
-                    } else {
-                        render::to_webp(&rgb, opts.tile_size)?
-                    };
-                    // mbtiles rows count up from the south
-                    stmt.execute((zoom, x, (1u32 << zoom) - 1 - y, &webp))?;
-                    written += 1;
-                }
-                if done % 32 == 0 || done == total {
-                    print!("\r  z{zoom} ({step} m steps) {done}/{total}   ");
-                    use std::io::Write;
-                    let _ = std::io::stdout().flush();
-                }
+        // column-major, so a worker's run of tiles stays next to itself on the map and its
+        // sources' caches keep hitting
+        let wanted: Vec<(u32, u32)> = (x0..=x1)
+            .flat_map(|x| (y0..=y1).map(move |y| (x, y)))
+            .filter(|&(x, y)| shape.as_ref().is_none_or(|s| touches(s, zoom, x, y, args.tile_buffer)))
+            .collect();
+        let total = wanted.len();
+        let mut done = 0usize;
+        // a batch at a time, so the encoded tiles of a whole zoom are never all in memory at once
+        for batch in wanted.chunks(BATCH) {
+            for (x, y, bytes) in pool.render(zoom, batch, &opts, &args.format)? {
+                archive.add(zoom, x, y, &bytes)?;
+                written += 1;
             }
+            done += batch.len();
+            print!("\r  z{zoom} ({step} m steps) {done}/{total}   ");
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
         }
         println!();
     }
-    drop(stmt);
-    conn.execute_batch("CREATE UNIQUE INDEX tile_index ON tiles (zoom_level, tile_column, tile_row)")?;
+    archive.finish()?;
 
     state::mark_done(
         &area_dir,
@@ -293,6 +337,18 @@ pub async fn run(settings: &Settings, mut args: Args) -> Result<()> {
         Some(super::planetiler::human_elapsed(started.elapsed())),
         &recorded,
     )?;
+
+    // a tiled source that could not read a tile leaves a hole nobody will notice until they look
+    // at that part of the map, so what each one did is said here rather than inferred later
+    for (name, stats) in totals(&pool) {
+        println!("  {name}: {stats}");
+        if stats.unreadable > 0 {
+            println!(
+                "  warning: {name} left {} tiles unread; this archive has holes",
+                stats.unreadable
+            );
+        }
+    }
 
     let size = std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
     println!(

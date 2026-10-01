@@ -41,12 +41,28 @@ pub struct OutputFile {
 /// Not every step writes into the area directory: the OSM extract lands in planetiler's source
 /// downloads, the elevation tiles and the raw Valhalla graph in their own trees. Resolving all
 /// of them here is what lets one existence check cover every step.
-pub fn outputs_for(settings: &Settings, area: &str, step: StepId) -> Vec<PathBuf> {
+pub fn outputs_for(
+    settings: &Settings,
+    area: &str,
+    step: StepId,
+    options: &BTreeMap<String, Value>,
+) -> Vec<PathBuf> {
     let in_area = |name: String| vec![settings.area_dir(area).join(name)];
+    // The archive steps write .mbtiles or .pmtiles depending on the option, so the existence
+    // check has to look for the one this run would actually produce. Judging freshness by the
+    // other name is how a step reports itself built and then runs anyway.
+    let format = super::archive::ArchiveFormat::from_values(options);
+    let archive = |step: StepId| {
+        in_area(
+            super::archive::archive_name(area, step, format)
+                .expect("archive steps have a name"),
+        )
+    };
     match step {
-        StepId::Basemap => in_area(format!("{area}.mbtiles")),
-        StepId::Routes => in_area(format!("{area}_routes.mbtiles")),
-        StepId::TerrainRgb => in_area(format!("{area}_terrain.mbtiles")),
+        StepId::Basemap => archive(StepId::Basemap),
+        StepId::Routes => archive(StepId::Routes),
+        StepId::Bathymap => archive(StepId::Bathymap),
+        StepId::TerrainRgb => archive(StepId::TerrainRgb),
         StepId::ValhallaPackage => in_area(format!("{area}.vtiles")),
         // planetiler names its downloads with underscores
         StepId::DownloadOsm => {
@@ -183,7 +199,17 @@ pub fn remove_outputs(
     step: StepId,
 ) -> anyhow::Result<Vec<String>> {
     let mut removed = Vec::new();
-    for path in outputs_for(settings, area, step) {
+    // Both archive formats, because the caller is saying "make this run again" and does not
+    // necessarily know which one the previous run wrote.
+    let mut candidates = outputs_for(settings, area, step, &BTreeMap::new());
+    let pmtiles: BTreeMap<String, Value> =
+        [(super::archive::PMTILES_KEY.to_string(), Value::Bool(true))].into_iter().collect();
+    for path in outputs_for(settings, area, step, &pmtiles) {
+        if !candidates.contains(&path) {
+            candidates.push(path);
+        }
+    }
+    for path in candidates {
         if path.is_file() {
             std::fs::remove_file(&path)?;
             removed.push(name_of(&path));
@@ -227,7 +253,7 @@ pub fn status(
     options: &BTreeMap<String, Value>,
 ) -> StepStatus {
     let area_dir = settings.area_dir(area);
-    let expected = outputs_for(settings, area, step);
+    let expected = outputs_for(settings, area, step, options);
     let mut found = Vec::new();
     let mut missing = Vec::new();
     for path in &expected {
@@ -437,5 +463,37 @@ mod tests {
             StepStatus::Built { outputs, .. } => assert!(outputs[0].dir),
             other => panic!("expected built, got {other:?}"),
         }
+    }
+
+    /// The archive steps have two possible filenames, and freshness has to be judged on the one
+    /// this run would write - otherwise a PMTiles run finds the old .mbtiles, calls itself
+    /// built, and never produces the file that was asked for.
+    #[test]
+    fn the_format_decides_which_file_counts_as_the_output() {
+        let settings = settings_at(Path::new("/repo"));
+        let pmtiles: BTreeMap<String, Value> =
+            [(super::super::archive::PMTILES_KEY.to_string(), Value::Bool(true))]
+                .into_iter()
+                .collect();
+
+        let mbtiles_out = outputs_for(&settings, "alps", StepId::Basemap, &BTreeMap::new());
+        let pmtiles_out = outputs_for(&settings, "alps", StepId::Basemap, &pmtiles);
+        assert!(mbtiles_out[0].to_string_lossy().ends_with("alps.mbtiles"));
+        assert!(pmtiles_out[0].to_string_lossy().ends_with("alps.pmtiles"));
+
+        // terrain has its own PMTiles writer, so it moves too
+        let terrain = outputs_for(&settings, "alps", StepId::TerrainRgb, &pmtiles);
+        assert!(terrain[0].to_string_lossy().ends_with("alps_terrain.pmtiles"), "{terrain:?}");
+
+        // the package has no writer for it at all, and must keep its own name
+        let package = outputs_for(&settings, "alps", StepId::ValhallaPackage, &pmtiles);
+        assert!(package[0].to_string_lossy().ends_with("alps.vtiles"), "{package:?}");
+    }
+
+    #[test]
+    fn the_bathymap_writes_into_the_area_directory() {
+        let settings = settings_at(Path::new("/repo"));
+        let out = outputs_for(&settings, "world", StepId::Bathymap, &BTreeMap::new());
+        assert!(out[0].to_string_lossy().ends_with("world/world_bathymap.mbtiles"), "{out:?}");
     }
 }
