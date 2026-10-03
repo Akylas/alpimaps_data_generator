@@ -217,6 +217,13 @@ pub fn basemap_options() -> Vec<OptionDef> {
             OptionKind::Text, "Comma-separated allow-list.", "all layers"),
         opt("transportation_z13_paths", "transportation_z13_paths", "Paths at z13", "Layers",
             OptionKind::Bool, "Keep paths down to z13.", "off"),
+        opt("poi_trees", "poi_trees", "Trees", "Layers",
+            OptionKind::Bool,
+            "Emit `natural=tree` in the poi layer from z14 as `class=tree`. Unnamed trees come as \
+             one MultiPoint per tile with no `rank`, so a style needs a rule that draws MultiPoints \
+             and does not filter them on rank. About +0.3% of tile bytes on rhone-alpes \
+             (354k trees, up to 7.9k in one city tile).",
+            "off"),
         opt("landcover_tolerance_z11_13", "landcover_tolerance_z11_13", "Landcover tolerance z11-13", "Landcover",
             float(0.0),
             "Overrides landcover simplification for z11-13 only. Must exceed the global \
