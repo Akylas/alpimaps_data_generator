@@ -224,6 +224,19 @@ pub fn basemap_options() -> Vec<OptionDef> {
              and does not filter them on rank. About +0.3% of tile bytes on rhone-alpes \
              (354k trees, up to 7.9k in one city tile).",
             "off"),
+        opt("poi_landmarks", "poi_landmarks", "Landmarks", "Layers",
+            OptionKind::Bool,
+            "Emit from z14 in the poi layer: power towers (`power_tower`), aerialway pylons \
+             (`pylon`), masts, wind turbines, wayside crosses and shrines, crosses, cairns, stones \
+             and rocks. Unnamed ones come as one MultiPoint per class per tile with no `rank`. \
+             About +0.23% of tile bytes on rhone-alpes (59k points).",
+            "off"),
+        opt("poi_guideposts", "poi_guideposts", "Guideposts", "Layers",
+            OptionKind::Bool,
+            "Emit hiking guideposts from z14 in the poi layer as `class=guidepost`, without their \
+             name, as one MultiPoint per tile with no `rank`. About +0.09% of tile bytes on \
+             rhone-alpes (28k guideposts).",
+            "off"),
         opt("landcover_tolerance_z11_13", "landcover_tolerance_z11_13", "Landcover tolerance z11-13", "Landcover",
             float(0.0),
             "Overrides landcover simplification for z11-13 only. Must exceed the global \
