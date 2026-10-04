@@ -86,6 +86,8 @@ Some flags worth knowing about, all measured on a rhone-alpes build:
 | `transportation_surface_detail` | road surface and tracktype on every class, +0.84%. Reaches 73% of tracks — the difference between riding and pushing |
 | `water_pool_tolerance=1` | simplifies swimming pools, which carry ~99 vertices each for a shape a pixel across |
 | `drop_redundant_name_int` | omits `name_int` where it duplicates `name`, −0.88% |
+| `poi_custom_ranks` | orders POI labels for an outdoor map (pharmacy, drinking water and bakery ahead of schools) instead of OpenMapTiles' order |
+| `poi_trees`, `poi_landmarks`, `poi_guideposts` | trees, landmarks (power towers, pylons, crosses, cairns…) and guideposts from z14, unnamed ones packed into one MultiPoint per tile. +0.3%, +0.23%, +0.09% |
 
 ## The desktop app
 

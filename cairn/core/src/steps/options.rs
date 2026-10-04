@@ -217,6 +217,13 @@ pub fn basemap_options() -> Vec<OptionDef> {
             OptionKind::Text, "Comma-separated allow-list.", "all layers"),
         opt("transportation_z13_paths", "transportation_z13_paths", "Paths at z13", "Layers",
             OptionKind::Bool, "Keep paths down to z13.", "off"),
+        opt("poi_custom_ranks", "poi_custom_ranks", "Outdoor POI ranks", "Layers",
+            OptionKind::Bool,
+            "Order POI labels by our outdoor ranks - pharmacy, drinking water and bakery ahead of \
+             schools, viewpoints last - looked up by subclass then class, instead of \
+             OpenMapTiles' order by class. Changes which label wins a crowded spot, and the \
+             `rank` a style filters on.",
+            "OpenMapTiles' ranks"),
         opt("poi_trees", "poi_trees", "Trees", "Layers",
             OptionKind::Bool,
             "Emit `natural=tree` in the poi layer from z14 as `class=tree`. Unnamed trees come as \
