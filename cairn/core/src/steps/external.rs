@@ -17,7 +17,14 @@ use tokio::sync::mpsc;
 
 use super::{StepEvent, StepId};
 
-/// One Valhalla binary, its arguments, and where to run it.
+/// How a tool's output line becomes an event.
+///
+/// Each tool announces its progress in its own shape, and none of them is a contract: the
+/// parser is per-job so that a new tool does not mean teaching one function about every format
+/// there has ever been.
+pub type LineParser = fn(StepId, &str) -> StepEvent;
+
+/// One external binary, its arguments, and where to run it.
 pub struct ToolJob {
     pub step: StepId,
     pub area: String,
@@ -25,6 +32,8 @@ pub struct ToolJob {
     pub program: PathBuf,
     pub args: Vec<String>,
     pub working_dir: PathBuf,
+    /// Reads this tool's own progress format. `valhalla_line` is the historical default.
+    pub parse: LineParser,
 }
 
 impl ToolJob {
@@ -84,6 +93,7 @@ pub async fn run(
         .kill_on_drop(true)
         .spawn()?;
 
+    let parse = job.parse;
     let mut out = BufReader::new(child.stdout.take().expect("stdout piped")).lines();
     let mut err = BufReader::new(child.stderr.take().expect("stderr piped")).lines();
     let mut cancelled = false;
@@ -91,13 +101,13 @@ pub async fn run(
     loop {
         tokio::select! {
             line = out.next_line() => match line? {
-                Some(line) => emit(&tx, step, line).await,
+                Some(line) => emit(&tx, step, parse, line).await,
                 // stdout closing does not mean the process is done; stderr may still be open
-                None => if err_done(&mut err, &tx, step).await? { break },
+                None => if err_done(&mut err, &tx, step, parse).await? { break },
             },
             line = err.next_line() => match line? {
-                Some(line) => emit(&tx, step, line).await,
-                None => if out_done(&mut out, &tx, step).await? { break },
+                Some(line) => emit(&tx, step, parse, line).await,
+                None => if out_done(&mut out, &tx, step, parse).await? { break },
             },
             signal = cancel.recv() => {
                 if signal.is_none() {
@@ -125,9 +135,10 @@ async fn err_done(
     err: &mut tokio::io::Lines<BufReader<tokio::process::ChildStderr>>,
     tx: &mpsc::Sender<StepEvent>,
     step: StepId,
+    parse: LineParser,
 ) -> Result<bool> {
     while let Some(line) = err.next_line().await? {
-        emit(tx, step, line).await;
+        emit(tx, step, parse, line).await;
     }
     Ok(true)
 }
@@ -136,19 +147,49 @@ async fn out_done(
     out: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
     tx: &mpsc::Sender<StepEvent>,
     step: StepId,
+    parse: LineParser,
 ) -> Result<bool> {
     while let Some(line) = out.next_line().await? {
-        emit(tx, step, line).await;
+        emit(tx, step, parse, line).await;
     }
     Ok(true)
 }
 
 /// Turn a log line into an event, promoting the stage markers to phases.
-async fn emit(tx: &mpsc::Sender<StepEvent>, step: StepId, line: String) {
-    if let Some(name) = phase_of(&line) {
-        let _ = tx.send(StepEvent::Phase { step, name }).await;
+async fn emit(
+    tx: &mpsc::Sender<StepEvent>,
+    step: StepId,
+    parse: LineParser,
+    line: String,
+) {
+    match parse(step, &line) {
+        // A phase is extra information *about* the line, not a replacement for it - the log
+        // still has to show the banner the tool printed.
+        event @ StepEvent::Phase { .. } => {
+            let _ = tx.send(event).await;
+            let _ = tx.send(StepEvent::Log { step, line }).await;
+        }
+        // A progress reading replaces its line. The line it came from is either a restatement
+        // of the reading, or - for a tool that redraws with carriage returns and no newline -
+        // every frame it has ever drawn, which for one global build was a single 17 kB line.
+        event @ StepEvent::Progress { .. } => {
+            let _ = tx.send(event).await;
+        }
+        event => {
+            let _ = tx.send(event).await;
+        }
     }
-    let _ = tx.send(StepEvent::Log { step, line }).await;
+}
+
+/// The Valhalla tools' own format, and the default for anything that has no parser of its own.
+///
+/// `valhalla_build_tiles` announces each stage as `[INFO] Parsing files: ...` or
+/// `[INFO] Building tiles ...`; anything else is ordinary chatter.
+pub fn valhalla_line(step: StepId, line: &str) -> StepEvent {
+    match phase_of(line) {
+        Some(name) => StepEvent::Phase { step, name },
+        None => StepEvent::Log { step, line: line.to_string() },
+    }
 }
 
 /// Recognise the stage banners Valhalla prints, so the UI can show where a long build is.

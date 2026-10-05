@@ -117,6 +117,7 @@ pub fn builtin() -> Vec<Preset> {
                 ("water_pool_tolerance", serde_json::json!(1)),
                 ("drop_redundant_name_int", serde_json::json!(true)),
                 ("transportation_surface_detail", serde_json::json!(true)),
+                ("poi_custom_ranks", serde_json::json!(true)),
             ]),
         },
         Preset {

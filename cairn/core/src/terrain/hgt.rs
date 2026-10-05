@@ -50,14 +50,23 @@ pub fn file_name(lon_deg: i32, lat_deg: i32) -> String {
     format!("{ns}{lat:02}{ew}{lon:03}.hgt")
 }
 
+/// Degree squares held in memory at once.
+///
+/// A 1-arcsecond tile is 26 MB as `i16`, and there is one of these per render thread, so an
+/// unbounded cache over a wide area is gigabytes per worker. A render walks a column of output
+/// tiles, which crosses two or three squares.
+const TILE_CACHE: usize = 4;
+
 pub struct HgtSource {
     root: PathBuf,
     cache: HashMap<(i32, i32), Option<Arc<HgtTile>>>,
+    /// Insertion order, for evicting the oldest square once the cap is reached.
+    order: std::collections::VecDeque<(i32, i32)>,
 }
 
 impl HgtSource {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into(), cache: HashMap::new() }
+        Self { root: root.into(), cache: HashMap::new(), order: std::collections::VecDeque::new() }
     }
 
     /// Files sit either directly under the root or in a `N44/` style subdirectory, which is how
@@ -83,6 +92,12 @@ impl HgtSource {
             .and_then(|bytes| HgtTile::parse(&bytes).ok())
             .map(Arc::new);
         self.cache.insert((lon_deg, lat_deg), loaded.clone());
+        self.order.push_back((lon_deg, lat_deg));
+        while self.order.len() > TILE_CACHE {
+            if let Some(oldest) = self.order.pop_front() {
+                self.cache.remove(&oldest);
+            }
+        }
         loaded
     }
 

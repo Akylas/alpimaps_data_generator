@@ -11,6 +11,8 @@ elevation_tiles
 /tippecanoe
 __pycache__
 cache
+# fetched terrain tiles and pmtiles directories, kept so a rebuild does not ask for them again
+/.cache
 *.tif
 *.poly
 data
@@ -41,3 +43,5 @@ cairn/src-tauri/resources/*
 !cairn/src-tauri/resources/.gitkeep
 cairn/src-tauri/frameworks/*
 !cairn/src-tauri/frameworks/.gitkeep
+# generated test builds
+/output

@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use futures_util::StreamExt;
 
+use crate::cancel::Cancel;
+
 /// The geometry-free index: same ids and URLs, 0.5 MB instead of 3.8 MB. The full one is slow
 /// enough over a normal link to time the request out, and nothing here reads the polygons.
 const INDEX_URL: &str = "https://download.geofabrik.de/index-v1-nogeom.json";
@@ -131,12 +133,46 @@ pub async fn fetch<F>(data_dir: &Path, area: &str, progress: F) -> Result<PathBu
 where
     F: FnMut(u64, Option<u64>),
 {
-    let url = resolve_url(area).await?;
-    fetch_url(&url, &extract_path(data_dir, area), progress).await
+    fetch_cancellable(data_dir, area, &Cancel::never(), progress)
+        .await?
+        .ok_or_else(|| anyhow!("the download was cancelled"))
+}
+
+/// As [`fetch`], but abandons the transfer when the run is cancelled.
+///
+/// `Ok(None)` is a cancellation, not a failure. The partial data is in the `.part` file and is
+/// simply left there: it is never renamed into place, so a later build sees a missing extract
+/// rather than a truncated one.
+pub async fn fetch_cancellable<F>(
+    data_dir: &Path,
+    area: &str,
+    cancel: &Cancel,
+    progress: F,
+) -> Result<Option<PathBuf>>
+where
+    F: FnMut(u64, Option<u64>),
+{
+    let Some(url) = cancel.guard(resolve_url(area)).await else { return Ok(None) };
+    fetch_url_cancellable(&url?, &extract_path(data_dir, area), cancel, progress).await
 }
 
 /// Download one URL to one path, reporting `(done, total)` bytes as it goes.
-pub async fn fetch_url<F>(url: &str, target: &Path, mut progress: F) -> Result<PathBuf>
+pub async fn fetch_url<F>(url: &str, target: &Path, progress: F) -> Result<PathBuf>
+where
+    F: FnMut(u64, Option<u64>),
+{
+    fetch_url_cancellable(url, target, &Cancel::never(), progress)
+        .await?
+        .ok_or_else(|| anyhow!("the download was cancelled"))
+}
+
+/// As [`fetch_url`], but stops between chunks when the run is cancelled.
+pub async fn fetch_url_cancellable<F>(
+    url: &str,
+    target: &Path,
+    cancel: &Cancel,
+    mut progress: F,
+) -> Result<Option<PathBuf>>
 where
     F: FnMut(u64, Option<u64>),
 {
@@ -148,7 +184,8 @@ where
         None => "part".to_string(),
     });
 
-    let response = reqwest::get(url).await.with_context(|| format!("downloading {url}"))?;
+    let Some(response) = cancel.guard(reqwest::get(url)).await else { return Ok(None) };
+    let response = response.with_context(|| format!("downloading {url}"))?;
     if !response.status().is_success() {
         return Err(anyhow!("{url} returned {}", response.status()));
     }
@@ -157,7 +194,9 @@ where
     let mut file = tokio::fs::File::create(&part).await?;
     let mut stream = response.bytes_stream();
     let mut done: u64 = 0;
-    while let Some(chunk) = stream.next().await {
+    loop {
+        let Some(next) = cancel.guard(stream.next()).await else { return Ok(None) };
+        let Some(chunk) = next else { break };
         let chunk = chunk?;
         done += chunk.len() as u64;
         tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await?;
@@ -166,7 +205,7 @@ where
     tokio::io::AsyncWriteExt::flush(&mut file).await?;
     drop(file);
     std::fs::rename(&part, target)?;
-    Ok(target.to_path_buf())
+    Ok(Some(target.to_path_buf()))
 }
 
 #[cfg(test)]

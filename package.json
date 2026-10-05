@@ -5,7 +5,13 @@
   "description": "Release tooling for Cairn. The app itself lives in cairn/.",
   "scripts": {
     "release": "standard-version --commit-all",
-    "release:dry": "standard-version --commit-all --dry-run"
+    "release:dry": "standard-version --commit-all --dry-run",
+    "build:planetiler": "cd planetiler && JAVA_HOME=\"$(/usr/libexec/java_home -v 21 2>/dev/null || echo \"$JAVA_HOME\")\" ./scripts/build.sh",
+    "build:tippecanoe": "make -C tippecanoe -j",
+    "build:prime_server": "cd prime_server && ./autogen.sh && ./configure && make -j",
+    "build:valhalla": "cmake -S valhalla -B valhalla/build -DCMAKE_BUILD_TYPE=Release -DENABLE_BENCHMARKS=Off -DENABLE_PYTHON_BINDINGS=Off -DENABLE_TESTS=Off && make -C valhalla/build -j",
+    "build:rio-rgbify": "venv/bin/python -m pip install -r rio-rgbify/requirements.txt && venv/bin/python -m pip install -e rio-rgbify",
+    "build:all": "npm run build:planetiler && npm run build:tippecanoe && npm run build:rio-rgbify && npm run build:prime_server && npm run build:valhalla"
   },
   "devDependencies": {
     "@tauri-apps/toml": "^2.2.4",
