@@ -88,6 +88,7 @@ Some flags worth knowing about, all measured on a rhone-alpes build:
 | `drop_redundant_name_int` | omits `name_int` where it duplicates `name`, −0.88% |
 | `poi_custom_ranks` | orders POI labels for an outdoor map (pharmacy, drinking water and bakery ahead of schools) instead of OpenMapTiles' order |
 | `poi_trees`, `poi_landmarks`, `poi_guideposts` | trees, landmarks (power towers, pylons, crosses, cairns…) and guideposts from z14, unnamed ones packed into one MultiPoint per tile. +0.3%, +0.23%, +0.09% |
+| `power_lines` | overhead transmission lines from z14 in a new `power` layer, +0.11% |
 
 ## The desktop app
 

@@ -238,6 +238,12 @@ pub fn basemap_options() -> Vec<OptionDef> {
              and rocks. Unnamed ones come as one MultiPoint per class per tile with no `rank`. \
              About +0.23% of tile bytes on rhone-alpes (59k points).",
             "off"),
+        opt("power_lines", "power_lines", "Power lines", "Layers",
+            OptionKind::Bool,
+            "Emit overhead transmission lines (`power=line`) from z14 in a new `power` layer as \
+             `class=line`. Distribution lines and underground cables stay out. About +0.11% of \
+             tile bytes on rhone-alpes (9,400 km).",
+            "off"),
         opt("poi_guideposts", "poi_guideposts", "Guideposts", "Layers",
             OptionKind::Bool,
             "Emit hiking guideposts from z14 in the poi layer as `class=guidepost`, without their \
