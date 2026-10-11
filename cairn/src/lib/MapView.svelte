@@ -72,8 +72,12 @@
   let canRoute = $derived(valhallaBuilt && hasRoutingTiles);
   let canProfile = $derived(!!terrainArt);
 
-  let addableMain = $derived(renderable.filter((a) => !mainSources.some((s) => s.file === a.file_name)));
-  let addableSecondary = $derived(renderable.filter((a) => !secondarySources.some((s) => s.file === a.file_name)));
+  // matched on area *and* file, the way a source's own id is built: two areas can hold files of
+  // the same name, and matching on the name alone would call one of them already loaded
+  const loaded = (list, artifact) =>
+    list.some((s) => s.area === artifact.area && s.file === artifact.file_name);
+  let addableMain = $derived(renderable.filter((a) => !loaded(mainSources, a)));
+  let addableSecondary = $derived(renderable.filter((a) => !loaded(secondarySources, a)));
 
   function waitForBox(el) {
     return new Promise((resolve) => {
@@ -224,9 +228,51 @@
     routePackage = packages[0]?.file_name ?? "";
   }
 
+  /** Resolve once a map's style has finished loading, so a reset can be awaited. */
+  function styleReady(map) {
+    return new Promise((resolve) => (map ? whenStyleReady(map, resolve) : resolve()));
+  }
+
+  /**
+   * Open a different area.
+   *
+   * Nothing of the previous area carries over: different archives, different bounds, a different
+   * routing package. Only `addDefaults` ever loaded anything and it ran once, at mount - so
+   * changing the area repointed the menus and the availability flags while the map went on
+   * showing the area that happened to be open at startup. Everything that reads a loaded source
+   * read the wrong one with it, the style editor included, which is what made local archives
+   * untestable for every area but the first.
+   */
+  async function switchArea(name) {
+    if (!name || name === areaName) return;
+    areaName = name;
+
+    for (const w of ["main", "secondary"]) {
+      const map = mapFor(w);
+      for (const source of listFor(w)) removeSourceFromMap(map, source);
+    }
+    mainSources = [];
+    secondarySources = [];
+    // routing, the drawn line and anything inspected belong to the area they were made on
+    routePackage = "";
+    inspected = null;
+    tileDump = null;
+    clearDrawing();
+
+    // A custom style is built against one archive's source, so it cannot outlive it. The base
+    // style has to be back *before* the new area is added, or `setStyle` would wipe it straight
+    // off again - and the lists are already empty, so nothing old is re-added on the way.
+    if (styleApplied) {
+      setBackdrop(backdrop);
+      await styleReady(mainMap);
+    }
+    await addDefaults();
+    if (showTileGrid) refreshTileGrid();
+  }
+
   async function addArtifact(artifact, w = "main") {
     const map = mapFor(w);
-    if (!map || listFor(w).some((s) => s.file === artifact.file_name)) return;
+    if (!map || loaded(listFor(w), artifact)) return;
     try {
       const res = await fetch(`${base}/tilejson/${artifact.area}/${artifact.file_name}`);
       if (!res.ok) throw new Error(`tilejson ${res.status}`);
@@ -293,6 +339,27 @@
     // and flatten on the way out, but never fight a pitch the user set themselves
     if (mode === "terrain3d" && map?.getPitch() === 0) map.easeTo({ pitch: 62, duration: 400 });
     else if (was === "terrain3d" && mode !== "terrain3d") map?.easeTo({ pitch: 0, duration: 400 });
+    restack(w);
+    bump();
+  }
+
+  /**
+   * Pretend a terrain archive stops at `cap`, so two build depths can be compared without
+   * rebuilding either.
+   *
+   * "Is z13 worth four times the tiles?" is answered by looking at the same hillside twice, and
+   * the honest way to see what z12 would give is to stop the source at z12 and let MapLibre
+   * overzoom above it - which is precisely what the phone does with a z12 archive. `null` puts
+   * the archive's real maxzoom back.
+   */
+  function setMaxzoomCap(source, cap) {
+    const w = which(source);
+    const map = mapFor(w);
+    source.maxzoomCap = cap;
+    // the source is defined from its tile template rather than its TileJSON when capped, so it
+    // has to be rebuilt rather than re-styled
+    removeSourceFromMap(map, source);
+    addSourceToMap(map, source);
     restack(w);
     bump();
   }
@@ -637,7 +704,7 @@
   <div class="toolbar">
     <div class="cluster">
       <span class="lbl">Area</span>
-      <select value={areaName} onchange={(e) => (areaName = e.target.value)} title="area">
+      <select value={areaName} onchange={(e) => switchArea(e.target.value)} title="area">
         {#each areas as a}<option value={a.name}>{a.name}</option>{/each}
       </select>
     </div>
@@ -700,6 +767,7 @@
                      addable={addableMain} onAdd={(a) => addArtifact(a, "main")}
                      onToggleSource={toggleSource} onToggleLayer={toggleLayer}
                      onSetAllLayers={setAll} onOpacity={setOpacity} onTerrainMode={setTerrainMode}
+                     onMaxzoomCap={setMaxzoomCap}
                      onMove={(i, d) => moveIn("main", i, d)} onRemove={remove} onFit={fit} />
       {/if}
     </div>
@@ -721,6 +789,7 @@
                      addable={addableSecondary} onAdd={(a) => addArtifact(a, "secondary")}
                      onToggleSource={toggleSource} onToggleLayer={toggleLayer}
                      onSetAllLayers={setAll} onOpacity={setOpacity} onTerrainMode={setTerrainMode}
+                     onMaxzoomCap={setMaxzoomCap}
                      onMove={(i, d) => moveIn("secondary", i, d)} onRemove={remove} onFit={fit} />
       {/if}
     </div>

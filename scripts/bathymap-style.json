@@ -1,0 +1,289 @@
+{
+  "version": 8,
+  "name": "Alpimaps Bathymap check",
+  "sources": {
+    "bathymap": {
+      "type": "vector",
+      "url": "http://localhost:8080/data/bathymap.json",
+      "minzoom": 0,
+      "maxzoom": 7
+    }
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "#f2efe9"
+      }
+    },
+    {
+      "id": "depth-00000",
+      "type": "fill",
+      "source": "bathymap",
+      "source-layer": "depth",
+      "filter": [
+        "==",
+        [
+          "get",
+          "min_depth"
+        ],
+        0
+      ],
+      "paint": {
+        "fill-color": "#c6dbef",
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "depth-00200",
+      "type": "fill",
+      "source": "bathymap",
+      "source-layer": "depth",
+      "filter": [
+        "==",
+        [
+          "get",
+          "min_depth"
+        ],
+        200
+      ],
+      "paint": {
+        "fill-color": "#b3d0e8",
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "depth-01000",
+      "type": "fill",
+      "source": "bathymap",
+      "source-layer": "depth",
+      "filter": [
+        "==",
+        [
+          "get",
+          "min_depth"
+        ],
+        1000
+      ],
+      "paint": {
+        "fill-color": "#9fc5e0",
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "depth-02000",
+      "type": "fill",
+      "source": "bathymap",
+      "source-layer": "depth",
+      "filter": [
+        "==",
+        [
+          "get",
+          "min_depth"
+        ],
+        2000
+      ],
+      "paint": {
+        "fill-color": "#8bb9d8",
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "depth-03000",
+      "type": "fill",
+      "source": "bathymap",
+      "source-layer": "depth",
+      "filter": [
+        "==",
+        [
+          "get",
+          "min_depth"
+        ],
+        3000
+      ],
+      "paint": {
+        "fill-color": "#77aed0",
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "depth-04000",
+      "type": "fill",
+      "source": "bathymap",
+      "source-layer": "depth",
+      "filter": [
+        "==",
+        [
+          "get",
+          "min_depth"
+        ],
+        4000
+      ],
+      "paint": {
+        "fill-color": "#63a2c8",
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "depth-05000",
+      "type": "fill",
+      "source": "bathymap",
+      "source-layer": "depth",
+      "filter": [
+        "==",
+        [
+          "get",
+          "min_depth"
+        ],
+        5000
+      ],
+      "paint": {
+        "fill-color": "#4f97c0",
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "depth-06000",
+      "type": "fill",
+      "source": "bathymap",
+      "source-layer": "depth",
+      "filter": [
+        "==",
+        [
+          "get",
+          "min_depth"
+        ],
+        6000
+      ],
+      "paint": {
+        "fill-color": "#3b8bb8",
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "depth-07000",
+      "type": "fill",
+      "source": "bathymap",
+      "source-layer": "depth",
+      "filter": [
+        "==",
+        [
+          "get",
+          "min_depth"
+        ],
+        7000
+      ],
+      "paint": {
+        "fill-color": "#2780b0",
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "depth-08000",
+      "type": "fill",
+      "source": "bathymap",
+      "source-layer": "depth",
+      "filter": [
+        "==",
+        [
+          "get",
+          "min_depth"
+        ],
+        8000
+      ],
+      "paint": {
+        "fill-color": "#1374a8",
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "depth-09000",
+      "type": "fill",
+      "source": "bathymap",
+      "source-layer": "depth",
+      "filter": [
+        "==",
+        [
+          "get",
+          "min_depth"
+        ],
+        9000
+      ],
+      "paint": {
+        "fill-color": "#0069a0",
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "depth-10000",
+      "type": "fill",
+      "source": "bathymap",
+      "source-layer": "depth",
+      "filter": [
+        "==",
+        [
+          "get",
+          "min_depth"
+        ],
+        10000
+      ],
+      "paint": {
+        "fill-color": "#005d98",
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "global-landcover",
+      "type": "fill",
+      "source": "bathymap",
+      "source-layer": "global_landcover",
+      "paint": {
+        "fill-color": [
+          "match",
+          [
+            "get",
+            "class"
+          ],
+          "tree",
+          "#7fa86b",
+          "crop",
+          "#e8dfa8",
+          "grass",
+          "#c3d99b",
+          "scrub",
+          "#c9c98a",
+          "heath",
+          "#d0c0a0",
+          "sand",
+          "#e8dcc0",
+          "built",
+          "#d8a0a0",
+          "marsh",
+          "#a8c8c0",
+          "swamp",
+          "#8fb0a0",
+          "glacier",
+          "#ffffff",
+          "#ff00ff"
+        ],
+        "fill-antialias": false,
+        "fill-opacity": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          7,
+          1,
+          8,
+          1,
+          9,
+          0
+        ]
+      }
+    }
+  ]
+}

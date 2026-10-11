@@ -4,6 +4,8 @@
 //! split means the parser and toolchain probes stay testable in seconds instead of behind a
 //! full webview build.
 
+pub mod buildconfig;
+pub mod cancel;
 pub mod catalog;
 pub mod elevation;
 pub mod poly;
@@ -16,4 +18,5 @@ pub mod valhalla;
 pub mod steps;
 pub mod toolchain;
 
+pub use cancel::Cancel;
 pub use progress::{parse_line, LogEvent};

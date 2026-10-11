@@ -216,6 +216,7 @@ pub async fn valhalla_tiles(settings: &Settings, args: ToolArgs) -> Result<()> {
         program: bin(&args, settings, "valhalla_build_tiles")?,
         args: tool_args,
         working_dir: settings.repo_root.clone(),
+        parse: external::valhalla_line,
     };
     run_tool(settings, args, job, out).await
 }

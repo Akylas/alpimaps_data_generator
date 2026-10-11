@@ -2,8 +2,11 @@
 //! Tauri dependency and therefore tests in seconds rather than behind a webview build.
 
 use serde::Serialize;
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use cairn_core::buildconfig::{AreaBuildConfig, BuildConfigStore};
+use cairn_core::cancel::Cancel;
 use cairn_core::catalog::{self, Area, TileStats};
 use cairn_core::elevation::{Profile, TerrainSampler};
 use cairn_core::tileserver::{self, Registry, Source};
@@ -11,6 +14,8 @@ use cairn_core::settings::Settings;
 use cairn_core::presets::{Preset, PresetStore};
 use cairn_core::valhalla::{package, routing};
 use cairn_core::steps::options::{self, OptionDef};
+use cairn_core::steps::archive::{self, ArchiveFormat};
+use cairn_core::terrain::archive::TerrainArchive;
 use cairn_core::steps::planetiler::{run_cancellable, PlanetilerJob, Schema};
 use cairn_core::steps::{plan, state as build_state, StepEvent, StepId, ALL_STEPS};
 use std::collections::BTreeMap;
@@ -18,12 +23,88 @@ use cairn_core::toolchain::{self, JavaInstall};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc;
 
-/// Cancel signal for the run in flight, if any.
+/// The runs in flight, one per area.
 ///
-/// A broadcast rather than a plain channel because one run spans several steps: each step
-/// subscribes for its own lifetime, and a single cancel reaches whichever step is executing.
+/// It used to be a single slot: one build at a time for the whole app, and every event it
+/// emitted looked the same whichever area it came from. Switching the Build view to another area
+/// while europe was building therefore showed europe's log under the new area's name - the run
+/// had no identity of its own. Keyed by area, a run does: the events carry it, the progress
+/// snapshot carries it, and Cancel names it.
 #[derive(Default)]
-struct Running(Mutex<Option<tokio::sync::broadcast::Sender<()>>>);
+struct Runs(Mutex<BTreeMap<String, Run>>);
+
+/// One build in flight.
+struct Run {
+    cancel: Cancel,
+    /// What the run is doing right now, kept here rather than only in the events.
+    ///
+    /// Events reach whoever was listening when they were sent. This is for everyone else: a
+    /// Build tab opened halfway through, a window reloaded, the run list in the header. Without
+    /// it, a run that is very much alive looks like nothing at all until its next log line.
+    progress: Arc<Mutex<RunProgress>>,
+}
+
+/// A run's state, flat enough to hand straight to the UI.
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+struct RunProgress {
+    area: String,
+    /// The whole plan, in order, so the list reads as a plan rather than filling in as it goes.
+    planned: Vec<StepId>,
+    completed: Vec<StepId>,
+    /// The step executing now, if any.
+    step: Option<StepId>,
+    phase: String,
+    label: String,
+    percent: u8,
+    /// Unix seconds, for "running for 14m" without the front end having to track it.
+    started_at: u64,
+    /// Cancel has been pressed and the run is winding down. The button says so rather than
+    /// looking like it did nothing, which is what a slow step made it look like.
+    cancelling: bool,
+    /// The shared resource this run is queued behind, if it is waiting rather than working.
+    waiting_for: Option<String>,
+}
+
+impl Runs {
+    fn snapshot(&self) -> Vec<RunProgress> {
+        let Ok(runs) = self.0.lock() else { return Vec::new() };
+        runs.values().filter_map(|run| run.progress.lock().ok().map(|p| p.clone())).collect()
+    }
+}
+
+/// One mutex per shared resource, created on first use.
+///
+/// Two areas building at once is the point; two `valhalla_build_tiles` writing the same
+/// `valhalla_tiles/` directory is not. [`StepId::exclusive_key`] names what a step needs to hold
+/// alone, and this hands out the lock for that name.
+#[derive(Default)]
+struct Locks(Mutex<BTreeMap<&'static str, Arc<tokio::sync::Mutex<()>>>>);
+
+impl Locks {
+    fn get(&self, key: &'static str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut map = self.0.lock().expect("locks mutex poisoned");
+        map.entry(key).or_default().clone()
+    }
+}
+
+/// The per-area build form state, kept in memory and written through on every change.
+struct BuildConfigs {
+    path: PathBuf,
+    store: Mutex<BuildConfigStore>,
+}
+
+/// A step event with the area it came from.
+///
+/// The core's `StepEvent` deliberately does not carry one - it is emitted deep inside steps that
+/// have no reason to know - so the area is attached here, where the run that owns the channel is
+/// the one forwarding it.
+#[derive(Serialize, Clone)]
+struct RunEvent {
+    area: String,
+    #[serde(flatten)]
+    event: StepEvent,
+}
 
 /// Settings, kept in memory and written through on every change.
 struct Config {
@@ -469,7 +550,7 @@ async fn list_steps(
             implemented: s.is_implemented(),
             summary: s.summary(),
             reads: s.reads(),
-            writes: build_state::outputs_for(&settings, &area, *s)
+            writes: build_state::outputs_for(&settings, &area, *s, &BTreeMap::new())
                 .into_iter()
                 .map(|p| p.display().to_string())
                 .collect(),
@@ -482,15 +563,7 @@ async fn list_steps(
 
 #[tauri::command]
 fn step_options(step: StepId) -> Vec<OptionDef> {
-    match step {
-        StepId::Routes => options::routes_options(),
-        StepId::Basemap => options::basemap_options(),
-        StepId::TerrainRgb => options::terrain_options(),
-        StepId::ValhallaPackage => options::package_options(),
-        // the download and the two Valhalla binaries take paths and bounds, which are settings
-        // rather than per-run choices; showing planetiler's options here was simply wrong
-        StepId::DownloadOsm | StepId::ElevationTiles | StepId::ValhallaTiles => Vec::new(),
-    }
+    options::for_step(step)
 }
 
 #[tauri::command]
@@ -500,6 +573,31 @@ fn plan_steps(steps: Vec<StepId>) -> Vec<StepId> {
 
 fn presets_path(config: &Config) -> PathBuf {
     config.path.with_file_name("presets.json")
+}
+
+/// What the Build form holds for one area, as it was last left.
+///
+/// `None` means this area has never been configured, and the form falls back to seeding itself
+/// from the default preset - which is what it always used to do, for every area, on every launch.
+#[tauri::command]
+fn get_build_config(
+    configs: State<'_, BuildConfigs>,
+    area: String,
+) -> Result<Option<AreaBuildConfig>, String> {
+    let store = configs.store.lock().map_err(|_| "build config lock poisoned")?;
+    Ok(store.get(&area).cloned())
+}
+
+/// Remember one area's form state. Written through on every change, so a crash loses nothing.
+#[tauri::command]
+fn save_build_config(
+    configs: State<'_, BuildConfigs>,
+    area: String,
+    build: AreaBuildConfig,
+) -> Result<(), String> {
+    let mut store = configs.store.lock().map_err(|_| "build config lock poisoned")?;
+    store.set(&area, build);
+    store.save(&configs.path).map_err(|e| e.to_string())
 }
 
 /// Which preset the form seeds itself from, so the UI shows the values a run will actually use.
@@ -952,19 +1050,21 @@ async fn clear_build_state(
     }
 }
 
-/// Releases the runner slot however `run_steps` exits.
+/// Releases this area's runner slot however `run_steps` exits.
 ///
 /// The slot used to be cleared only at the very end, so any early `?` on the way out - a jar that
 /// will not spawn, a failed tmpdir - left it occupied for the lifetime of the app. Every later run
 /// was then refused with "a build is already running" the instant it started, which from the
 /// outside looks like nothing happening at all.
-struct RunGuard(AppHandle);
+struct RunGuard(AppHandle, String);
 
 impl Drop for RunGuard {
     fn drop(&mut self) {
-        if let Ok(mut slot) = self.0.state::<Running>().0.lock() {
-            *slot = None;
+        if let Ok(mut runs) = self.0.state::<Runs>().0.lock() {
+            runs.remove(&self.1);
         }
+        // the run list in the UI is driven by events, so its disappearance has to be one too
+        let _ = self.0.emit("runs-changed", ());
     }
 }
 
@@ -976,7 +1076,8 @@ impl Drop for RunGuard {
 #[tauri::command]
 async fn run_steps(
     app: AppHandle,
-    running: State<'_, Running>,
+    runs: State<'_, Runs>,
+    locks: State<'_, Locks>,
     config: State<'_, Config>,
     req: RunRequest,
 ) -> Result<Vec<StepId>, String> {
@@ -984,6 +1085,7 @@ async fn run_steps(
     let java = detect_java(app.clone()).await?;
     let jar = req
         .jar
+        .clone()
         .filter(|j| !j.is_empty())
         .map(PathBuf::from)
         .or_else(|| settings.planetiler_jar_path())
@@ -994,21 +1096,67 @@ async fn run_steps(
     };
 
     let ordered = plan(&req.steps);
-    let (cancel_tx, _) = tokio::sync::broadcast::channel(4);
+    let cancel = Cancel::new();
+    let progress = Arc::new(Mutex::new(RunProgress {
+        area: req.area.clone(),
+        planned: ordered.clone(),
+        started_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        ..Default::default()
+    }));
     {
-        let mut slot = running.0.lock().map_err(|_| "runner lock poisoned")?;
-        if slot.is_some() {
-            return Err("a build is already running".into());
+        let mut slot = runs.0.lock().map_err(|_| "runner lock poisoned")?;
+        // one run per area, not one for the whole app: another area building is no reason to
+        // refuse this one, and it was the reason the refusal used to read as "nothing happened"
+        if slot.contains_key(&req.area) {
+            return Err(format!("{} is already building", req.area));
         }
-        *slot = Some(cancel_tx.clone());
+        slot.insert(
+            req.area.clone(),
+            Run { cancel: cancel.clone(), progress: progress.clone() },
+        );
     }
-    let _slot_guard = RunGuard(app.clone());
+    let _slot_guard = RunGuard(app.clone(), req.area.clone());
+    let _ = app.emit("runs-changed", ());
 
     let (tx, mut rx) = mpsc::channel::<StepEvent>(512);
     let emitter = app.clone();
+    let event_area = req.area.clone();
+    let snapshot = progress.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
-            let _ = emitter.emit("step", &event);
+            // the snapshot is updated from the same stream the UI sees, so a Build tab opened
+            // mid-run and one that watched from the start end up saying the same thing
+            if let Ok(mut state) = snapshot.lock() {
+                match &event {
+                    StepEvent::Started { step, .. } => {
+                        state.step = Some(*step);
+                        state.phase = "starting".into();
+                        state.label.clear();
+                        state.percent = 0;
+                    }
+                    StepEvent::Phase { name, .. } => state.phase = name.clone(),
+                    StepEvent::Progress { label, percent, .. } => {
+                        state.label = label.clone();
+                        state.percent = *percent;
+                    }
+                    StepEvent::Finished { step, ok, .. } => {
+                        if *ok && !state.completed.contains(step) {
+                            state.completed.push(*step);
+                        }
+                        state.step = None;
+                    }
+                    StepEvent::Skipped { step, .. } => {
+                        if !state.completed.contains(step) {
+                            state.completed.push(*step);
+                        }
+                    }
+                    StepEvent::Log { .. } | StepEvent::Command { .. } => {}
+                }
+            }
+            let _ = emitter.emit("step", &RunEvent { area: event_area.clone(), event });
         }
     });
 
@@ -1016,6 +1164,9 @@ async fn run_steps(
     let planned = ordered.len();
     let mut completed = Vec::new();
     for step in ordered {
+        if cancel.is_cancelled() {
+            break;
+        }
         // Whatever the form holds, verbatim. The form seeds itself from the default preset on
         // load, so an untouched step already carries the README's values - and merging them in
         // again here would make a deliberately cleared field impossible to clear.
@@ -1069,110 +1220,137 @@ async fn run_steps(
             }
         };
 
-        if step == StepId::DownloadOsm {
-            match run_download(&settings, &req.area, tx.clone()).await {
-                Ok(()) => {
-                    record(true);
-                    completed.push(step);
-                }
-                Err(e) => {
-                    let _ = tx.send(StepEvent::Log { step, line: format!("ERROR: {e}") }).await;
-                    break;
-                }
-            }
-            continue;
-        }
-        if step == StepId::ElevationTiles {
-            match run_elevation(&settings, &req.area, tx.clone()).await {
-                Ok(()) => {
-                    record(true);
-                    completed.push(step);
-                }
-                Err(e) => {
-                    let _ = tx.send(StepEvent::Log { step, line: format!("ERROR: {e}") }).await;
-                    break;
-                }
-            }
-            continue;
-        }
-        if step == StepId::ValhallaTiles {
-            let cancel = step_cancel(&cancel_tx);
-            match run_valhalla_tool(&settings, &req.area, step, tx.clone(), cancel).await {
-                Ok(true) => {
-                    record(true);
-                    completed.push(step);
-                }
-                Ok(false) => break,
-                Err(e) => {
-                    let _ = tx.send(StepEvent::Log { step, line: format!("ERROR: {e}") }).await;
-                    break;
+        // Steps naming the same shared resource queue behind each other across every area.
+        // Held for the step, not the run: europe's basemap and rhone-alpes' terrain overlap
+        // freely, while their two basemaps do not.
+        let _exclusive = match step.exclusive_key() {
+            None => None,
+            Some(key) => {
+                let lock = locks.get(key);
+                match lock.clone().try_lock_owned() {
+                    Ok(guard) => Some(guard),
+                    Err(_) => {
+                        // say so, rather than sitting silent: from outside, a queued step and a
+                        // hung one look exactly alike
+                        set_waiting(&progress, Some(key));
+                        let _ = tx
+                            .send(StepEvent::Log {
+                                step,
+                                line: format!("waiting: another area is using {key}"),
+                            })
+                            .await;
+                        let guard = cancel.guard(lock.lock_owned()).await;
+                        set_waiting(&progress, None);
+                        match guard {
+                            Some(guard) => Some(guard),
+                            // cancelled while queued, which is the moment it is most likely to
+                            // be pressed
+                            None => break,
+                        }
+                    }
                 }
             }
-            continue;
-        }
-        if step == StepId::TerrainRgb {
-            match run_terrain(&settings, &req.area, step, &values, tx.clone()).await {
-                Ok(()) => {
-                    record(true);
-                    completed.push(step);
-                }
-                Err(e) => {
-                    let _ = tx.send(StepEvent::Log { step, line: format!("ERROR: {e}") }).await;
-                    break;
-                }
-            }
-            continue;
-        }
-        if step == StepId::ValhallaPackage {
-            match run_valhalla_package(&settings, &req.area, tx.clone()).await {
-                Ok(()) => {
-                    record(true);
-                    completed.push(step);
-                }
-                Err(e) => {
-                    let _ = tx.send(StepEvent::Log { step, line: format!("ERROR: {e}") }).await;
-                    break;
-                }
-            }
-            continue;
-        }
-        let defs = match step {
-            StepId::Routes => options::routes_options(),
-            _ => options::basemap_options(),
-        };
-        let mut extra = vec!["--download".into(), format!("--area={}", req.area), "--force".into()];
-        extra.extend(options::to_args(&defs, &values));
-        extra.extend(req.extra_args.get(&step).map(|raw| split_args(raw)).unwrap_or_default());
-
-        let suffix = if step == StepId::Routes { "_routes" } else { "" };
-        let job = PlanetilerJob {
-            step,
-            area: req.area.clone(),
-            java: java.path.clone(),
-            jar: jar.clone(),
-            schema: schema.clone(),
-            heap_mb: settings.heap_mb,
-            output: settings
-                .area_dir(&req.area)
-                .join(format!("{}{suffix}.mbtiles", req.area)),
-            tmp_dir: settings.run_tmp_dir(&format!("{}-{:?}", req.area, step)),
-            extra_args: extra,
-            working_dir: settings.repo_root.clone(),
-            log_interval: settings.log_interval.clone(),
         };
 
-        let ok = run_cancellable(job, tx.clone(), step_cancel(&cancel_tx))
-            .await
-            .map_err(|e| e.to_string())?;
-        if !ok {
-            break;
+        let outcome = match step {
+            StepId::DownloadOsm => run_download(&settings, &req.area, tx.clone(), &cancel).await,
+            StepId::ElevationTiles => {
+                run_elevation(&settings, &req.area, tx.clone(), &cancel).await
+            }
+            StepId::ValhallaTiles => {
+                run_valhalla_tool(
+                    &settings,
+                    &req.area,
+                    step,
+                    tx.clone(),
+                    &cancel,
+                    locks.get("elevation"),
+                )
+                .await
+            }
+            StepId::Bathymap => {
+                run_bathymap(&settings, &req.area, &values, forced, tx.clone(), cancel.receiver())
+                    .await
+            }
+            StepId::TerrainRgb => {
+                run_terrain(
+                    &settings,
+                    &req.area,
+                    step,
+                    &values,
+                    tx.clone(),
+                    &cancel,
+                    locks.get("elevation"),
+                )
+                .await
+            }
+            StepId::ValhallaPackage => {
+                run_valhalla_package(&settings, &req.area, tx.clone(), &cancel).await
+            }
+            StepId::Basemap | StepId::Routes => {
+                let defs = options::for_step(step);
+                let mut extra =
+                    vec!["--download".into(), format!("--area={}", req.area), "--force".into()];
+                extra.extend(options::to_args(&defs, &values));
+                extra.extend(
+                    req.extra_args.get(&step).map(|raw| split_args(raw)).unwrap_or_default(),
+                );
+
+                let format = ArchiveFormat::from_values(&values);
+                let name = archive::archive_name(&req.area, step, format)
+                    .expect("basemap and routes always have an archive name");
+                let job = PlanetilerJob {
+                    step,
+                    area: req.area.clone(),
+                    java: java.path.clone(),
+                    jar: jar.clone(),
+                    schema: schema.clone(),
+                    heap_mb: settings.heap_mb,
+                    output: settings.area_dir(&req.area).join(name),
+                    tmp_dir: settings.run_tmp_dir(&format!("{}-{:?}", req.area, step)),
+                    extra_args: extra,
+                    working_dir: settings.repo_root.clone(),
+                    log_interval: settings.log_interval.clone(),
+                };
+                run_cancellable(job, tx.clone(), cancel.receiver())
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+        };
+
+        match outcome {
+            Ok(true) => {
+                record(true);
+                completed.push(step);
+            }
+            // the step stopped without finishing: cancelled, or a tool that failed and already
+            // said why on its own stream
+            Ok(false) => break,
+            Err(e) => {
+                let _ = tx.send(StepEvent::Log { step, line: format!("ERROR: {e}") }).await;
+                break;
+            }
         }
-        record(true);
-        completed.push(step);
     }
 
-    notify_run_finished(&app, &req.area, &completed, planned);
+    let cancelled = cancel.is_cancelled();
+    if cancelled {
+        let _ = tx
+            .send(StepEvent::Log {
+                step: *completed.last().unwrap_or(&StepId::DownloadOsm),
+                line: format!("cancelled after {} of {planned} steps", completed.len()),
+            })
+            .await;
+    }
+    notify_run_finished(&app, &req.area, &completed, planned, cancelled);
     Ok(completed)
+}
+
+/// Record that a run is queued behind a shared resource rather than working.
+fn set_waiting(progress: &Arc<Mutex<RunProgress>>, key: Option<&str>) {
+    if let Ok(mut state) = progress.lock() {
+        state.waiting_for = key.map(str::to_string);
+    }
 }
 
 /// Tell the desktop the build is over.
@@ -1180,11 +1358,22 @@ async fn run_steps(
 /// A basemap takes tens of minutes, so nobody is watching the window when it ends. The in-app
 /// banner only helps someone already looking at it; this is for the far more common case of
 /// having switched away an hour ago.
-fn notify_run_finished(app: &AppHandle, area: &str, completed: &[StepId], planned: usize) {
+fn notify_run_finished(
+    app: &AppHandle,
+    area: &str,
+    completed: &[StepId],
+    planned: usize,
+    cancelled: bool,
+) {
     use tauri_plugin_notification::NotificationExt;
 
     let done = completed.len();
-    let (title, body) = if done == planned {
+    let (title, body) = if cancelled {
+        (
+            format!("{area} was cancelled"),
+            format!("{done} of {planned} steps had finished"),
+        )
+    } else if done == planned {
         (
             format!("{area} is built"),
             match completed {
@@ -1203,28 +1392,16 @@ fn notify_run_finished(app: &AppHandle, area: &str, completed: &[StepId], planne
     let _ = app.notification().builder().title(title).body(body).show();
 }
 
-/// Bridge the run-wide cancel broadcast onto one step's channel.
-///
-/// The task ends when the signal arrives or when the broadcast sender is dropped at the end of
-/// the run - and a dropped sender must not read as a cancellation, which is what once killed
-/// builds that had simply finished.
-fn step_cancel(cancel_tx: &tokio::sync::broadcast::Sender<()>) -> mpsc::Receiver<()> {
-    let mut subscription = cancel_tx.subscribe();
-    let (step_tx, step_cancel) = mpsc::channel(1);
-    tokio::spawn(async move {
-        if subscription.recv().await.is_ok() {
-            let _ = step_tx.send(()).await;
-        }
-    });
-    step_cancel
-}
-
 /// Download the area's OSM extract, so the three steps that read it share one copy.
+///
+/// `Ok(false)` means cancelled: the partial transfer stays in its `.part` file and is never
+/// renamed, so the next run sees a missing extract rather than a truncated one.
 async fn run_download(
     settings: &Settings,
     area: &str,
     tx: mpsc::Sender<StepEvent>,
-) -> Result<(), String> {
+    cancel: &Cancel,
+) -> Result<bool, String> {
     use cairn_core::steps::download;
 
     let step = StepId::DownloadOsm;
@@ -1232,7 +1409,7 @@ async fn run_download(
 
     let mut last_percent = u8::MAX;
     let progress = tx.clone();
-    let path = download::fetch(&settings.data_dir, area, |done, total| {
+    let path = download::fetch_cancellable(&settings.data_dir, area, cancel, |done, total| {
         let percent = match total {
             Some(total) if total > 0 => ((done * 100) / total).min(100) as u8,
             _ => 0,
@@ -1250,6 +1427,9 @@ async fn run_download(
     .await
     .map_err(|e| e.to_string())?;
 
+    let Some(path) = path else {
+        return Ok(cancelled(&tx, step).await);
+    };
     let _ = tx
         .send(StepEvent::Log { step, line: format!("wrote {}", path.display()) })
         .await;
@@ -1261,7 +1441,19 @@ async fn run_download(
             outputs: vec![path.display().to_string()],
         })
         .await;
-    Ok(())
+    Ok(true)
+}
+
+/// Report a step that stopped because the run was cancelled, and return `false` for the runner.
+///
+/// A cancelled step still has to emit `Finished`: the UI leaves whatever it last heard on
+/// screen, so without this a cancelled terrain render stays at "running, 62%" for good.
+async fn cancelled(tx: &mpsc::Sender<StepEvent>, step: StepId) -> bool {
+    let _ = tx.send(StepEvent::Log { step, line: "cancelled".into() }).await;
+    let _ = tx
+        .send(StepEvent::Finished { step, ok: false, elapsed: None, outputs: vec![] })
+        .await;
+    false
 }
 
 /// Download the `.hgt` tiles covering the area.
@@ -1272,7 +1464,8 @@ async fn run_elevation(
     settings: &Settings,
     area: &str,
     tx: mpsc::Sender<StepEvent>,
-) -> Result<(), String> {
+    cancel: &Cancel,
+) -> Result<bool, String> {
     use cairn_core::steps::elevation;
 
     let step = StepId::ElevationTiles;
@@ -1297,10 +1490,11 @@ async fn run_elevation(
 
     let progress = tx.clone();
     // decompressed: the graph reads these and so does the terrain step
-    let (downloaded, total) = elevation::fetch(
+    let (downloaded, total) = elevation::fetch_cancellable(
         &settings.elevation_tiles_dir,
         &tiles,
         false,
+        cancel,
         |done, total| {
             let _ = progress.try_send(StepEvent::Progress {
                 step,
@@ -1312,6 +1506,9 @@ async fn run_elevation(
     .await
     .map_err(|e| e.to_string())?;
 
+    if cancel.is_cancelled() {
+        return Ok(cancelled(&tx, step).await);
+    }
     let _ = tx
         .send(StepEvent::Log {
             step,
@@ -1321,7 +1518,7 @@ async fn run_elevation(
     let _ = tx
         .send(StepEvent::Finished { step, ok: true, elapsed: None, outputs: vec![] })
         .await;
-    Ok(())
+    Ok(true)
 }
 
 /// The area's extent, from its basemap. The one thing every later step needs and none of them
@@ -1340,6 +1537,107 @@ fn area_bounds(settings: &Settings, area: &str) -> Option<(f64, f64, f64, f64)> 
     (parts.len() == 4).then(|| (parts[0], parts[1], parts[2], parts[3]))
 }
 
+/// Build the global landcover and depth archive.
+///
+/// Its own downloads and its own cache, and it never touches the OSM extract, so it has no
+/// dependencies in the graph. The area only decides the bbox - and by default not even that,
+/// because the layer exists to be global.
+async fn run_bathymap(
+    settings: &Settings,
+    area: &str,
+    values: &BTreeMap<String, Value>,
+    force: bool,
+    tx: mpsc::Sender<StepEvent>,
+    cancel: mpsc::Receiver<()>,
+) -> Result<bool, String> {
+    use cairn_core::steps::bathymap::{self, BathymapJob};
+    use cairn_core::steps::external::{self, ToolJob};
+
+    let step = StepId::Bathymap;
+
+    let script = bathymap::script_path(&settings.repo_root);
+    if !script.is_file() {
+        return Err(format!(
+            "{} is missing - the bathymap step runs the script from this repository",
+            script.display()
+        ));
+    }
+    let python = bathymap::find_python(&settings.repo_root, None).ok_or(
+        "no python3 - the bathymap step needs one with geopandas and shapely, which is what          `venv/` in the repository root is for",
+    )?;
+
+    // Both are looked up the same way the Valhalla binaries are: the repository's own build
+    // first, then PATH.
+    let tippecanoe = external::find_tool(
+        [settings.repo_root.join("tippecanoe")].iter().map(|p| p.as_path()),
+        "tippecanoe",
+    );
+    let versatiles = external::find_tool(std::iter::empty(), "versatiles");
+    if versatiles.is_none() {
+        return Err("versatiles not found on PATH - the landcover extract comes through it".into());
+    }
+    if tippecanoe.is_none() {
+        return Err("tippecanoe not found - build the submodule, or put it on PATH".into());
+    }
+
+    // Global unless asked otherwise, and the same default the CLI uses. Falling back to the
+    // area's bounds when a basemap happened to exist would mean the same button produced a
+    // world archive or a regional one depending on what else was built.
+    let global = !matches!(values.get("extent").and_then(|v| v.as_str()), Some("area"));
+    let bbox = if global {
+        None
+    } else {
+        match area_bounds(settings, area) {
+            Some(bounds) => Some(bounds),
+            None => {
+                let _ = tx
+                    .send(StepEvent::Log {
+                        step,
+                        line: format!(
+                            "no bounds for {area} - build its basemap first, or set extent to                              global. Building the world."
+                        ),
+                    })
+                    .await;
+                None
+            }
+        }
+    };
+
+    let format = ArchiveFormat::from_values(values);
+    let area_dir = settings.area_dir(area);
+    std::fs::create_dir_all(&area_dir).map_err(|e| e.to_string())?;
+
+    let job = BathymapJob {
+        area: area.to_string(),
+        python,
+        script,
+        output: bathymap::output_path(&area_dir, area, format),
+        // beside the other caches in the repository, and deliberately not under the area: the
+        // Natural Earth downloads and the landcover extract are shared by every area that
+        // builds this, and re-fetching them per area would be gigabytes for nothing
+        cache: settings.repo_root.join(".cache/bathymap"),
+        bbox,
+        versatiles,
+        tippecanoe,
+        values: values.clone(),
+        force,
+        working_dir: settings.repo_root.clone(),
+    };
+
+    let argv = job.argv();
+    let _ = tx.send(StepEvent::Command { step, argv: argv.clone() }).await;
+
+    let tool = ToolJob {
+        step,
+        area: area.to_string(),
+        program: PathBuf::from(&argv[0]),
+        args: argv[1..].to_vec(),
+        working_dir: job.working_dir.clone(),
+        parse: bathymap::parse_line,
+    };
+    external::run(tool, tx, cancel).await.map_err(|e| e.to_string())
+}
+
 /// Run one of the Valhalla command-line tools.
 ///
 /// `valhalla_build_elevation` fetches the `.hgt` tiles the graph bakes in; `valhalla_build_tiles`
@@ -1349,7 +1647,9 @@ async fn run_valhalla_tool(
     area: &str,
     step: StepId,
     tx: mpsc::Sender<StepEvent>,
-    cancel: mpsc::Receiver<()>,
+    cancel: &Cancel,
+    // held only for the `.hgt` fetch below, for the reason given on `run_terrain`
+    elevation_lock: Arc<tokio::sync::Mutex<()>>,
 ) -> Result<bool, String> {
     use cairn_core::steps::external::{self, ToolJob};
 
@@ -1373,10 +1673,14 @@ async fn run_valhalla_tool(
     // grades - so they are fetched first.
     if step == StepId::ValhallaTiles {
         if let Some(bounds) = area_bounds(settings, area) {
+            let Some(_held) = cancel.guard(elevation_lock.lock()).await else {
+                return Ok(cancelled(&tx, step).await);
+            };
             let progress = tx.clone();
-            let (got, total) = cairn_core::steps::elevation::ensure(
+            let (got, total) = cairn_core::steps::elevation::ensure_cancellable(
                 &settings.elevation_tiles_dir,
                 bounds,
+                cancel,
                 |done, total| {
                     let _ = progress.try_send(StepEvent::Progress {
                         step,
@@ -1395,6 +1699,9 @@ async fn run_valhalla_tool(
                 .await;
         }
     }
+    if cancel.is_cancelled() {
+        return Ok(cancelled(&tx, step).await);
+    }
 
     let program = external::find_tool(bin_dirs.iter().map(|p| p.as_path()), name).ok_or_else(
         || {
@@ -1411,9 +1718,14 @@ async fn run_valhalla_tool(
         program,
         args,
         working_dir: settings.repo_root.clone(),
+        parse: external::valhalla_line,
     };
-    external::run(job, tx, cancel).await.map_err(|e| e.to_string())
+    external::run(job, tx, cancel.receiver()).await.map_err(|e| e.to_string())
 }
+
+/// Tiles rendered per batch before the finished ones are handed to the archive. Bounds how many
+/// encoded tiles are resident at once without starving the workers of contiguous work.
+const TERRAIN_BATCH: usize = 256;
 
 /// Build the terrain pyramid from `.hgt` sources.
 ///
@@ -1426,7 +1738,12 @@ async fn run_terrain(
     step: StepId,
     values: &BTreeMap<String, serde_json::Value>,
     tx: mpsc::Sender<StepEvent>,
-) -> Result<(), String> {
+    cancel: &Cancel,
+    // Held only while the `.hgt` tiles are being fetched: that directory is shared by every
+    // area, and two runs downloading the same tile write the same `.part` file. The render
+    // that follows touches nothing outside this area, so it does not hold this.
+    elevation_lock: Arc<tokio::sync::Mutex<()>>,
+) -> Result<bool, String> {
     use cairn_core::elevation::Encoding;
     use cairn_core::terrain::{render, source};
 
@@ -1434,7 +1751,10 @@ async fn run_terrain(
 
     let sources_json = settings.sources_json.clone();
     let hgt_dir = settings.elevation_tiles_dir.clone();
-    let output = settings.area_dir(area).join(format!("{area}_terrain.mbtiles"));
+    let archive_format = ArchiveFormat::from_values(values);
+    let output = settings.area_dir(area).join(
+        archive::archive_name(area, step, archive_format).expect("terrain has an archive name"),
+    );
     // the form's values, with the schema's own "unset means the default" rule: an absent key
     // leaves `TerrainOptions::default()` standing rather than asserting a guess at it
     let num = |key: &str| values.get(key).and_then(|v| v.as_f64());
@@ -1463,7 +1783,9 @@ async fn run_terrain(
         ),
         None => None,
     };
-    let tile_buffer = num("tile_buffer").map(|v| v as u32).unwrap_or(0);
+    // the form promises 1 beside the field, and a ring of one is what every archive in this
+    // repository was built with; 0 leaves a seam wherever coverage stops
+    let tile_buffer = num("tile_buffer").map(|v| v as u32).unwrap_or(1);
     let download_elevation = values
         .get("download_elevation")
         .and_then(|v| v.as_bool())
@@ -1503,13 +1825,24 @@ async fn run_terrain(
         },
     };
 
+    // A source list that names no .hgt source wants none of them: downloading 25 MB a degree for
+    // a render that will never open them is pure waste. When the list cannot be read at all the
+    // fallback below is a .hgt directory, so then they are still needed.
+    let wants_hgt = source::read_specs(&sources_json)
+        .map(|specs| specs.iter().any(|s| source::is_hgt(&s.kind)))
+        .unwrap_or(true);
+
     // the sources may name a directory of .hgt tiles; make sure the ones this render needs are
     // actually there, or the archive comes out with holes and nothing says why
-    if download_elevation {
+    if download_elevation && wants_hgt {
+        let Some(_held) = cancel.guard(elevation_lock.lock()).await else {
+            return Ok(cancelled(&tx, step).await);
+        };
         let progress = tx.clone();
-        let (got, total) = cairn_core::steps::elevation::ensure(
+        let (got, total) = cairn_core::steps::elevation::ensure_cancellable(
             &settings.elevation_tiles_dir,
             bounds,
+            cancel,
             |done, total| {
                 let _ = progress.try_send(StepEvent::Progress {
                     step,
@@ -1520,6 +1853,9 @@ async fn run_terrain(
         )
         .await
         .map_err(|e| e.to_string())?;
+        if cancel.is_cancelled() {
+            return Ok(cancelled(&tx, step).await);
+        }
         let _ = tx
             .send(StepEvent::Log {
                 step,
@@ -1529,8 +1865,14 @@ async fn run_terrain(
     }
 
     let name = format!("{area}_terrain");
+    let partial = output.clone();
     let progress = tx.clone();
-    tokio::task::spawn_blocking(move || -> Result<(), String> {
+    // The render is the longest thing this app does without a subprocess, and it used to be the
+    // one place Cancel could not reach: `spawn_blocking` cannot be aborted from outside, so the
+    // token has to be read from inside the loop. Checked per batch rather than per tile - a
+    // batch is a fraction of a second, and per tile would put an atomic load in the hot path.
+    let stop = cancel.clone();
+    let done = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         // sources.json is the pipeline's own definition of what to read, in priority order;
         // fall back to the bare elevation directory when it is absent
         let specs = source::read_specs(&sources_json).unwrap_or_else(|_| {
@@ -1540,67 +1882,122 @@ async fn run_terrain(
                 path: hgt_dir.clone(),
                 clamp_min: Some(-10.0),
                 download: None,
+                ..Default::default()
             }]
         });
-        let (mut source, skipped) = source::CompositeSource::open(&specs).map_err(|e| e.to_string())?;
+        let (probe, skipped) = source::CompositeSource::open(&specs).map_err(|e| e.to_string())?;
         for note in skipped {
             let _ = progress.blocking_send(StepEvent::Log { step, line: format!("skipped {note}") });
         }
-        let conn = render::create_archive(&output, &name, &opts, bounds).map_err(|e| e.to_string())?;
-        let mut stmt = conn
-            .prepare("INSERT INTO tiles VALUES (?, ?, ?, ?)")
-            .map_err(|e| e.to_string())?;
+        drop(probe);
 
+        // one renderer per worker thread; no more of them than there are tiles to render
+        let biggest = {
+            let (x0, y0, x1, y1) = render::tile_range(opts.maxzoom, bounds);
+            ((x1 - x0 + 1) as usize) * ((y1 - y0 + 1) as usize)
+        };
+        let pool = render::RenderPool::new(biggest, || Ok(source::CompositeSource::open(&specs)?.0))
+            .map_err(|e| e.to_string())?;
+        let _ = progress.blocking_send(StepEvent::Log {
+            step,
+            line: format!("{} render threads", pool.len()),
+        });
+        let mut archive = TerrainArchive::create(
+            &output,
+            archive_format,
+            &name,
+            &opts,
+            bounds,
+            if as_png { "png" } else { "webp" },
+        )
+        .map_err(|e| e.to_string())?;
+
+        let format = if as_png { "png" } else { "webp" };
         for zoom in opts.minzoom..=opts.maxzoom {
+            if stop.is_cancelled() {
+                return Ok(false);
+            }
             let (x0, y0, x1, y1) = render::tile_range(zoom, bounds);
-            let total = ((x1 - x0 + 1) as u64) * ((y1 - y0 + 1) as u64);
             let _ = progress.blocking_send(StepEvent::Phase { step, name: format!("z{zoom}") });
+            // column-major, so each worker walks a run of tiles that sit next to each other
+            let wanted: Vec<(u32, u32)> = (x0..=x1)
+                .flat_map(|x| (y0..=y1).map(move |y| (x, y)))
+                .filter(|&(x, y)| {
+                    let Some(shape) = &shape else { return true };
+                    let (w, s, e, n) = render::tile_bounds(zoom, x, y);
+                    let (dx, dy) = ((e - w) * tile_buffer as f64, (n - s) * tile_buffer as f64);
+                    shape.intersects_rect(w - dx, s - dy, e + dx, n + dy)
+                })
+                .collect();
+            let total = wanted.len() as u64;
             let mut done = 0u64;
-            for x in x0..=x1 {
-                for y in y0..=y1 {
-                    done += 1;
-                    if let Some(shape) = &shape {
-                        let (w, s, e, n) = render::tile_bounds(zoom, x, y);
-                        let (dx, dy) = ((e - w) * tile_buffer as f64, (n - s) * tile_buffer as f64);
-                        if !shape.intersects_rect(w - dx, s - dy, e + dx, n + dy) {
-                            continue;
-                        }
-                    }
-                    let Some(rgb) = render::render_tile(&mut source, zoom, x, y, &opts) else {
-                        continue;
-                    };
-                    let webp = if as_png {
-                        render::to_png(&rgb, opts.tile_size).map_err(|e| e.to_string())?
-                    } else {
-                        render::to_webp(&rgb, opts.tile_size).map_err(|e| e.to_string())?
-                    };
-                    // mbtiles rows are TMS, counting up from the south
-                    let tms = (1u32 << zoom) - 1 - y;
-                    stmt.execute((zoom, x, tms, &webp)).map_err(|e| e.to_string())?;
-                    if done % 16 == 0 {
-                        let _ = progress.blocking_send(StepEvent::Progress {
-                            step,
-                            label: format!("z{zoom}"),
-                            percent: ((done * 100) / total.max(1)).min(100) as u8,
-                        });
-                    }
+            for batch in wanted.chunks(TERRAIN_BATCH) {
+                if stop.is_cancelled() {
+                    return Ok(false);
+                }
+                let rendered = pool
+                    .render(zoom, batch, &opts, format)
+                    .map_err(|e| e.to_string())?;
+                for (x, y, bytes) in rendered {
+                    archive.add(zoom, x, y, &bytes).map_err(|e| e.to_string())?;
+                }
+                done += batch.len() as u64;
+                let _ = progress.blocking_send(StepEvent::Progress {
+                    step,
+                    label: format!("z{zoom}"),
+                    percent: ((done * 100) / total.max(1)).min(100) as u8,
+                });
+            }
+        }
+        if stop.is_cancelled() {
+            return Ok(false);
+        }
+        archive.finish().map_err(|e| e.to_string())?;
+        // a tiled source that could not read a tile leaves a hole nobody will notice until they
+        // look at that part of the map, so what each one did is said out loud - summed over the
+        // workers, because each of them holds its own copy of every source
+        let mut totals: Vec<(String, cairn_core::terrain::tiles::TileStats)> = Vec::new();
+        for worker in pool.sources() {
+            let Ok(worker) = worker.lock() else { continue };
+            for (name, stats) in worker.reports() {
+                match totals.iter_mut().find(|(known, _)| *known == name) {
+                    Some((_, total)) => total.merge(&stats),
+                    None => totals.push((name, stats)),
                 }
             }
         }
-        drop(stmt);
-        conn.execute_batch(
-            "CREATE UNIQUE INDEX tile_index ON tiles (zoom_level, tile_column, tile_row)",
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(())
+        for (name, stats) in totals {
+            let _ = progress.blocking_send(StepEvent::Log { step, line: format!("{name}: {stats}") });
+            if stats.unreadable > 0 {
+                let _ = progress.blocking_send(StepEvent::Log {
+                    step,
+                    line: format!(
+                        "warning: {name} left {} tiles unread; this archive has holes",
+                        stats.unreadable
+                    ),
+                });
+            }
+        }
+        Ok(true)
     })
     .await
     .map_err(|e| e.to_string())??;
 
+    if !done {
+        // the archive was never finished, so what is on disk is a partial pyramid that would
+        // still read as "built" on the next run - and a terrain layer with the top zooms
+        // missing is far harder to spot than one that is absent
+        if partial.is_dir() {
+            let _ = std::fs::remove_dir_all(&partial);
+        } else {
+            let _ = std::fs::remove_file(&partial);
+        }
+        return Ok(cancelled(&tx, step).await);
+    }
     let _ = tx
         .send(StepEvent::Finished { step, ok: true, elapsed: None, outputs: vec![] })
         .await;
-    Ok(())
+    Ok(true)
 }
 
 /// Compress a Valhalla tile directory into a `.vtiles` package.
@@ -1608,7 +2005,8 @@ async fn run_valhalla_package(
     settings: &Settings,
     area: &str,
     tx: mpsc::Sender<StepEvent>,
-) -> Result<(), String> {
+    cancel: &Cancel,
+) -> Result<bool, String> {
     use cairn_core::valhalla::package::{self, Compression, PackageOptions};
 
     let step = StepId::ValhallaPackage;
@@ -1628,8 +2026,9 @@ async fn run_valhalla_package(
         compression: Compression::Zopfli,
     };
     let progress = tx.clone();
+    let stop = cancel.clone();
     let report = tokio::task::spawn_blocking(move || {
-        package::build(&opts, &tiles, |done, total| {
+        package::build_cancellable(&opts, &tiles, &stop, |done, total| {
             let _ = progress.blocking_send(StepEvent::Progress {
                 step,
                 label: "tiles".into(),
@@ -1641,6 +2040,9 @@ async fn run_valhalla_package(
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())?;
 
+    let Some(report) = report else {
+        return Ok(cancelled(&tx, step).await);
+    };
     let _ = tx
         .send(StepEvent::Log {
             step,
@@ -1656,20 +2058,44 @@ async fn run_valhalla_package(
     let _ = tx
         .send(StepEvent::Finished { step, ok: true, elapsed: None, outputs: vec![] })
         .await;
+    Ok(true)
+}
+
+/// Stop one area's run, or every run when no area is given.
+///
+/// The token is set here and read by the step in flight: a subprocess is killed, and the native
+/// steps give up at their next checkpoint - between tiles, between batches - rather than at the
+/// end of the whole render.
+#[tauri::command]
+fn cancel_run(app: AppHandle, runs: State<'_, Runs>, area: Option<String>) -> Result<(), String> {
+    let slot = runs.0.lock().map_err(|_| "runner lock poisoned")?;
+    let wanted: Vec<&Run> = match &area {
+        Some(area) => slot.get(area).into_iter().collect(),
+        None => slot.values().collect(),
+    };
+    if wanted.is_empty() {
+        return Err(match area {
+            Some(area) => format!("{area} is not building"),
+            None => "nothing running".into(),
+        });
+    }
+    for run in wanted {
+        run.cancel.cancel();
+        // the run stays in the map until its step actually stops; saying so is what keeps the
+        // button from looking inert while a batch finishes
+        if let Ok(mut state) = run.progress.lock() {
+            state.cancelling = true;
+        }
+    }
+    drop(slot);
+    let _ = app.emit("runs-changed", ());
     Ok(())
 }
 
+/// Every build in flight, for the run list and for a Build tab that mounted mid-run.
 #[tauri::command]
-fn cancel_run(running: State<'_, Running>) -> Result<(), String> {
-    let sender = {
-        let slot = running.0.lock().map_err(|_| "runner lock poisoned")?;
-        slot.clone()
-    };
-    match sender {
-        // no subscriber means the current step already finished; that is not an error
-        Some(tx) => tx.send(()).map(|_| ()).or(Ok(())),
-        None => Err("nothing running".into()),
-    }
+fn active_runs(runs: State<'_, Runs>) -> Vec<RunProgress> {
+    runs.snapshot()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1677,18 +2103,28 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .manage(Running::default())
+        .manage(Runs::default())
+        .manage(Locks::default())
         .manage(Tiles::default())
         .manage(Routing::default())
         .manage(CliRef::default())
         .setup(|app| {
-            app.manage(Config::load(&app.handle().clone()));
+            let config = Config::load(&app.handle().clone());
+            let path = config.path.with_file_name("build-config.json");
+            app.manage(BuildConfigs {
+                store: Mutex::new(BuildConfigStore::load_or_default(&path)),
+                path,
+            });
+            app.manage(config);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             detect_java,
             download_java,
             cancel_run,
+            active_runs,
+            get_build_config,
+            save_build_config,
             get_settings,
             save_settings,
             list_areas,

@@ -8,19 +8,32 @@ use cairn_core::steps::StepId;
 
 #[derive(ClapArgs)]
 pub struct Args {
-    /// Step to describe: basemap or routes.
+    /// Step to describe, by its subcommand name: basemap, routes, bathymap, terrain, package.
     pub step: String,
     /// Also list the presets that ship for it.
     #[arg(long)]
     pub presets: bool,
 }
 
+/// Resolve a step by the name its subcommand uses, so `cairn options X` and `cairn X` agree.
+pub fn step_by_name(name: &str) -> Option<StepId> {
+    cairn_core::steps::ALL_STEPS.into_iter().find(|s| s.command() == name)
+}
+
 pub fn defs_for(step: &str) -> Result<Vec<OptionDef>> {
-    match step {
-        "basemap" => Ok(options::basemap_options()),
-        "routes" => Ok(options::routes_options()),
-        other => Err(anyhow!("no options known for step `{other}` (try basemap or routes)")),
+    let Some(id) = step_by_name(step) else {
+        let known: Vec<&str> = cairn_core::steps::ALL_STEPS
+            .iter()
+            .filter(|s| !options::for_step(**s).is_empty())
+            .map(|s| s.command())
+            .collect();
+        return Err(anyhow!("no step named `{step}` (try {})", known.join(", ")));
+    };
+    let defs = options::for_step(id);
+    if defs.is_empty() {
+        return Err(anyhow!("`{step}` takes no per-run options"));
     }
+    Ok(defs)
 }
 
 fn kind_label(kind: &OptionKind) -> String {
@@ -48,10 +61,7 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     if args.presets {
-        let step = match args.step.as_str() {
-            "basemap" => StepId::Basemap,
-            _ => StepId::Routes,
-        };
+        let step = step_by_name(&args.step).unwrap_or(StepId::Basemap);
         println!("\nPRESETS");
         for preset in presets::builtin().into_iter().filter(|p| p.step == step) {
             println!("  {:<12} {}", preset.name, preset.description);

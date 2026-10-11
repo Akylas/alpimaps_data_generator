@@ -12,9 +12,7 @@
 use crate::elevation::Encoding;
 use crate::terrain::source::CompositeSource;
 use anyhow::{Context, Result};
-use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 
 /// Base value and quantisation interval per encoding, matching the Python `ENCODINGS` table.
 pub fn interval(encoding: Encoding) -> f64 {
@@ -96,15 +94,21 @@ pub struct TerrainOptions {
     pub nodata_elevation: f64,
 }
 
+/// These are what an unset option means, and they have to stay the reference build's values:
+/// z5-z12, mapbox, no quantisation at the max zoom. The desktop form fills an option the user
+/// left alone from here while showing its own hint beside the field, so a value that disagrees
+/// with the hint makes the form lie - Max zoom read "12" and rendered z13, which is four times
+/// the tiles and a zoom past what mapterhorn publishes. `the_defaults_are_what_the_option_form_promises`
+/// is the test that keeps the two in step.
 impl Default for TerrainOptions {
     fn default() -> Self {
         Self {
-            encoding: Encoding::Terrarium,
+            encoding: Encoding::Mapbox,
             minzoom: 5,
-            maxzoom: 13,
+            maxzoom: 12,
             tile_size: 512,
             nodata_elevation: 0.0,
-            round_digits: 8,
+            round_digits: 0,
             max_round_digits: 15,
             blur_m: 1000.0,
         }
@@ -131,12 +135,20 @@ pub fn render_tile(source: &mut CompositeSource, z: u8, x: u32, y: u32, opts: &T
     let mut rgb = vec![0u8; (size * size * 3) as usize];
     let mut covered = false;
 
+    // Longitude depends only on the column and latitude only on the row, so both are worked out
+    // once rather than per pixel. Asking `pixel_lonlat` for the longitude used to compute the
+    // row's latitude as well and throw it away - an `asinh` and an `atan` per pixel, a quarter of
+    // a million of them per tile, for a number already in hand.
+    let n = (1u64 << z) as f64;
+    let span = size as f64 * n;
+    let lons: Vec<f64> =
+        (0..size).map(|px| (x as f64 * size as f64 + px as f64 + 0.5) / span * 360.0 - 180.0).collect();
+
     for py in 0..size {
-        // longitude depends only on the column and latitude only on the row, so the row's
-        // latitude is computed once rather than per pixel
-        let (_, lat) = pixel_lonlat(z, x, y, 0, py, size);
+        let world_y = (y as f64 * size as f64 + py as f64 + 0.5) / span;
+        let lat = (std::f64::consts::PI * (1.0 - 2.0 * world_y)).sinh().atan().to_degrees();
         for px in 0..size {
-            let (lon, _) = pixel_lonlat(z, x, y, px, py, size);
+            let lon = lons[px as usize];
             let elevation = match source.sample_blended(lon, lat, target, opts.blur_m) {
                 Some(e) => {
                     covered = true;
@@ -152,13 +164,33 @@ pub fn render_tile(source: &mut CompositeSource, z: u8, x: u32, y: u32, opts: &T
     covered.then_some(rgb)
 }
 
-/// Encode an RGB buffer as lossless WebP.
+/// How hard libwebp works, on its 0-9 lossless scale.
+///
+/// Measured on real terrain tiles: 3 and 6 land within half a percent of each other and 9 is
+/// sometimes *larger*, so the extra time buys nothing. 4 is the knee.
+const WEBP_EFFORT: i32 = 4;
+
+/// Encode an RGB buffer as lossless WebP, through libwebp.
+///
+/// Not the `image` crate's own lossless encoder, which this used to call: on terrain tiles it
+/// writes 40-68% more bytes for identical pixels. Both are lossless, so the whole difference is
+/// compression, and on a z5-z13 pyramid it is the single largest lever there is - larger than the
+/// quantisation ramp, and free of any cost in quality.
 pub fn to_webp(rgb: &[u8], size: u32) -> Result<Vec<u8>> {
-    let mut out = Vec::new();
-    image::codecs::webp::WebPEncoder::new_lossless(&mut out)
-        .encode(rgb, size, size, image::ExtendedColorType::Rgb8)
-        .context("encoding webp")?;
-    Ok(out)
+    let mut config = webp::WebPConfig::new()
+        .map_err(|_| anyhow::anyhow!("libwebp rejected its own default configuration"))?;
+    // SAFETY: the config is initialised above, and the level is in the 0-9 the preset accepts
+    let ok = unsafe { libwebp_sys::WebPConfigLosslessPreset(&mut config, WEBP_EFFORT) };
+    if ok == 0 {
+        return Err(anyhow::anyhow!("libwebp rejected lossless preset {WEBP_EFFORT}"));
+    }
+    // `exact` keeps the RGB of fully transparent pixels; there is no alpha here, but elevation
+    // lives in all three channels and none of it may be approximated
+    config.exact = 1;
+    let encoded = webp::Encoder::from_rgb(rgb, size, size)
+        .encode_advanced(&config)
+        .map_err(|e| anyhow::anyhow!("encoding webp: {e:?}"))?;
+    Ok(encoded.to_vec())
 }
 
 /// Encode an RGB buffer as PNG.
@@ -174,6 +206,84 @@ pub fn to_png(rgb: &[u8], size: u32) -> Result<Vec<u8>> {
         .write_image(rgb, size, size, image::ExtendedColorType::Rgb8)
         .context("encoding png")?;
     Ok(out)
+}
+
+/// A finished tile: its column, its row, and the encoded bytes.
+pub type EncodedTile = (u32, u32, Vec<u8>);
+
+/// One renderer per worker thread, so tiles can be rendered in parallel.
+///
+/// A [`CompositeSource`] cannot be shared: every source behind it caches decoded data, and the
+/// whole sampling path takes `&mut self`. Re-opening one per tile is not an option either - that
+/// would re-read a 46 GB GeoTIFF's directory, and re-fetch a PMTiles archive's, tens of thousands
+/// of times.
+///
+/// So there is one per thread, chosen by the thread's own index. Two tasks never run on the same
+/// thread at once, so the mutex is uncontended; it is there because the borrow checker cannot see
+/// that, not because anything waits on it. Each worker also ends up walking a contiguous run of
+/// tiles - rayon splits a slice into halves - so its caches stay warm on the part of the map it
+/// is actually on.
+pub struct RenderPool {
+    sources: Vec<std::sync::Mutex<CompositeSource>>,
+}
+
+impl RenderPool {
+    /// Open `size` renderers, clamped to the number of threads rayon will actually use.
+    pub fn new(size: usize, open: impl Fn() -> Result<CompositeSource>) -> Result<Self> {
+        let size = size.clamp(1, rayon::current_num_threads());
+        let mut sources = Vec::with_capacity(size);
+        for _ in 0..size {
+            sources.push(std::sync::Mutex::new(open()?));
+        }
+        Ok(Self { sources })
+    }
+
+    pub fn len(&self) -> usize {
+        self.sources.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sources.is_empty()
+    }
+
+    /// Every renderer, for reading back what the sources did once a build is over.
+    pub fn sources(&self) -> &[std::sync::Mutex<CompositeSource>] {
+        &self.sources
+    }
+
+    /// Render and encode a batch of tiles, in parallel, returning the ones that had coverage.
+    ///
+    /// Encoding runs here too rather than in the caller: lossless WebP is a good fraction of the
+    /// work, and leaving it outside would hand it all back to one thread.
+    pub fn render(
+        &self,
+        zoom: u8,
+        tiles: &[(u32, u32)],
+        opts: &TerrainOptions,
+        format: &str,
+    ) -> Result<Vec<EncodedTile>> {
+        use rayon::prelude::*;
+        let done: Result<Vec<Option<EncodedTile>>> = tiles
+            .par_iter()
+            .map(|&(x, y)| {
+                let index = rayon::current_thread_index().unwrap_or(0) % self.sources.len();
+                let mut source = self.sources[index]
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("a renderer was left poisoned by a panic"))?;
+                let Some(rgb) = render_tile(&mut source, zoom, x, y, opts) else {
+                    return Ok(None);
+                };
+                drop(source);
+                let bytes = if format == "png" {
+                    to_png(&rgb, opts.tile_size)?
+                } else {
+                    to_webp(&rgb, opts.tile_size)?
+                };
+                Ok(Some((x, y, bytes)))
+            })
+            .collect();
+        Ok(done?.into_iter().flatten().collect())
+    }
 }
 
 /// Lon/lat box of a web-mercator tile, for deciding whether a shape touches it.
@@ -198,43 +308,6 @@ pub fn tile_range(z: u8, bounds: (f64, f64, f64, f64)) -> (u32, u32, u32, u32) {
     };
     // latitude runs the other way from tile rows
     (to_x(bounds.0), to_y(bounds.3), to_x(bounds.2), to_y(bounds.1))
-}
-
-/// Open an mbtiles for writing and lay out the schema and metadata.
-pub fn create_archive(path: &Path, name: &str, opts: &TerrainOptions, bounds: (f64, f64, f64, f64)) -> Result<Connection> {
-    if path.exists() {
-        std::fs::remove_file(path)?;
-    }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let conn = Connection::open(path)?;
-    conn.execute_batch(
-        "PRAGMA journal_mode=OFF;
-         PRAGMA synchronous=OFF;
-         CREATE TABLE metadata (name text, value text);
-         CREATE TABLE tiles (zoom_level integer, tile_column integer,
-           tile_row integer, tile_data blob);",
-    )?;
-    let encoding = match opts.encoding {
-        Encoding::Terrarium => "terrarium",
-        Encoding::Mapbox => "mapbox",
-    };
-    for (key, value) in [
-        ("name", name.to_string()),
-        ("format", "webp".into()),
-        ("type", "baselayer".into()),
-        ("version", "1".into()),
-        ("description", format!("{encoding} terrain rgb")),
-        // MapLibre needs this exact key to decode elevation from the tiles
-        ("encoding", encoding.into()),
-        ("minzoom", opts.minzoom.to_string()),
-        ("maxzoom", opts.maxzoom.to_string()),
-        ("bounds", format!("{},{},{},{}", bounds.0, bounds.1, bounds.2, bounds.3)),
-    ] {
-        conn.execute("INSERT INTO metadata VALUES (?, ?)", (key, value))?;
-    }
-    Ok(conn)
 }
 
 #[cfg(test)]
@@ -318,7 +391,7 @@ mod tests {
     fn hgt_only(dir: &std::path::Path) -> CompositeSource {
         let specs = vec![crate::terrain::source::SourceSpec {
             name: "hgt".into(), kind: "valhalla".into(),
-            path: dir.to_path_buf(), clamp_min: None, download: None
+            path: dir.to_path_buf(), clamp_min: None, download: None, ..Default::default()
         }];
         CompositeSource::open(&specs).unwrap().0
     }
@@ -340,6 +413,35 @@ mod tests {
         // around 45 degrees a z13 512-pixel tile is a few metres per pixel
         let alps = ground_resolution(13, 2963, 512);
         assert!((5.0..12.0).contains(&alps), "got {alps}");
+    }
+
+    /// The desktop form shows, beside each field, what leaving it alone will do - and then fills
+    /// an unset option from `TerrainOptions::default()`. Nothing connects the two, so they drifted:
+    /// Max zoom said 12 and an untouched build rendered z13.
+    #[test]
+    fn the_defaults_are_what_the_option_form_promises() {
+        let hints: std::collections::HashMap<String, String> =
+            crate::steps::options::terrain_options()
+                .into_iter()
+                .map(|o| (o.key, o.hint))
+                .collect();
+        let hint = |key: &str| hints.get(key).unwrap_or_else(|| panic!("no {key} option")).clone();
+        let defaults = TerrainOptions::default();
+
+        assert_eq!(hint("minzoom"), defaults.minzoom.to_string());
+        assert_eq!(hint("maxzoom"), defaults.maxzoom.to_string());
+        assert_eq!(hint("tile_size"), defaults.tile_size.to_string());
+        assert_eq!(hint("round_digits"), defaults.round_digits.to_string());
+        assert_eq!(hint("max_round_digits"), defaults.max_round_digits.to_string());
+        assert_eq!(hint("blur"), format!("{:.0}", defaults.blur_m));
+        assert_eq!(hint("nodata_elevation"), format!("{:.0}", defaults.nodata_elevation));
+        assert_eq!(
+            hint("encoding"),
+            match defaults.encoding {
+                Encoding::Mapbox => "mapbox",
+                Encoding::Terrarium => "terrarium",
+            }
+        );
     }
 
     #[test]
@@ -365,19 +467,5 @@ mod tests {
         // and it decodes back to the same pixels
         let decoded = image::load_from_memory(&webp).unwrap().to_rgb8();
         assert_eq!(decoded.as_raw().len(), rgb.len());
-    }
-
-    #[test]
-    fn archive_metadata_matches_what_the_viewer_needs() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("t_terrain.mbtiles");
-        let opts = TerrainOptions::default();
-        let conn = create_archive(&path, "t_terrain", &opts, (3.0, 44.0, 7.0, 46.0)).unwrap();
-        drop(conn);
-
-        let art = crate::catalog::probe(&path, "t");
-        assert_eq!(art.kind, crate::catalog::ArtifactKind::TerrainRgb);
-        assert_eq!(art.encoding.as_deref(), Some("terrarium"));
-        assert_eq!(art.maxzoom, Some(13));
     }
 }

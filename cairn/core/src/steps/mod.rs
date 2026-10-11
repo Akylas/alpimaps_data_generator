@@ -1,3 +1,5 @@
+pub mod archive;
+pub mod bathymap;
 pub mod download;
 pub mod elevation;
 pub mod external;
@@ -15,17 +17,19 @@ pub enum StepId {
     ElevationTiles,
     Basemap,
     Routes,
+    Bathymap,
     TerrainRgb,
     ValhallaTiles,
     ValhallaPackage,
 }
 
 /// Every step, in a stable order for listing.
-pub const ALL_STEPS: [StepId; 7] = [
+pub const ALL_STEPS: [StepId; 8] = [
     StepId::DownloadOsm,
     StepId::ElevationTiles,
     StepId::Basemap,
     StepId::Routes,
+    StepId::Bathymap,
     StepId::TerrainRgb,
     StepId::ValhallaTiles,
     StepId::ValhallaPackage,
@@ -36,6 +40,7 @@ impl StepId {
         match self {
             StepId::Basemap => "Basemap",
             StepId::Routes => "Routes",
+            StepId::Bathymap => "Bathymap",
             StepId::TerrainRgb => "Terrain RGB",
             StepId::ValhallaTiles => "Valhalla tiles",
             StepId::ValhallaPackage => "Valhalla package",
@@ -73,6 +78,14 @@ impl StepId {
                  relations, which is why it comes out a fraction of the basemap's size. It is \
                  separate because the mobile app ships and updates it separately."
             }
+            StepId::Bathymap => {
+                "Global landcover and sea-floor depth for the zooms below the basemap, so a \
+                 zoomed-out map is not empty ocean. Landcover comes from the VersaTiles/ESA \
+                 WorldCover vectors, built cumulatively - each zoom keeps what the one below it \
+                 covers - and clipped to a Natural Earth coastline; depth comes from Natural \
+                 Earth's bathymetry as nested isobaths. Independent of the OSM extract, so it \
+                 builds once and covers every area."
+            }
             StepId::TerrainRgb => {
                 "Terrarium-packed elevation from the sources in sources.json, lowest priority \
                  first, blended over `blur` metres at each source's coverage edge. The map draws \
@@ -97,6 +110,7 @@ impl StepId {
             StepId::DownloadOsm => "the network",
             StepId::ElevationTiles => "an area to cover, and the network",
             StepId::Basemap | StepId::Routes => "the OSM extract, the planetiler jar, Java 21+",
+            StepId::Bathymap => "the network, python3 with geopandas, versatiles and tippecanoe",
             StepId::TerrainRgb => "sources.json and the elevation tiles",
             StepId::ValhallaTiles => "the OSM extract, valhalla.json, the elevation tiles",
             StepId::ValhallaPackage => "the Valhalla graph, and a shape or tile list",
@@ -110,6 +124,7 @@ impl StepId {
             StepId::ElevationTiles => "elevation",
             StepId::Basemap => "basemap",
             StepId::Routes => "routes",
+            StepId::Bathymap => "bathymap",
             StepId::TerrainRgb => "terrain",
             StepId::ValhallaTiles => "valhalla-tiles",
             StepId::ValhallaPackage => "package",
@@ -119,7 +134,9 @@ impl StepId {
     /// What must have run first.
     pub fn deps(self) -> &'static [StepId] {
         match self {
-            StepId::DownloadOsm | StepId::ElevationTiles => &[],
+            // Natural Earth and the landcover container are its own downloads, and it
+            // never reads the OSM extract - so it has nothing to wait for.
+            StepId::DownloadOsm | StepId::ElevationTiles | StepId::Bathymap => &[],
             StepId::Basemap | StepId::Routes => &[StepId::DownloadOsm],
             StepId::TerrainRgb => &[StepId::ElevationTiles],
             StepId::ValhallaTiles => &[StepId::DownloadOsm, StepId::ElevationTiles],
@@ -139,6 +156,35 @@ impl StepId {
     /// directory, but the graph also refuses to schedule these concurrently.
     pub fn is_planetiler(self) -> bool {
         matches!(self, StepId::Basemap | StepId::Routes)
+    }
+
+    /// The machine-wide resource this step has to hold alone, if any.
+    ///
+    /// Areas build concurrently, which is the point - but "concurrently" cannot mean two
+    /// `valhalla_build_tiles` writing the same `valhalla_tiles/` directory, or two planetiler
+    /// JVMs each asking for the configured heap on a machine that has one of them. Steps naming
+    /// the same key queue behind each other across every area; steps naming `None` (the OSM
+    /// extract, the terrain render) write only under their own area and run freely.
+    ///
+    /// Not a lock on the step itself: the terrain render names nothing here, yet it takes
+    /// `elevation` for the stretch where it downloads `.hgt` tiles, because that directory is
+    /// shared and two runs fetching the same tile would race over one `.part` file.
+    pub fn exclusive_key(self) -> Option<&'static str> {
+        match self {
+            // one .osm.pbf per area, so two areas never touch the same file
+            StepId::DownloadOsm => None,
+            // one .hgt directory for the whole machine
+            StepId::ElevationTiles => Some("elevation"),
+            // the heap is the constraint, not the tmpdir: two 12 GB JVMs is how a build turns
+            // into a swap storm
+            StepId::Basemap | StepId::Routes => Some("planetiler"),
+            // a single shared `.cache/bathymap`, and a global output either way
+            StepId::Bathymap => Some("bathymap"),
+            // both read or write the one `valhalla_tiles/` directory in the repository
+            StepId::ValhallaTiles | StepId::ValhallaPackage => Some("valhalla"),
+            // writes only into the area's own directory
+            StepId::TerrainRgb => None,
+        }
     }
 }
 

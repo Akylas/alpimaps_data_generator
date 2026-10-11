@@ -116,6 +116,8 @@ pub struct GeoTiff {
     cache: HashMap<(usize, u64), Option<std::sync::Arc<Vec<f32>>>>,
     cache_order: Vec<(usize, u64)>,
     cache_limit: usize,
+    /// The tile the last lookup returned, to spare the inner loop a hash of its own.
+    last: Option<(usize, u64, std::sync::Arc<Vec<f32>>)>,
 }
 
 struct Reader {
@@ -226,12 +228,25 @@ impl GeoTiff {
             cache: HashMap::new(),
             cache_order: Vec::new(),
             cache_limit: 64,
+            last: None,
         })
     }
 
     /// Decode one tile into a flat grid of `f32`, with nodata mapped to NaN.
     fn tile(&mut self, level_index: usize, tile_index: u64) -> Option<std::sync::Arc<Vec<f32>>> {
+        // The four texels of a bilinear sample nearly always land in one tile, and the next pixel
+        // lands in it again - so the same key is looked up tens of times per pixel, and with the
+        // blend ring nearly a hundred. A one-entry memo takes the hash and the atomic refcount
+        // bump out of that loop; the cache below still owns the tile.
+        if let Some((level, index, grid)) = &self.last {
+            if *level == level_index && *index == tile_index {
+                return Some(grid.clone());
+            }
+        }
         if let Some(hit) = self.cache.get(&(level_index, tile_index)) {
+            if let Some(grid) = hit {
+                self.last = Some((level_index, tile_index, grid.clone()));
+            }
             return hit.clone();
         }
         let decoded = self.decode_tile(level_index, tile_index).ok().flatten().map(std::sync::Arc::new);
@@ -245,6 +260,9 @@ impl GeoTiff {
         }
         self.cache.insert((level_index, tile_index), decoded.clone());
         self.cache_order.push((level_index, tile_index));
+        if let Some(grid) = &decoded {
+            self.last = Some((level_index, tile_index, grid.clone()));
+        }
         decoded
     }
 

@@ -46,6 +46,22 @@ async function devInvoke(cmd, args) {
     }
     case "build_state":
       return (await fetch(`${DEV_BASE}/build-state/${args.area}`)).json();
+    // builds only happen inside the app, so in the browser there is never one in flight
+    case "active_runs":
+      return [];
+    case "cancel_run":
+      throw new Error("nothing running");
+    // the per-area form state lives in the app's config directory; the browser keeps its own
+    // copy so the dev UI is still usable, and the two never have to agree
+    case "get_build_config": {
+      try { return JSON.parse(localStorage.getItem(`buildConfig:${args.area}`)) ?? null; }
+      catch { return null; }
+    }
+    case "save_build_config": {
+      try { localStorage.setItem(`buildConfig:${args.area}`, JSON.stringify(args.build)); }
+      catch {}
+      return null;
+    }
     case "list_presets":
       return (await fetch(`${DEV_BASE}/presets`)).json();
     case "plan_steps": {

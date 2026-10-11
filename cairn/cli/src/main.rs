@@ -53,6 +53,8 @@ enum Command {
     Basemap(steps::planetiler::Args),
     /// Build the routes vector tiles.
     Routes(steps::planetiler::Args),
+    /// Build the global landcover and depth archive for the low zooms.
+    Bathymap(steps::bathymap::Args),
     /// Build terrain-RGB tiles from the sources in sources.json.
     Terrain(steps::terrain::Args),
     /// Build the Valhalla routing graph from the OSM extract.
@@ -85,6 +87,7 @@ async fn main() -> Result<()> {
         Command::ValhallaTiles(args) => steps::tools::valhalla_tiles(&settings, args).await,
         Command::Basemap(args) => steps::planetiler::run(&settings, args, false).await,
         Command::Routes(args) => steps::planetiler::run(&settings, args, true).await,
+        Command::Bathymap(args) => steps::bathymap::run(&settings, args).await,
         Command::Terrain(args) => steps::terrain::run(&settings, args).await,
         Command::Package(args) => steps::valhalla::package(&settings, args),
         Command::Unpack(args) => steps::valhalla::unpack(args),

@@ -70,6 +70,7 @@ impl TileFormat {
 pub enum ArtifactKind {
     Basemap,
     Routes,
+    Bathymap,
     TerrainRgb,
     Hillshade,
     ValhallaPackage,
@@ -161,10 +162,13 @@ fn split_name(area: &str, file_name: &str) -> Option<(Option<String>, String, Op
 fn kind_from_name(suffix: Option<&str>, ext: &str) -> ArtifactKind {
     match (suffix, ext) {
         (Some("routes"), _) => ArtifactKind::Routes,
+        (Some("bathymap"), _) => ArtifactKind::Bathymap,
         (Some("terrain"), _) => ArtifactKind::TerrainRgb,
         (Some("hillshade"), _) => ArtifactKind::Hillshade,
         (_, "vtiles") => ArtifactKind::ValhallaPackage,
-        (None, "mbtiles") => ArtifactKind::Basemap,
+        // PMTiles is not SQLite, so the metadata pass cannot open it and the name is all there
+        // is to go on - which is exactly the case this fallback exists for.
+        (None, "mbtiles") | (None, "pmtiles") => ArtifactKind::Basemap,
         _ => ArtifactKind::Unknown,
     }
 }
@@ -192,6 +196,8 @@ fn kind_from_metadata(format: &TileFormat, encoding: Option<&str>, layers: &[Vec
             // the routes build emits exactly one layer; the basemap emits ~19
             if layers.len() == 1 && layers[0].id == "route" {
                 Some(ArtifactKind::Routes)
+            } else if layers.iter().any(|l| l.id == "depth" || l.id == "global_landcover") {
+                Some(ArtifactKind::Bathymap)
             } else {
                 Some(ArtifactKind::Basemap)
             }
@@ -206,11 +212,65 @@ fn kind_from_metadata(format: &TileFormat, encoding: Option<&str>, layers: &[Vec
 }
 
 fn read_metadata(path: &Path) -> Result<BTreeMap<String, String>> {
+    if is_pmtiles(path) {
+        return read_pmtiles_metadata(path);
+    }
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .with_context(|| format!("opening {}", path.display()))?;
     let mut stmt = conn.prepare("SELECT name, value FROM metadata")?;
     let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+pub fn is_pmtiles(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("pmtiles"))
+}
+
+/// The same keys an mbtiles keeps in its `metadata` table, out of a PMTiles archive.
+///
+/// A PMTiles holds two descriptions of itself: a fixed header with the zoom range, the bounds and
+/// the tile type, and a free-form JSON blob with everything else. Only the JSON survives a round
+/// trip from mbtiles, so the header is read first and the JSON allowed to override it - and
+/// `format` is taken from the header's tile type, because a writer that stamped nothing still
+/// knows what it wrote.
+fn read_pmtiles_metadata(path: &Path) -> Result<BTreeMap<String, String>> {
+    use crate::terrain::pmtiles::{Archive, TileType};
+
+    let archive = Archive::open(path)?;
+    let header = archive.header();
+    let mut meta = BTreeMap::new();
+    meta.insert("minzoom".to_string(), header.min_zoom.to_string());
+    meta.insert("maxzoom".to_string(), header.max_zoom.to_string());
+    let (w, s, e, n) = header.bounds;
+    if (w, s, e, n) != (0.0, 0.0, 0.0, 0.0) {
+        meta.insert("bounds".to_string(), format!("{w},{s},{e},{n}"));
+    }
+    let format = match header.tile_type {
+        TileType::Mvt => Some("pbf"),
+        TileType::Png => Some("png"),
+        TileType::Jpeg => Some("jpg"),
+        TileType::Webp => Some("webp"),
+        TileType::Avif => Some("avif"),
+        TileType::Unknown => None,
+    };
+    if let Some(format) = format {
+        meta.insert("format".to_string(), format.to_string());
+    }
+
+    for (key, value) in archive.metadata()?.as_object().into_iter().flatten() {
+        // `json` and `vector_layers` are objects in a PMTiles and strings in an mbtiles; the rest
+        // of the catalog reads them as mbtiles spells them, so they are re-serialised
+        let text = match value {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        if key == "vector_layers" {
+            meta.insert("json".to_string(), format!("{{\"vector_layers\":{text}}}"));
+            continue;
+        }
+        meta.insert(key.clone(), text);
+    }
+    Ok(meta)
 }
 
 fn parse_layers(meta: &BTreeMap<String, String>) -> Vec<VectorLayer> {
@@ -223,6 +283,27 @@ fn parse_layers(meta: &BTreeMap<String, String>) -> Vec<VectorLayer> {
     serde_json::from_str::<Wrapper>(raw)
         .map(|w| w.vector_layers)
         .unwrap_or_default()
+}
+
+/// The same counts out of a PMTiles archive, read from its directories.
+///
+/// No tile is touched, so this is far cheaper than the mbtiles pass it stands in for. `unique` is
+/// what the header already knows: PMTiles dedups by content hash as it writes, so the difference
+/// between addressed and unique is the dedup, exactly as `tiles_data` is for a compact mbtiles.
+fn pmtiles_stats(path: &Path) -> Result<TileStats> {
+    let archive = crate::terrain::pmtiles::Archive::open(path)?;
+    let per_zoom: Vec<ZoomStat> = archive
+        .zoom_stats()?
+        .into_iter()
+        .map(|(zoom, tiles, bytes)| ZoomStat { zoom, tiles, bytes })
+        .collect();
+    Ok(TileStats {
+        addressed_tiles: per_zoom.iter().map(|z| z.tiles).sum(),
+        addressed_bytes: per_zoom.iter().map(|z| z.bytes).sum(),
+        unique_tiles: Some(archive.header().tile_contents_count),
+        unique_bytes: Some(archive.header().tile_data_length),
+        per_zoom,
+    })
 }
 
 /// Read everything cheap about one file. Does not touch the `tiles` table - see [`tile_stats`].
@@ -316,6 +397,9 @@ impl TileStats {
 
 /// Count and measure tiles. Walks the whole archive, so it is the expensive call.
 pub fn tile_stats(path: &Path) -> Result<TileStats> {
+    if is_pmtiles(path) {
+        return pmtiles_stats(path);
+    }
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .with_context(|| format!("opening {}", path.display()))?;
 
@@ -908,5 +992,27 @@ mod tests {
         assert_eq!(deltas[0].byte_change_pct(), Some(-50.0));
         assert_eq!(deltas[1].bytes_a, 0, "zoom missing from A reads as zero, not absent");
         assert_eq!(deltas[1].byte_change_pct(), None);
+    }
+
+    /// PMTiles cannot be opened as SQLite, so the name is the only classifier there is.
+    #[test]
+    fn a_pmtiles_basemap_is_recognised_by_name() {
+        assert_eq!(kind_from_name(None, "pmtiles"), ArtifactKind::Basemap);
+        assert_eq!(kind_from_name(Some("bathymap"), "pmtiles"), ArtifactKind::Bathymap);
+        assert_eq!(kind_from_name(Some("bathymap"), "mbtiles"), ArtifactKind::Bathymap);
+    }
+
+    /// The bathymap has two vector layers, so the "more than one layer means basemap" rule
+    /// would otherwise claim it.
+    #[test]
+    fn depth_layers_identify_a_bathymap() {
+        let layers = vec![
+            VectorLayer { id: "global_landcover".into(), minzoom: None, maxzoom: None, fields: Default::default() },
+            VectorLayer { id: "depth".into(), minzoom: None, maxzoom: None, fields: Default::default() },
+        ];
+        assert_eq!(
+            kind_from_metadata(&TileFormat::Mvt, None, &layers),
+            Some(ArtifactKind::Bathymap)
+        );
     }
 }

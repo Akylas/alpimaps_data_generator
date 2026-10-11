@@ -91,7 +91,9 @@ pub struct Profile {
 }
 
 pub struct TerrainSampler {
-    conn: Connection,
+    /// Exactly one of these is set, following the archive's extension.
+    conn: Option<Connection>,
+    archive: Option<Box<crate::terrain::pmtiles::Archive>>,
     encoding: Encoding,
     tile_size: u32,
     pub minzoom: u8,
@@ -101,14 +103,34 @@ pub struct TerrainSampler {
 }
 
 impl TerrainSampler {
-    /// Open a terrain-RGB archive. `encoding` falls back to the archive's `encoding` metadata.
+    /// Open a terrain-RGB archive, mbtiles or PMTiles.
+    ///
+    /// The profile reads the same archives the map draws, so it has to open both - an area built
+    /// with `--pmtiles` would otherwise show relief and then refuse to profile it.
     pub fn open(path: &Path) -> Result<Self> {
-        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .with_context(|| format!("opening {}", path.display()))?;
-        let meta: HashMap<String, String> = {
-            let mut stmt = conn.prepare("SELECT name, value FROM metadata")?;
-            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-            rows.filter_map(|r| r.ok()).collect()
+        let (archive, conn, meta) = if crate::catalog::is_pmtiles(path) {
+            let archive = crate::terrain::pmtiles::Archive::open(path)?;
+            let mut meta: HashMap<String, String> = HashMap::new();
+            meta.insert("minzoom".into(), archive.header().min_zoom.to_string());
+            meta.insert("maxzoom".into(), archive.header().max_zoom.to_string());
+            for (key, value) in archive.metadata()?.as_object().into_iter().flatten() {
+                let text = match value {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                meta.insert(key.clone(), text);
+            }
+            (Some(Box::new(archive)), None, meta)
+        } else {
+            let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .with_context(|| format!("opening {}", path.display()))?;
+            let meta: HashMap<String, String> = {
+                let mut stmt = conn.prepare("SELECT name, value FROM metadata")?;
+                let rows =
+                    stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+                rows.filter_map(|r| r.ok()).collect()
+            };
+            (None, Some(conn), meta)
         };
         let encoding = meta
             .get("encoding")
@@ -124,6 +146,7 @@ impl TerrainSampler {
             minzoom: meta.get("minzoom").and_then(|v| v.parse().ok()).unwrap_or(0),
             maxzoom: meta.get("maxzoom").and_then(|v| v.parse().ok()).unwrap_or(14),
             conn,
+            archive,
             cache: HashMap::new(),
         })
     }
@@ -143,15 +166,19 @@ impl TerrainSampler {
     }
 
     fn load_grid(&mut self, z: u8, x: u32, y: u32) -> Option<Arc<Vec<f32>>> {
-        let tms_row = (1u32 << z).checked_sub(1)?.checked_sub(y)?;
-        let blob: Vec<u8> = self
-            .conn
-            .query_row(
-                "SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?",
-                (z, x, tms_row),
-                |r| r.get(0),
-            )
-            .ok()?;
+        let blob: Vec<u8> = match (&self.archive, &self.conn) {
+            (Some(archive), _) => archive.tile(z, x, y).ok().flatten()?,
+            (None, Some(conn)) => {
+                let tms_row = (1u32 << z).checked_sub(1)?.checked_sub(y)?;
+                conn.query_row(
+                    "SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?",
+                    (z, x, tms_row),
+                    |r| r.get(0),
+                )
+                .ok()?
+            }
+            (None, None) => return None,
+        };
         let img = image::load_from_memory(&blob).ok()?.to_rgb8();
         let (w, h) = img.dimensions();
         if w != h {

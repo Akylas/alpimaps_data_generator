@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 
+use crate::cancel::Cancel;
+
 const SKADI: &str = "https://elevation-tiles-prod.s3.us-east-1.amazonaws.com/skadi";
 
 /// One 1°×1° tile: the directory it lives in and its file name.
@@ -81,6 +83,24 @@ pub async fn fetch<F>(
     root: &Path,
     tiles: &[Tile],
     gzipped: bool,
+    progress: F,
+) -> Result<(usize, usize)>
+where
+    F: FnMut(usize, usize),
+{
+    fetch_cancellable(root, tiles, gzipped, &Cancel::never(), progress).await
+}
+
+/// As [`fetch`], but stops between tiles when the run is cancelled.
+///
+/// Between tiles, not inside one: each is written through a `.part` and renamed, so giving up
+/// here leaves the directory holding whole tiles and nothing half-written. A 25 MB tile is a
+/// second or two, which is fast enough for Cancel to feel immediate.
+pub async fn fetch_cancellable<F>(
+    root: &Path,
+    tiles: &[Tile],
+    gzipped: bool,
+    cancel: &Cancel,
     mut progress: F,
 ) -> Result<(usize, usize)>
 where
@@ -88,8 +108,13 @@ where
 {
     let mut downloaded = 0;
     for (index, tile) in tiles.iter().enumerate() {
-        let outcome = fetch_one(root, tile, gzipped).await?;
-        if outcome == Fetched::Downloaded {
+        if cancel.is_cancelled() {
+            return Ok((downloaded, index));
+        }
+        let Some(outcome) = cancel.guard(fetch_one(root, tile, gzipped)).await else {
+            return Ok((downloaded, index));
+        };
+        if outcome? == Fetched::Downloaded {
             downloaded += 1;
         }
         progress(index + 1, tiles.len());
@@ -148,8 +173,21 @@ pub async fn ensure<F>(
 where
     F: FnMut(usize, usize),
 {
+    ensure_cancellable(root, bounds, &Cancel::never(), progress).await
+}
+
+/// As [`ensure`], but gives up between tiles when the run is cancelled.
+pub async fn ensure_cancellable<F>(
+    root: &Path,
+    bounds: (f64, f64, f64, f64),
+    cancel: &Cancel,
+    progress: F,
+) -> Result<(usize, usize)>
+where
+    F: FnMut(usize, usize),
+{
     let tiles = tiles_for_bounds(bounds);
-    fetch(root, &tiles, false, progress).await
+    fetch_cancellable(root, &tiles, false, cancel, progress).await
 }
 
 #[cfg(test)]

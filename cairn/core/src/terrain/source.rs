@@ -20,16 +20,20 @@
 //! its blur twice for a triangular ramp; a single ring is closer to linear, which differs in the
 //! middle of the fade and not at either end.
 
+use crate::elevation::Encoding;
+use crate::terrain::tiles::{Location, TerrainTiles, TileStats, TilesConfig};
 use crate::terrain::{geotiff::GeoTiff, hgt::HgtSource, lambert93};
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct SourceSpec {
     pub name: String,
     #[serde(rename = "type")]
     pub kind: String,
+    /// Where the data is on disk. A tiled source reached over HTTP names a `url` instead.
+    #[serde(default)]
     pub path: PathBuf,
     #[serde(default)]
     pub clamp_min: Option<f64>,
@@ -40,6 +44,34 @@ pub struct SourceSpec {
     /// nothing there, and the hole only shows up as blank terrain much later.
     #[serde(default)]
     pub download: Option<bool>,
+    /// For `xyz` and `pmtiles` sources: a `{z}/{x}/{y}` template, or a PMTiles archive to read
+    /// by byte range. mapterhorn publishes both.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// How elevation is packed into the tiles. Terrarium unless said otherwise, which is what
+    /// every public terrain pyramid serves.
+    #[serde(default)]
+    pub encoding: Option<String>,
+    /// Where fetched tiles are kept between runs. Defaults to `.cache/terrain-tiles/<name>`
+    /// beside `sources.json`; a tiled source is never read without one.
+    #[serde(default)]
+    pub cache_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub minzoom: Option<u8>,
+    #[serde(default)]
+    pub maxzoom: Option<u8>,
+    #[serde(default)]
+    pub tile_size: Option<u32>,
+}
+
+/// Whether a kind is a tile pyramid rather than a single grid.
+pub fn is_tiled(kind: &str) -> bool {
+    matches!(kind, "pmtiles" | "xyz" | "tiles")
+}
+
+/// Whether a kind reads `.hgt` files, and so needs them downloaded first.
+pub fn is_hgt(kind: &str) -> bool {
+    matches!(kind, "valhalla" | "hgt")
 }
 
 /// Read a `sources.json`, resolving relative paths against its own directory.
@@ -50,17 +82,60 @@ pub fn read_specs(path: &Path) -> Result<Vec<SourceSpec>> {
         .with_context(|| format!("parsing {}", path.display()))?;
     let root = path.parent().unwrap_or(Path::new("."));
     for spec in &mut specs {
-        if spec.path.is_relative() {
+        if spec.path.is_relative() && !spec.path.as_os_str().is_empty() {
             spec.path = root.join(&spec.path);
+        }
+        match &spec.cache_dir {
+            Some(dir) if dir.is_relative() => spec.cache_dir = Some(root.join(dir)),
+            // a tiled source with no cache would ask a public endpoint for every tile of every
+            // run, so one is given rather than left off
+            None if is_tiled(&spec.kind) => {
+                spec.cache_dir = Some(root.join(".cache/terrain-tiles").join(cache_name(&spec.name)))
+            }
+            _ => {}
         }
     }
     Ok(specs)
+}
+
+/// A source name as a directory name, with anything a path would object to replaced.
+fn cache_name(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect()
 }
 
 enum Backing {
     /// A projected raster. Currently Lambert-93 only, which is what the IGN data uses.
     Raster { tiff: Box<GeoTiff>, clamp_min: Option<f64> },
     Hgt { source: HgtSource, clamp_min: Option<f64> },
+    /// A raster tile pyramid: PMTiles, or a `{z}/{x}/{y}` endpoint.
+    Tiles { tiles: Box<TerrainTiles>, clamp_min: Option<f64> },
+}
+
+fn open_tiles(spec: &SourceSpec) -> Result<TerrainTiles> {
+    let encoding = match &spec.encoding {
+        Some(raw) => Encoding::parse(raw).ok_or_else(|| anyhow!("unknown encoding `{raw}`"))?,
+        None => Encoding::Terrarium,
+    };
+    let config = TilesConfig {
+        encoding,
+        tile_size: spec.tile_size.unwrap_or(512),
+        minzoom: spec.minzoom,
+        maxzoom: spec.maxzoom,
+        cache_dir: spec.cache_dir.clone(),
+    };
+    let target = match &spec.url {
+        Some(url) => url.clone(),
+        None => spec.path.display().to_string(),
+    };
+    if target.is_empty() {
+        return Err(anyhow!("neither a path nor a url"));
+    }
+    match spec.kind.as_str() {
+        "xyz" | "tiles" => TerrainTiles::xyz(&target, config),
+        _ => TerrainTiles::pmtiles(&Location::parse(&target), config),
+    }
 }
 
 pub struct CompositeSource {
@@ -76,11 +151,19 @@ impl CompositeSource {
         // kept in file order, lowest priority first, because blending has to accumulate in that
         // direction; the unblended path walks it backwards instead
         for spec in specs.iter() {
-            if !spec.path.exists() {
+            // a source reached over HTTP has nothing on disk to look for
+            if spec.url.is_none() && !spec.path.exists() {
                 skipped.push(format!("{} ({} missing)", spec.name, spec.path.display()));
                 continue;
             }
             match spec.kind.as_str() {
+                kind if is_tiled(kind) => match open_tiles(spec) {
+                    Ok(tiles) => sources.push((
+                        spec.name.clone(),
+                        Backing::Tiles { tiles: Box::new(tiles), clamp_min: spec.clamp_min },
+                    )),
+                    Err(e) => skipped.push(format!("{}: {e}", spec.name)),
+                },
                 "raster" => match GeoTiff::open(&spec.path) {
                     Ok(tiff) => sources.push((
                         spec.name.clone(),
@@ -119,8 +202,24 @@ impl CompositeSource {
             Backing::Hgt { source, clamp_min } => {
                 source.sample(lon, lat).map(|v| clamp(v, *clamp_min))
             }
+            Backing::Tiles { tiles, clamp_min } => tiles
+                .sample(lon, lat, target_m_per_px)
+                .map(|v| clamp(v, *clamp_min)),
         };
         value.filter(|v| v.is_finite())
+    }
+
+    /// What each tiled source did, and whether any tile went unread. A hole in a terrain archive
+    /// is invisible until someone looks at that part of the map, so it is said out loud instead.
+    pub fn reports(&self) -> Vec<(String, TileStats)> {
+        self.sources
+            .iter()
+            .rev()
+            .filter_map(|(name, backing)| match backing {
+                Backing::Tiles { tiles, .. } => Some((name.clone(), tiles.stats())),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Fraction of a ring of radius `blur_m` around the point where this source has data.
@@ -234,9 +333,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let specs = vec![
             SourceSpec { name: "ign".into(), kind: "raster".into(),
-                         path: dir.path().join("absent.tif"), clamp_min: None , download: None},
+                         path: dir.path().join("absent.tif"), clamp_min: None , download: None, ..Default::default()},
             SourceSpec { name: "tilezen".into(), kind: "valhalla".into(),
-                         path: dir.path().to_path_buf(), clamp_min: Some(-10.0) , download: None},
+                         path: dir.path().to_path_buf(), clamp_min: Some(-10.0) , download: None, ..Default::default()},
         ];
         let (composite, skipped) = CompositeSource::open(&specs).unwrap();
         assert_eq!(composite.names(), vec!["tilezen"]);
@@ -249,7 +348,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let specs = vec![SourceSpec {
             name: "weird".into(), kind: "netcdf".into(),
-            path: dir.path().to_path_buf(), clamp_min: None, download: None
+            path: dir.path().to_path_buf(), clamp_min: None, download: None, ..Default::default()
         }];
         let (composite, skipped) = CompositeSource::open(&specs).unwrap();
         assert!(composite.names().is_empty());
@@ -269,9 +368,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let specs = vec![
             SourceSpec { name: "low".into(), kind: "valhalla".into(),
-                         path: dir.path().to_path_buf(), clamp_min: None , download: None},
+                         path: dir.path().to_path_buf(), clamp_min: None , download: None, ..Default::default()},
             SourceSpec { name: "high".into(), kind: "valhalla".into(),
-                         path: dir.path().to_path_buf(), clamp_min: None , download: None},
+                         path: dir.path().to_path_buf(), clamp_min: None , download: None, ..Default::default()},
         ];
         let (composite, _) = CompositeSource::open(&specs).unwrap();
         assert_eq!(composite.names(), vec!["high", "low"], "highest priority is consulted first");
@@ -292,9 +391,9 @@ mod tests {
 
         let specs = vec![
             SourceSpec { name: "low".into(), kind: "valhalla".into(),
-                         path: low.path().to_path_buf(), clamp_min: None , download: None},
+                         path: low.path().to_path_buf(), clamp_min: None , download: None, ..Default::default()},
             SourceSpec { name: "high".into(), kind: "valhalla".into(),
-                         path: high.path().to_path_buf(), clamp_min: None , download: None},
+                         path: high.path().to_path_buf(), clamp_min: None , download: None, ..Default::default()},
         ];
         let (mut c, _) = CompositeSource::open(&specs).unwrap();
         let blur = 2000.0;
@@ -321,9 +420,9 @@ mod tests {
         std::fs::write(high.path().join("N44E006.hgt"), flat(9, 200)).unwrap();
         let specs = vec![
             SourceSpec { name: "low".into(), kind: "valhalla".into(),
-                         path: low.path().to_path_buf(), clamp_min: None , download: None},
+                         path: low.path().to_path_buf(), clamp_min: None , download: None, ..Default::default()},
             SourceSpec { name: "high".into(), kind: "valhalla".into(),
-                         path: high.path().to_path_buf(), clamp_min: None , download: None},
+                         path: high.path().to_path_buf(), clamp_min: None , download: None, ..Default::default()},
         ];
         let (mut c, _) = CompositeSource::open(&specs).unwrap();
         assert_eq!(c.sample_blended(6.5, 44.5, 30.0, 0.0), Some(200.0));
@@ -336,7 +435,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("N44E006.hgt"), flat(9, 200)).unwrap();
         let specs = vec![SourceSpec { name: "only".into(), kind: "valhalla".into(),
-                                      path: dir.path().to_path_buf(), clamp_min: None , download: None}];
+                                      path: dir.path().to_path_buf(), clamp_min: None , download: None, ..Default::default()}];
         let (mut c, _) = CompositeSource::open(&specs).unwrap();
         assert_eq!(c.coverage_weight(0, 20.0, 20.0, 30.0, 2000.0), 0.0);
         assert_eq!(c.coverage_weight(0, 6.5, 44.5, 30.0, 2000.0), 1.0, "deep inside is full weight");
@@ -354,9 +453,9 @@ mod tests {
 
         let specs = vec![
             SourceSpec { name: "absent-raster".into(), kind: "raster".into(),
-                         path: dir.path().join("nope.tif"), clamp_min: None , download: None},
+                         path: dir.path().join("nope.tif"), clamp_min: None , download: None, ..Default::default()},
             SourceSpec { name: "hgt".into(), kind: "valhalla".into(),
-                         path: dir.path().to_path_buf(), clamp_min: None , download: None},
+                         path: dir.path().to_path_buf(), clamp_min: None , download: None, ..Default::default()},
         ];
         let (mut composite, _) = CompositeSource::open(&specs).unwrap();
         assert_eq!(composite.sample(6.5, 44.5, 30.0), Some(700.0));

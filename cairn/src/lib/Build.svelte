@@ -27,7 +27,7 @@
       jar = await invoke("download_planetiler");
       jarDefault = jar;
     } catch (err) {
-      lines = [...lines, `ERROR: ${err}`];
+      stateFor(area).lines = [...cur.lines, `ERROR: ${err}`];
     } finally {
       off();
       fetching = null;
@@ -49,34 +49,41 @@
   /// Free-text arguments per step, for the flags this app has no form for.
   let extraArgs = $state({});
 
-  let running = $state(false);
-  let phase = $state("");
-  let label = $state("");
-  let percent = $state(0);
-  let lines = $state([]);
-  /** The subprocess argv per step, from the `command` event. */
-  let commands = $state({});
+  /**
+   * Run state per area, keyed by area name.
+   *
+   * It used to be one set of fields for the whole view. With one build at a time that was merely
+   * confusing - switching area mid-run left europe's log scrolling under rhone-alpes' name - and
+   * now that areas build concurrently it would be wrong outright: two runs would overwrite each
+   * other's progress, and Cancel would have no way to say which one it meant.
+   */
+  let runState = $state({});
+  const BLANK = {
+    running: false, phase: "", label: "", percent: 0, runningStep: null,
+    lines: [], commands: {}, results: [], status: {}, runError: "", done: null,
+    /// Cancel has been pressed; the run is stopping at its next checkpoint.
+    cancelling: false,
+    /// The shared resource this run is queued behind, when it is waiting rather than working.
+    waitingFor: null,
+  };
+  function stateFor(name) {
+    if (!runState[name]) {
+      runState[name] = { ...BLANK, lines: [], commands: {}, results: [], status: {} };
+    }
+    return runState[name];
+  }
+  /** The selected area's run. Everything the progress panel draws reads from here. */
+  let cur = $derived(runState[area] ?? BLANK);
+  let running = $derived(cur.running);
   /// How much of the log is rendered. The whole buffer is kept and copied; painting all of it
   /// would rebuild a megabyte-sized text node on every progress line.
   const TAIL = 2000;
-  let results = $state([]);
-  /** Per-step live state, keyed by step id: what is running, what finished, how it went. */
-  let status = $state({});
-  let runningStep = $state(null);
   /** What is on disk, per step: the app never decides "already built" from a record alone. */
   let built = $state({});
   let force = $state(new Set());
   let forceAll = $state(false);
-  /** Why a run refused to start, surfaced next to Run rather than only in the log. */
-  let runError = $state("");
-  /**
-   * How the last run ended, kept on screen after it stops.
-   *
-   * The backend also raises a desktop notification, which is what reaches someone who walked
-   * away from an hour-long basemap. This is the same news for someone still looking at the
-   * window - without it a finished run looks identical to one that never started.
-   */
-  let done = $state(null);
+  /** Builds running in other areas, so switching away from one does not mean losing it. */
+  let elsewhere = $state([]);
 
   onMount(async () => {
     await detect();
@@ -90,27 +97,73 @@
       // areas come from the output root, not just the config: a half-finished build is in the
       // output root and nowhere else, which is exactly when this view is needed
       areas = defaults.areas ?? [];
-      area = areas[0] ?? settings.areas?.[0]?.name ?? "";
-      steps = await invoke("list_steps", { area });
+      steps = await invoke("list_steps", { area: areas[0] ?? "" });
       presets = await invoke("list_presets");
       defaultPreset = await invoke("default_preset_name");
       for (const s of steps) {
         optionDefs[s.id] = await invoke("step_options", { step: s.id });
-        // Seed from the default preset rather than leaving the form blank. cairn is here to
-        // rebuild this repository's tiles, so the fields should show the values that will
-        // actually be used - a blank form that silently builds something else is a trap.
-        const seed = presets.find((p) => p.step === s.id && p.name === defaultPreset);
-        values[s.id] = seed ? { ...seed.values } : {};
       }
-      selected = new Set(["basemap"]);
-      await replan();
-      await refreshBuilt();
+      await selectArea(areas[0] ?? settings.areas?.[0]?.name ?? "");
     } catch (err) {
       javaError = String(err);
     }
     const off = await listen("step", (e) => onEvent(e.payload));
-    return () => off();
+    // a run already in flight when this view mounts - the window was reloaded, or the build was
+    // started and the tab left - would otherwise look like no run at all
+    await adoptRuns();
+    const offRuns = await listen("runs-changed", adoptRuns);
+    return () => { off(); offRuns(); };
   });
+
+  /**
+   * Pick up what the backend says is running, for runs this view did not start.
+   *
+   * Only the coarse state: the log lines it missed are gone, and inventing them would be worse
+   * than a panel that starts from the current step.
+   */
+  async function adoptRuns() {
+    let active = [];
+    try { active = await invoke("active_runs"); }
+    catch { active = []; }
+    elsewhere = active.filter((r) => r.area !== area);
+    for (const run of active) {
+      const state = stateFor(run.area);
+      state.running = true;
+      state.cancelling = run.cancelling;
+      state.waitingFor = run.waitingFor ?? null;
+      state.runningStep = run.step ?? state.runningStep;
+      if (run.step) {
+        state.phase = run.phase || state.phase;
+        state.label = run.label || state.label;
+        state.percent = run.percent ?? state.percent;
+      }
+      for (const id of run.planned ?? []) {
+        if (!state.status[id]) state.status[id] = { state: "queued" };
+      }
+      for (const id of run.completed ?? []) {
+        // the snapshot counts a skipped step as completed, so what this view watched happen
+        // wins: "skipped · already on disk" is the more useful of the two
+        const known = state.status[id]?.state;
+        if (!known || known === "queued") {
+          state.status[id] = { ...(state.status[id] ?? {}), state: "done", percent: 100 };
+        }
+      }
+      if (run.step) {
+        state.status[run.step] = {
+          ...(state.status[run.step] ?? {}),
+          state: "running", phase: run.phase, percent: run.percent,
+        };
+      }
+    }
+    // a run this view believed in that the backend no longer has is over
+    for (const [name, state] of Object.entries(runState)) {
+      if (state.running && !active.some((r) => r.area === name)) {
+        state.running = false;
+        state.cancelling = false;
+        state.waitingFor = null;
+      }
+    }
+  }
 
   async function detect() {
     javaError = "";
@@ -129,6 +182,111 @@
     if (!area) return;
     try { built = await invoke("build_state", { area, values }); }
     catch { built = {}; }
+  }
+
+  /// True while a stored configuration is being poured into the form, so restoring one does not
+  /// immediately save itself back.
+  let loading = $state(false);
+
+  /**
+   * Switch to another area, saving the one being left and restoring the one being opened.
+   *
+   * An area's options are part of what the area *is* - europe is not built at rhone-alpes'
+   * maxzoom - so they are stored per area rather than as one global form. Without this every
+   * launch, and every area switch, silently reset the form to the default preset while the
+   * fields still looked deliberate.
+   */
+  async function selectArea(next) {
+    flushSave();
+    area = next;
+    loading = true;
+    try {
+      let stored = null;
+      try { stored = await invoke("get_build_config", { area: next }); }
+      catch { stored = null; }
+      applyConfig(stored);
+      // what was just restored is what is stored, so the form does not save itself back the
+      // instant it is filled in
+      lastSaved = JSON.stringify(formState());
+    } finally {
+      loading = false;
+    }
+    // `writes` in each step's description is resolved for the area, so the list is re-read
+    try { steps = await invoke("list_steps", { area: next }); } catch {}
+    await replan();
+    await refreshBuilt();
+    elsewhere = elsewhere.filter((r) => r.area !== next);
+  }
+
+  /** Seed every step's options from the default preset - the form's state with nothing stored. */
+  function seededValues() {
+    const seeded = {};
+    for (const s of steps) {
+      // cairn is here to rebuild this repository's tiles, so the fields should show the values
+      // that will actually be used - a blank form that silently builds something else is a trap
+      const seed = presets.find((p) => p.step === s.id && p.name === defaultPreset);
+      seeded[s.id] = seed ? { ...seed.values } : {};
+    }
+    return seeded;
+  }
+
+  function applyConfig(stored) {
+    const seeded = seededValues();
+    // `force` and `force all` are deliberately never restored: they delete and rebuild hours of
+    // output, and a switch that silently re-arms them is not a setting, it is a trap
+    force = new Set();
+    forceAll = false;
+    if (!stored) {
+      values = seeded;
+      selected = new Set(["basemap"]);
+      extraArgs = {};
+      schemaMode = "bundled";
+      schemaYaml = "";
+      return;
+    }
+    // a step added to the graph since this area was last configured still gets the preset's
+    // values rather than an empty form
+    values = { ...seeded, ...(stored.values ?? {}) };
+    selected = new Set(stored.steps ?? []);
+    extraArgs = { ...(stored.extraArgs ?? {}) };
+    schemaMode = stored.schemaMode ?? "bundled";
+    schemaYaml = stored.schemaYaml ?? "";
+    if (stored.jar) jar = stored.jar;
+  }
+
+  /// Written through on a short delay: the form changes on every keystroke, and each save
+  /// rewrites the whole file.
+  let saveTimer = null;
+  let lastSaved = "";
+
+  /** Exactly what gets stored, so "has it changed?" is one comparison and not a guess. */
+  function formState() {
+    return {
+      steps: [...selected], values, extraArgs,
+      // never stored, so a restored area cannot silently re-arm a rebuild
+      force: [], forceAll: false,
+      schemaMode, schemaYaml, jar: jar || null,
+    };
+  }
+
+  function scheduleSave() {
+    if (loading || !area) return;
+    // the stringify is also what makes the effect calling this track a value three levels down
+    if (JSON.stringify(formState()) === lastSaved) return;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => flushSave(), 400);
+  }
+
+  /** Write now rather than in 400ms - used when leaving an area, which is when it would be lost. */
+  function flushSave() {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    if (loading || !area) return;
+    const build = formState();
+    const serialised = JSON.stringify(build);
+    if (serialised === lastSaved) return;
+    lastSaved = serialised;
+    invoke("save_build_config", { area, build }).catch(() => {});
   }
 
   /** Delete what a step produced. That, not a record, is what makes it run again. */
@@ -163,7 +321,7 @@
     force = next;
   }
 
-  /// Seven steps in one flat list is how someone ends up running the basemap without the
+  /// Eight steps in one flat list is how someone ends up running the basemap without the
   /// extract it reads. Grouping by what a step produces puts the prerequisites above the
   /// things that consume them, and gives the eye something to land on other than seven
   /// identical rows.
@@ -182,7 +340,7 @@
       note: "what the map renders",
       // stacked layers
       icon: "M2 5.2 8 2.2l6 3-6 3-6-3Zm0 3.4 6 3 6-3M2 11.6l6 3 6-3",
-      steps: ["basemap", "routes", "terrain_rgb"],
+      steps: ["basemap", "routes", "bathymap", "terrain_rgb"],
     },
     {
       id: "routing",
@@ -210,8 +368,8 @@
       .map((g) => ({
         ...g,
         chosen: g.items.filter((s) => selected.has(s.id) || planned.includes(s.id)).length,
-        active: g.items.some((s) => status[s.id]?.state === "running"),
-        broken: g.items.some((s) => status[s.id]?.state === "failed"),
+        active: g.items.some((s) => cur.status[s.id]?.state === "running"),
+        broken: g.items.some((s) => cur.status[s.id]?.state === "failed"),
       }));
   });
 
@@ -276,7 +434,7 @@
 
   async function reveal(path) {
     try { await invoke("reveal", { path }); }
-    catch (err) { lines = [...lines, `ERROR: ${err}`]; }
+    catch (err) { stateFor(area).lines = [...cur.lines, `ERROR: ${err}`]; }
   }
 
   /// Steps whose description is showing. The prose comes from the backend, so the graph and
@@ -301,67 +459,82 @@
   async function copyLog() {
     try {
       // the commands go with it: a pasted log without them cannot be diagnosed
-      const head = Object.entries(commands).map(([step, argv]) => `$ ${argv.join(" ")}`);
-      await navigator.clipboard.writeText([...head, "", ...lines].join("\n"));
+      const head = Object.values(cur.commands).map((argv) => `$ ${argv.join(" ")}`);
+      await navigator.clipboard.writeText([...head, "", ...cur.lines].join("\n"));
       logCopied = true;
       setTimeout(() => (logCopied = false), 1200);
     } catch {}
   }
 
   let summaryLine = $derived.by(() => {
-    if (!results.length) return "";
-    const bad = results.filter((r) => !r.ok).length;
-    return bad ? `${bad} of ${results.length} failed` : `${results.length} finished`;
+    if (!cur.results.length) return "";
+    const bad = cur.results.filter((r) => !r.ok).length;
+    return bad ? `${bad} of ${cur.results.length} failed` : `${cur.results.length} finished`;
   });
 
-  function mark(step, patch) {
-    status = { ...status, [step]: { ...(status[step] ?? {}), ...patch } };
+  function mark(state, step, patch) {
+    state.status = { ...state.status, [step]: { ...(state.status[step] ?? {}), ...patch } };
   }
 
+  /// Events carry the area they came from, so one arriving while another area is on screen
+  /// updates that area's panel and leaves this one alone.
   function onEvent(ev) {
+    const state = stateFor(ev.area);
     switch (ev.event) {
       case "started":
-        running = true; phase = "starting"; runningStep = ev.step;
-        mark(ev.step, { state: "running", percent: 0, phase: "starting" });
+        state.running = true; state.phase = "starting"; state.runningStep = ev.step;
+        state.waitingFor = null;
+        mark(state, ev.step, { state: "running", percent: 0, phase: "starting" });
         break;
       case "phase":
-        phase = ev.name;
-        mark(ev.step, { phase: ev.name });
+        state.phase = ev.name;
+        mark(state, ev.step, { phase: ev.name });
         break;
       case "progress":
-        label = ev.label; percent = ev.percent;
-        mark(ev.step, { percent: ev.percent, label: ev.label });
+        state.label = ev.label; state.percent = ev.percent;
+        mark(state, ev.step, { percent: ev.percent, label: ev.label });
         break;
       case "command":
         // kept out of `lines` so it cannot scroll away: this is the record of which jar ran
         // and which flags reached it, which is the first thing to check when the output looks
         // like an older schema
-        commands = { ...commands, [ev.step]: ev.argv };
+        state.commands = { ...state.commands, [ev.step]: ev.argv };
         break;
       // 20k lines is about an hour of planetiler at a 1s log interval. It used to be 400,
       // which threw away the start of the run - including the command line - within seconds.
-      case "log": lines = [...lines.slice(-20000), ev.line]; break;
+      case "log":
+        state.lines = [...state.lines.slice(-20000), ev.line];
+        // the backend says so before it starts waiting; it is the difference between a step
+        // that is queued and one that has hung
+        if (ev.line.startsWith("waiting: ")) state.waitingFor = ev.line.slice(9);
+        break;
       case "finished":
-        results = [...results, ev];
-        runningStep = null;
-        mark(ev.step, { state: ev.ok ? "done" : "failed", elapsed: ev.elapsed, percent: 100 });
-        refreshBuilt();
+        state.results = [...state.results, ev];
+        state.runningStep = null;
+        mark(state, ev.step, { state: ev.ok ? "done" : "failed", elapsed: ev.elapsed, percent: 100 });
+        if (ev.area === area) refreshBuilt();
         break;
       case "skipped":
-        mark(ev.step, { state: "skipped", reason: ev.reason });
+        mark(state, ev.step, { state: "skipped", reason: ev.reason });
         break;
     }
   }
 
   async function run() {
-    running = true; lines = []; results = []; percent = 0; runError = ""; done = null; commands = {};
+    // captured: `area` is a moving target once a run can outlive the selection that started it
+    const at = area;
+    const state = stateFor(at);
+    Object.assign(state, {
+      ...BLANK, running: true,
+      lines: [], commands: {}, results: [],
+      // queued up front, so the list reads as a plan rather than filling in as it goes
+      status: Object.fromEntries(planned.map((id) => [id, { state: "queued" }])),
+    });
     const attempted = [...planned];
-    // queued up front, so the list reads as a plan rather than filling in as it goes
-    status = Object.fromEntries(planned.map((id) => [id, { state: "queued" }]));
     try {
       await invoke("run_steps", {
         req: {
-          area, steps: [...selected], values, extraArgs,
+          area: at, steps: [...selected], values, extraArgs,
           schemaYaml: schemaMode === "yaml" ? schemaYaml : null,
           jar: jar || null,
           force: [...force],
@@ -371,33 +544,54 @@
     } catch (err) {
       // shown beside the button as well as logged: a run refused up front produces no
       // events at all, so the log alone leaves the UI looking simply inert
-      runError = String(err);
-      lines = [...lines, `ERROR: ${err}`];
+      state.runError = String(err);
+      state.lines = [...state.lines, `ERROR: ${err}`];
     } finally {
-      running = false;
-      await refreshBuilt();
+      state.running = false;
+      state.cancelling = false;
+      state.waitingFor = null;
+      if (at === area) await refreshBuilt();
       onFinished?.();
-      done = outcome(attempted);
+      await adoptRuns();
+      state.done = outcome(state, attempted);
       // the map is where a finished build is actually inspected, and it is two clicks away at
-      // the moment the log stops moving. Only for runs that produced something drawable.
-      if (done.ok && attempted.some((id) => MAPPABLE.includes(id))) onShowOnMap?.(area);
+      // the moment the log stops moving. Only for runs that produced something drawable, and
+      // only for the area actually on screen - yanking the view to a build that finished in the
+      // background is not help.
+      if (state.done.ok && at === area && attempted.some((id) => MAPPABLE.includes(id))) {
+        onShowOnMap?.(at);
+      }
     }
+  }
+
+  async function cancel(which = area) {
+    const state = stateFor(which);
+    state.cancelling = true;
+    try { await invoke("cancel_run", { area: which }); }
+    catch (err) { state.lines = [...state.lines, `ERROR: ${err}`]; state.cancelling = false; }
   }
 
   /// Read the run's result off the per-step state rather than the `finished` events alone:
   /// a step that was skipped because its output was already there never emits one.
-  function outcome(attempted) {
-    const of = (state) => attempted.filter((id) => status[id]?.state === state);
+  function outcome(state, attempted) {
+    const of = (want) => attempted.filter((id) => state.status[id]?.state === want);
     const failed = of("failed");
-    const untouched = attempted.filter((id) => !["done", "skipped", "failed"].includes(status[id]?.state));
+    const untouched = attempted.filter(
+      (id) => !["done", "skipped", "failed"].includes(state.status[id]?.state),
+    );
     return {
-      ok: !runError && !failed.length && !untouched.length,
+      ok: !state.runError && !failed.length && !untouched.length,
       built: of("done"),
       skipped: of("skipped"),
       failed,
       stopped: untouched,
-      note: runError,
+      note: state.runError,
     };
+  }
+
+  /// Let the run list open the area a background build belongs to.
+  export function showArea(name) {
+    if (name && name !== area) selectArea(name);
   }
 
   function groupsFor(step) {
@@ -440,6 +634,12 @@
     buildConfig.defs = optionDefs;
     buildConfig.extra = extraArgs;
   });
+
+  // Remember the form, per area.
+  $effect(() => {
+    scheduleSave();
+  });
+
   let ready = $derived(java && (jar || jarDefault) && area && selected.size && !running);
 </script>
 
@@ -461,12 +661,13 @@
   <div class="pair">
     <label>Area
       {#if areas.length}
-        <select value={area} onchange={(e) => { area = e.target.value; refreshBuilt(); }}>
+        <select value={area} onchange={(e) => selectArea(e.target.value)}>
           {#each areas as a}<option value={a}>{a}</option>{/each}
           {#if !areas.includes(area)}<option value={area}>{area}</option>{/if}
         </select>
       {:else}
-        <input bind:value={area} placeholder="rhone-alpes" onchange={refreshBuilt} />
+        <input value={area} placeholder="rhone-alpes"
+               onchange={(e) => selectArea(e.target.value)} />
       {/if}
     </label>
     <label>Planetiler jar
@@ -510,7 +711,7 @@
       </h3>
   <ul class="steplist">
     {#each g.items as s}
-      {@const st = status[s.id] ?? {}}
+      {@const st = cur.status[s.id] ?? {}}
       {@const auto = !selected.has(s.id) && planned.includes(s.id)}
       {@const disk = built[s.id]}
       <li class="steprow" class:on={selected.has(s.id)} class:auto>
@@ -607,17 +808,42 @@
     <button onclick={run} disabled={!ready}>
       {running ? "Running…" : `Run ${planned.length || ""}`}
     </button>
-    <button class="ghost" onclick={() => invoke("cancel_run")} disabled={!running}>Cancel</button>
+    <button class="ghost" onclick={() => cancel()} disabled={!running || cur.cancelling}>
+      {cur.cancelling ? "Cancelling…" : "Cancel"}
+    </button>
     {#if planned.length}
       <span class="plan">{planned.map(labelFor).join(" → ")}</span>
     {/if}
   </div>
 
-  {#if runError}
-    <p class="warn runerr">{runError}</p>
+  {#if cur.waitingFor}
+    <p class="warn runerr">
+      Queued: another area is using <code>{cur.waitingFor}</code>. It starts when that one lets go.
+    </p>
   {/if}
 
-  {#if done && !running}
+  <!-- Areas build at the same time now, so the one on screen is not the only one that matters.
+       Without this, switching away from a running build is indistinguishable from it stopping. -->
+  {#if elsewhere.length}
+    <div class="othersbar">
+      {#each elsewhere as r}
+        <button class="other" onclick={() => selectArea(r.area)}
+                title={`open ${r.area}`}>
+          <span class="dot live"></span>
+          <strong>{r.area}</strong>
+          <span>{r.step ? labelFor(r.step) : "starting"}{r.waitingFor ? " · queued" : ""}</span>
+          <span class="pctinline">{r.percent ?? 0}%</span>
+        </button>
+      {/each}
+    </div>
+  {/if}
+
+  {#if cur.runError}
+    <p class="warn runerr">{cur.runError}</p>
+  {/if}
+
+  {#if cur.done && !running}
+    {@const done = cur.done}
     <div class="done" class:bad={!done.ok}>
       <span class="dot"></span>
       <div class="what">
@@ -639,23 +865,25 @@
       {#if done.built.length || done.skipped.length}
         <button class="ghost" onclick={() => onShowOnMap?.(area)}>Show on map</button>
       {/if}
-      <button class="ghost tiny" onclick={() => (done = null)} title="dismiss">×</button>
+      <button class="ghost tiny" onclick={() => (stateFor(area).done = null)} title="dismiss">×</button>
     </div>
   {/if}
 
   <!-- progress belongs with the button that starts it: as its own section it sat below every
        per-step options panel, off the bottom of the window, so a run that failed instantly
        looked like a run that did nothing -->
-  {#if running || lines.length || results.length}
+  {#if running || cur.lines.length || cur.results.length}
     <div class="progress">
       <div class="phead">
-        <span class="pstep">{running ? `${labelFor(runningStep) || ""} · ${phase}` : summaryLine}</span>
-        <span class="pct">{percent}%</span>
+        <span class="pstep">
+          {running ? `${area} · ${labelFor(cur.runningStep) || ""} · ${cur.phase}` : summaryLine}
+        </span>
+        <span class="pct">{cur.percent}%</span>
       </div>
-      <div class="bar big"><div class="fill" style="width:{percent}%"></div></div>
-      <p class="muted small">{label || phase}</p>
+      <div class="bar big"><div class="fill" style="width:{cur.percent}%"></div></div>
+      <p class="muted small">{cur.label || cur.phase}</p>
 
-      {#each Object.entries(commands) as [step, argv]}
+      {#each Object.entries(cur.commands) as [step, argv]}
         <!-- open: seeing which flags reached planetiler is the point of keeping it -->
         <details class="group cmd" open>
           <summary>
@@ -668,15 +896,15 @@
         </details>
       {/each}
 
-      <details class="group" open={results.some((r) => !r.ok)}>
+      <details class="group" open={cur.results.some((r) => !r.ok)}>
         <summary>
-          Log <span class="lines">{lines.length} lines</span>
+          Log <span class="lines">{cur.lines.length} lines</span>
           <button class="ghost tiny" onclick={(e) => { e.preventDefault(); copyLog(); }}>
             {logCopied ? "copied" : "copy"}
           </button>
         </summary>
-        <pre>{#if lines.length > TAIL}… {lines.length - TAIL} earlier lines, in `copy`
-{/if}{lines.slice(-TAIL).join("\n")}</pre>
+        <pre>{#if cur.lines.length > TAIL}… {cur.lines.length - TAIL} earlier lines, in `copy`
+{/if}{cur.lines.slice(-TAIL).join("\n")}</pre>
       </details>
     </div>
   {/if}
@@ -815,6 +1043,17 @@
   .cmd .argv { max-height: 320px; color: var(--text-3); font-size: 11px; white-space: pre;
                word-break: normal; }
   .lines { color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
+  /* builds in other areas: one row each, and clicking one goes there */
+  .othersbar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .other { display: flex; align-items: center; gap: 7px; background: var(--surface-2);
+           border: 1px solid var(--line-2); border-radius: var(--r); padding: 5px 9px;
+           color: var(--text-2); font-size: 11.5px; }
+  .other:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+  .other strong { font-weight: 600; color: var(--text); }
+  .other .dot.live { width: 7px; height: 7px; border-radius: 50%; background: var(--ok);
+                     animation: pulse 1.6s ease-in-out infinite; }
+  .pctinline { color: var(--muted-2); font-variant-numeric: tabular-nums; }
+  @keyframes pulse { 50% { opacity: .35; } }
   .steprow { display: flex; align-items: center; gap: 8px; padding: 6px 8px;
              border-radius: var(--r); position: relative; }
   .steprow:hover { background: var(--surface-2); }
