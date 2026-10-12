@@ -7,10 +7,10 @@
 # The release carries the app bundles and the `cairn` command line packaged on its own per
 # platform - same binary, without the app around it.
 #
-# The build itself lives in cairn-build.yml, which can also be run on its own to get the same
+# The build itself lives in build.yml, which can also be run on its own to get the same
 # bundles as workflow artifacts without cutting a version.
 #
-# npm rather than yarn, because that is what cairn/ uses.
+# npm rather than yarn, because that is what the app uses.
 name: Cairn release
 
 on:
@@ -53,7 +53,6 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
-      # the root package.json carries only the release tooling; the app has its own
       - name: Install release tooling
         run: npm ci
 
@@ -85,7 +84,7 @@ jobs:
 
       # A tag push arrives with the version already decided and written down. A manual run has
       # neither, so it cuts the release here: standard-version bumps the root package.json, the
-      # Cargo workspace and tauri.conf.json (see .versionrc.js), writes the CHANGELOG entry the
+      # Cargo workspace and tauri.conf.json (see "standard-version" in package.json), writes the CHANGELOG entry the
       # next step goes looking for, commits and tags.
       #
       # Pushing with GITHUB_TOKEN does not start another workflow run, so the `v*` tag this
@@ -158,7 +157,7 @@ jobs:
 
   build:
     needs: create-release
-    uses: ./.github/workflows/cairn-build.yml
+    uses: ./.github/workflows/build.yml
     with:
       version: ${{ needs.create-release.outputs.RELEASE_TAG }}
       release_id: ${{ needs.create-release.outputs.RELEASE_UPLOAD_ID }}

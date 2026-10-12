@@ -1,6 +1,6 @@
 # Build Cairn, for a release or just to try it.
 #
-# One definition, two callers: `cairn-release.yml` calls it with a tag and a draft release to
+# One definition, two callers: `release.yml` calls it with a tag and a draft release to
 # attach to, and a manual run builds the same thing and leaves the results as workflow artifacts.
 # A test build creates no tag, no release and no version bump - it exists so a branch can be
 # built and handed to someone without cutting a version for it.
@@ -224,7 +224,7 @@ jobs:
           # restore-keys means a miss still restores the newest tree for this platform. CMake
           # reconfigures if the flags moved, make rebuilds what the submodule changed, and
           # ccache answers most of the rest.
-          key: valhalla-${{ matrix.platform }}-${{ hashFiles('.github/workflows/cairn-build.yml') }}-${{ steps.revs.outputs.valhalla }}
+          key: valhalla-${{ matrix.platform }}-${{ hashFiles('.github/workflows/build.yml') }}-${{ steps.revs.outputs.valhalla }}
           restore-keys: |
             valhalla-${{ matrix.platform }}-
 
@@ -336,10 +336,9 @@ jobs:
         with:
           node-version: lts/*
           cache: npm
-          cache-dependency-path: cairn/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install deps
-        working-directory: cairn
         run: npm ci
 
       - name: Rust setup
@@ -347,12 +346,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "cairn -> target"
+          workspaces: ". -> target"
 
       # A release that silently loses routing is worse than one that fails, and the only way to
       # tell from outside is to ask.
       - name: Fail if Valhalla did not link
-        working-directory: cairn
         env:
           VALHALLA_DIR: ${{ github.workspace }}/valhalla
         run: |
@@ -365,7 +363,6 @@ jobs:
           fi
 
       - name: Test the core
-        working-directory: cairn
         env:
           VALHALLA_DIR: ${{ github.workspace }}/valhalla
         run: cargo test -p cairn-core
@@ -377,7 +374,6 @@ jobs:
       # rewrites the same binary for the layout inside the .app, and a binary can only point at
       # its libraries one way at a time.
       - name: Build the CLI
-        working-directory: cairn
         env:
           VALHALLA_DIR: ${{ github.workspace }}/valhalla
         run: cargo build --release -p cairn-cli
@@ -424,7 +420,7 @@ jobs:
         run: |
           set -euo pipefail
           test -x scripts/bundle_resources.sh
-          grep -q bundle_resources cairn/src-tauri/tauri.conf.json
+          grep -q bundle_resources src-tauri/tauri.conf.json
           if [ "${{ matrix.platform }}" = macos-latest ]; then
             test -x scripts/bundle_macos_dylibs.sh
             grep -q bundle_macos_dylibs scripts/bundle_resources.sh
@@ -470,12 +466,12 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           set -euo pipefail
-          deb="$(ls -1 cairn/target/release/bundle/deb/*.deb | head -1)"
+          deb="$(ls -1 target/release/bundle/deb/*.deb | head -1)"
           ./scripts/verify_deb.sh "$deb"
 
       - name: Verify the bundle is self-contained (macOS only)
         if: matrix.platform == 'macos-latest'
-        run: ./scripts/verify_bundle.sh "cairn/target/release/bundle/macos/Cairn.app"
+        run: ./scripts/verify_bundle.sh "target/release/bundle/macos/Cairn.app"
 
       # Uploaded on every run, release or not. On a test build these are the only output; on a
       # release they are a second copy that outlives a draft being deleted after a failure.
@@ -486,10 +482,10 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: |
-            cairn/target/release/bundle/dmg/*.dmg
-            cairn/target/release/bundle/macos/*.app.tar.gz
-            cairn/target/release/bundle/deb/*.deb
-            cairn/target/release/bundle/appimage/*.AppImage
-            cairn/target/release/bundle/rpm/*.rpm
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/macos/*.app.tar.gz
+            target/release/bundle/deb/*.deb
+            target/release/bundle/appimage/*.AppImage
+            target/release/bundle/rpm/*.rpm
             dist/*.tar.gz
             dist/*.sha256

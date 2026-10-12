@@ -32,7 +32,7 @@ on:
   push:
     # a submodule bump is the usual reason the jar needs rebuilding
     paths: ['planetiler']
-    branches: [master, studio]
+    branches: [master]
 
 permissions:
   contents: write

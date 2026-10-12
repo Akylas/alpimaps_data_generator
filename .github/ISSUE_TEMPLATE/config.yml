@@ -1,7 +1,8 @@
+blank_issues_enabled: false
 contact_links:
-    - name: Common Issues
-      url: https://xplorer.space/docs/common_problems
-      about: Please see if your issue is a common issue
-    - name: Feature Request
-      url: https://github.com/kimlimjustin/xplorer/discussions
-      about: Suggest an idea or solution for this project
+  - name: Question or idea
+    url: https://github.com/Akylas/cairn/discussions
+    about: Ask how to do something, or float an idea, before it becomes an issue.
+  - name: Security vulnerability
+    url: https://github.com/Akylas/cairn/security/advisories/new
+    about: Report it privately. Please do not open a public issue.
