@@ -412,7 +412,8 @@ jobs:
       # before the build either. `beforeBundleCommand` is the one point in between: the binary
       # is linked, the bundle is not yet assembled, and nothing has been signed.
       #
-      # tauri.conf.json points that hook at bundle_resources.sh, which stages the resources and
+      # tauri.conf.json points that hook at `npm run bundle:resources` (npm, because it finds
+      # package.json from whichever directory Tauri runs the hook in), which runs bundle_resources.sh, which stages the resources and
       # calls the platform's library bundler. The check follows that chain rather than looking
       # for the bundler's name in tauri.conf.json, which is what it used to do - the hook was
       # pointed at bundle_resources.sh and this went on grepping for the old name.
@@ -420,7 +421,8 @@ jobs:
         run: |
           set -euo pipefail
           test -x scripts/bundle_resources.sh
-          grep -q bundle_resources src-tauri/tauri.conf.json
+          grep -q 'bundle:resources' src-tauri/tauri.conf.json
+          grep -q 'bash scripts/bundle_resources.sh' package.json
           if [ "${{ matrix.platform }}" = macos-latest ]; then
             test -x scripts/bundle_macos_dylibs.sh
             grep -q bundle_macos_dylibs scripts/bundle_resources.sh
@@ -513,7 +515,7 @@ jobs:
           # no submodules: nothing here builds them. The jar is fetched below.
           ref: ${{ inputs.release_id != '' && inputs.version || github.ref }}
 
-      # tauri.conf.json runs `bash ../scripts/bundle_resources.sh`, and a bare `bash` on a Windows
+      # tauri.conf.json runs `npm run bundle:resources`, which calls `bash`, and a bare `bash` on a Windows
       # runner can resolve to the WSL launcher in System32. Git's comes first this way.
       - name: Prefer Git Bash
         run: echo 'C:\Program Files\Git\bin' >> "$GITHUB_PATH"

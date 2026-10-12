@@ -13,6 +13,7 @@
     "dev": "vite",
     "build": "vite build",
     "tauri": "tauri",
+    "bundle:resources": "bash scripts/bundle_resources.sh",
     "release": "standard-version --commit-all",
     "release:dry": "standard-version --commit-all --dry-run",
     "build:planetiler": "cd planetiler && JAVA_HOME=\"$(/usr/libexec/java_home -v 21 2>/dev/null || echo \"$JAVA_HOME\")\" ./scripts/build.sh",

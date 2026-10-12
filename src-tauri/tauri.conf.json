@@ -8,7 +8,7 @@
     "devUrl": "http://localhost:5183",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist",
-    "beforeBundleCommand": "bash ../scripts/bundle_resources.sh"
+    "beforeBundleCommand": "npm run bundle:resources"
   },
   "app": {
     "windows": [
