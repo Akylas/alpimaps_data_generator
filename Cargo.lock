@@ -479,7 +479,7 @@ dependencies = [
 
 [[package]]
 name = "cairn"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "cairn-core",
@@ -494,7 +494,7 @@ dependencies = [
 
 [[package]]
 name = "cairn-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "cairn-core",
@@ -506,7 +506,7 @@ dependencies = [
 
 [[package]]
 name = "cairn-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "axum",
