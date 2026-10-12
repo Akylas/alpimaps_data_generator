@@ -18,7 +18,7 @@ jobs:
     name: Rust (fmt, clippy, test)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Tauri's webview and the Valhalla-free core need these to compile on Linux. Valhalla itself
       # is not built here: linking is opt-in, and build.yml proves the release path with it.
@@ -50,7 +50,7 @@ jobs:
     name: UI build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
@@ -62,7 +62,7 @@ jobs:
     name: Shell scripts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Syntax-check the packaging scripts
         run: |
           set -e

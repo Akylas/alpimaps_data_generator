@@ -40,7 +40,7 @@ jobs:
       PRE_BUMP_SHA: ${{ steps.pre_bump.outputs.sha }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # standard-version reads the tags and the commits since the last one to work out an
           # `auto` bump, and there is nothing to read in a shallow clone
@@ -199,7 +199,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Delete tag and revert version bump commit
