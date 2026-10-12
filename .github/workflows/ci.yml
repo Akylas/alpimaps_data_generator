@@ -68,3 +68,23 @@ jobs:
           set -e
           for f in scripts/*.sh; do bash -n "$f"; done
           python3 -m py_compile scripts/*.py
+
+  # Windows has no Valhalla and the tests were written on Unix, so this reports rather than
+  # blocks: it tells a pull request whether it broke the Windows build, which is the signal the
+  # Windows release job needs and cannot give early.
+  windows:
+    name: Windows (compile + tests, informational)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets
+      - run: cargo test -p cairn-core -p cairn-cli

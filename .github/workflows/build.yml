@@ -46,8 +46,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Windows is left out on purpose: Valhalla's support for it is poor and this pipeline has
-        # never been run there.
+        # Windows is not in this matrix: it has no Valhalla and a different packaging path, so it
+        # is its own job below.
         # 22.04 sets the glibc floor at 2.35, which is what lets one Linux build run on 22.04,
         # 24.04 and Debian 12 alike. Its compiler is too old for Valhalla - see below - so a
         # newer one is installed rather than a newer runner used.
@@ -451,7 +451,6 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_PROVIDER_SHORT_NAME: ${{ secrets.APPLE_PROVIDER_SHORT_NAME }}
         with:
-          projectPath: cairn
           # empty on a test build, which makes tauri-action build without publishing anything
           releaseId: ${{ inputs.release_id }}
 
@@ -488,4 +487,126 @@ jobs:
             target/release/bundle/appimage/*.AppImage
             target/release/bundle/rpm/*.rpm
             dist/*.tar.gz
+            dist/*.sha256
+
+  # ------------------------------------------------------------------------------------------
+  # Windows
+  #
+  # Built WITHOUT Valhalla. Valhalla's link line is read from the CMake Makefiles it leaves
+  # behind, and its Windows build goes through vcpkg and MSVC instead - none of which this
+  # pipeline has been taught. The crates compile as they do on a machine with no Valhalla: the
+  # basemap, routes, terrain and elevation steps run, and routing and the graph build report
+  # themselves unavailable.
+  #
+  # `continue-on-error` while this is new: a Windows failure must not delete a release that macOS
+  # and Linux built fine. Drop it once the job has been green for a few releases.
+  build-windows:
+    runs-on: windows-latest
+    continue-on-error: true
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # no submodules: nothing here builds them. The jar is fetched below.
+          ref: ${{ inputs.release_id != '' && inputs.version || github.ref }}
+
+      # tauri.conf.json runs `bash ../scripts/bundle_resources.sh`, and a bare `bash` on a Windows
+      # runner can resolve to the WSL launcher in System32. Git's comes first this way.
+      - name: Prefer Git Bash
+        run: echo 'C:\Program Files\Git\bin' >> "$GITHUB_PATH"
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - run: npm ci
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      # the same moving-tag jar the other platforms bundle; see the notes on the jar there
+      - name: Fetch the planetiler jar
+        env:
+          JAR_URL: https://github.com/${{ github.repository }}/releases/download/planetiler-latest/planetiler-with-deps.jar
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/planetiler-jar"
+          if curl -fSL --retry 3 -o "$RUNNER_TEMP/planetiler-jar/planetiler-with-deps.jar" "$JAR_URL"; then
+            echo "PLANETILER_JAR=$RUNNER_TEMP/planetiler-jar/planetiler-with-deps.jar" >> "$GITHUB_ENV"
+          else
+            echo "::warning::no published jar at $JAR_URL - the app will fetch one on first use."
+          fi
+
+      - name: Test the core
+        run: cargo test -p cairn-core -p cairn-cli
+
+      - name: Build the CLI
+        run: cargo build --release -p cairn-cli
+
+      - name: Package the CLI standalone
+        id: cli
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          echo "slug=${version//\//-}" >> "$GITHUB_OUTPUT"
+          name="cairn-${version}-x86_64-pc-windows-msvc"
+          mkdir -p "dist/$name"
+          cp target/release/cairn-cli.exe "dist/$name/cairn.exe"
+          cat > "dist/$name/README.txt" <<EOF
+          cairn $version (x86_64-pc-windows-msvc)
+
+          The Cairn map-data pipeline from a terminal. This build has no routing: the basemap,
+          routes, elevation and terrain steps work; the Valhalla steps do not.
+
+            cairn.exe --help
+
+          Java 21+ has to be available for the planetiler steps; the jar is fetched on first use
+          unless one is passed with --jar.
+          EOF
+          (cd dist && powershell -NoProfile -Command "Compress-Archive -Path '$name' -DestinationPath '$name.zip'")
+          rm -rf "dist/$name"
+          (cd dist && sha256sum "$name.zip" > "$name.zip.sha256")
+
+      - name: Attach the CLI to the release
+        if: inputs.release_id != ''
+        uses: ncipollo/release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ inputs.version }}
+          artifacts: 'dist/*.zip,dist/*.sha256'
+          allowUpdates: true
+          draft: true
+          omitBodyDuringUpdate: true
+          omitNameDuringUpdate: true
+          omitPrereleaseDuringUpdate: true
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          releaseId: ${{ inputs.release_id }}
+          # one installer: the MSI route downloads WiX and adds nothing a first release needs
+          args: --bundles nsis
+
+      - name: Upload the installer as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cairn-${{ steps.cli.outputs.slug }}-windows
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            target/release/bundle/nsis/*.exe
+            dist/*.zip
             dist/*.sha256

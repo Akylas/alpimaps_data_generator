@@ -17,6 +17,17 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Git Bash on a Windows runner reports MINGW64_NT-..., and has `python` rather than `python3`.
+# Windows ships neither Valhalla nor bundled libraries - see the notes where it is skipped.
+case "$(uname -s)" in
+  Darwin) os=macos ;;
+  MINGW* | MSYS* | CYGWIN*) os=windows ;;
+  *) os=linux ;;
+esac
+exe=""
+[ "$os" = windows ] && exe=".exe"
+if command -v python3 >/dev/null; then py=python3; else py=python; fi
 resources="$repo/src-tauri/resources"
 # the dylibs live in their own source directory: mapping one directory to two destinations put
 # 34 MB of them in the bundle twice
@@ -33,7 +44,7 @@ mkdir -p "$resources" "$frameworks"
 #
 # The Linux layout is debian::generate_data in tauri-bundler, and the AppImage bundler copies
 # that same usr/ tree into the AppDir - so one set of rpaths serves .deb, .rpm and .AppImage.
-product="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["productName"])' \
+product="$($py -c 'import json,sys; print(json.load(open(sys.argv[1]))["productName"])' \
   "$repo/src-tauri/tauri.conf.json")"
 
 say() { printf '  %s\n' "$*"; }
@@ -42,10 +53,12 @@ say() { printf '  %s\n' "$*"; }
 ( cd "$repo" && cargo build --release -p cairn-cli )
 # built as cairn-cli so that this build does not overwrite the app binary, which Tauri is
 # about to bundle from target/release/cairn - see crates/cli/Cargo.toml
-cp "$repo/target/release/cairn-cli" "$resources/cairn"
+cp "$repo/target/release/cairn-cli$exe" "$resources/cairn$exe"
 # it links Valhalla too, so it needs the same treatment as the app - on the build machine it
 # runs either way, which is exactly why this was missed until a bundle was checked
-if [ "$(uname)" = Darwin ]; then
+if [ "$os" = windows ]; then
+  : # no Valhalla on Windows, so there is nothing to carry
+elif [ "$os" = macos ]; then
   # Contents/Resources/resources -> Contents/Resources/Frameworks
   "$repo/scripts/bundle_macos_dylibs.sh" \
     "$resources/cairn" \
@@ -76,8 +89,8 @@ else
   fi
   if [ -n "$jar" ] && [ -f "$jar" ]; then
     # the fat jar carries native libraries for every platform at once; keep this one's
-    if [ "${STRIP_JAR:-1}" = "1" ] && command -v python3 >/dev/null; then
-      python3 "$repo/scripts/strip_jar_natives.py" "$jar" "$resources/$(basename "$jar")"
+    if [ "${STRIP_JAR:-1}" = "1" ] && command -v "$py" >/dev/null; then
+      "$py" "$repo/scripts/strip_jar_natives.py" "$jar" "$resources/$(basename "$jar")"
     else
       cp "$jar" "$resources/$(basename "$jar")"
     fi
@@ -108,7 +121,7 @@ fi
 mkdir -p "$resources/valhalla"
 if [ -x "$repo/valhalla/build/valhalla_build_tiles" ]; then
   cp "$repo/valhalla/build/valhalla_build_tiles" "$resources/valhalla/valhalla_build_tiles"
-  if [ "$(uname)" = Darwin ]; then
+  if [ "$os" = macos ]; then
     # Tauri's resource map is rooted at Contents/Resources, so `frameworks/ -> Frameworks/`
     # lands at Contents/Resources/Frameworks. From Contents/Resources/resources/valhalla that is
     # two levels up.
@@ -134,7 +147,9 @@ fi
 # relied on to have: Homebrew dylibs on macOS, and on Linux libraries whose sonames change
 # between releases (libprotobuf.so.23 on Ubuntu 22.04, .32 on 24.04). Either way they travel
 # with the bundle and the binary is pointed at them.
-if [ "$(uname)" = Darwin ]; then
+if [ "$os" = windows ]; then
+  say "no libraries to carry on Windows"
+elif [ "$os" = macos ]; then
   # Contents/MacOS -> Contents/Resources/Frameworks
   "$repo/scripts/bundle_macos_dylibs.sh" \
     "$repo/target/release/cairn" \
