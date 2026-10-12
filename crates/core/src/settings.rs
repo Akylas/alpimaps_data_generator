@@ -157,10 +157,26 @@ impl Settings {
                 if !is_checkout(&settings.repo_root) && is_checkout(&repo_root) {
                     settings.repo_root = repo_root;
                 }
+                settings.adopt_moved_config();
                 Ok(settings)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::for_repo(repo_root)),
             Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+        }
+    }
+
+    /// `sources.json` and `valhalla.json` moved from the repository root to `config/`, and the
+    /// settings file stores their full paths - so an install from before the move kept naming
+    /// files that no longer exist, and terrain quietly lost its sources. A stored path that is
+    /// not a file, while the checkout has the default one, means exactly that: follow it.
+    fn adopt_moved_config(&mut self) {
+        let defaults = Self::for_repo(self.repo_root.clone());
+        if !self.sources_json.is_file() && defaults.sources_json.is_file() {
+            self.sources_json = defaults.sources_json;
+        }
+        let stale = self.valhalla_config.as_ref().is_some_and(|path| !path.is_file());
+        if stale && defaults.valhalla_config.as_ref().is_some_and(|path| path.is_file()) {
+            self.valhalla_config = defaults.valhalla_config;
         }
     }
 
@@ -349,6 +365,45 @@ mod tests {
         std::fs::create_dir_all(repo.join("config")).unwrap();
         std::fs::write(repo.join("config/valhalla.json"), b"{}").unwrap();
         assert_eq!(Settings::locate_repo(&inner), repo);
+    }
+
+    /// A settings file written before `sources.json` moved to `config/` names a file that is
+    /// gone; loading must follow it rather than leave terrain with no sources.
+    #[test]
+    fn a_stored_path_to_a_moved_config_file_is_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("checkout");
+        std::fs::create_dir_all(repo.join("config")).unwrap();
+        std::fs::write(repo.join("config/sources.json"), b"[]").unwrap();
+        std::fs::write(repo.join("config/valhalla.json"), b"{}").unwrap();
+
+        let mut old = Settings::for_repo(repo.clone());
+        old.sources_json = repo.join("sources.json");
+        old.valhalla_config = Some(repo.join("valhalla.json"));
+        let path = dir.path().join("settings.json");
+        old.save(&path).unwrap();
+
+        let loaded = Settings::load_or_default(&path, repo.clone()).unwrap();
+        assert_eq!(loaded.sources_json, repo.join("config/sources.json"));
+        assert_eq!(loaded.valhalla_config, Some(repo.join("config/valhalla.json")));
+    }
+
+    /// A path the user chose, that exists, is theirs and stays.
+    #[test]
+    fn an_existing_custom_sources_file_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("checkout");
+        std::fs::create_dir_all(repo.join("config")).unwrap();
+        std::fs::write(repo.join("config/sources.json"), b"[]").unwrap();
+        let mine = dir.path().join("mine.json");
+        std::fs::write(&mine, b"[]").unwrap();
+
+        let mut custom = Settings::for_repo(repo.clone());
+        custom.sources_json = mine.clone();
+        let path = dir.path().join("settings.json");
+        custom.save(&path).unwrap();
+
+        assert_eq!(Settings::load_or_default(&path, repo).unwrap().sources_json, mine);
     }
 
     /// A packaged install has no checkout above it; inventing one would point every path at a
