@@ -4,7 +4,20 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 export default defineConfig({
   plugins: [svelte()],
   clearScreen: false,
-  server: { port: 5183, strictPort: true },
+  // The app is the one index.html at the root. Without this Vite scans every .html under the
+  // repository for dependencies - the website, the Valhalla submodule's docs, a venv - and the
+  // scan dies on whichever it chokes on first.
+  optimizeDeps: { entries: ["index.html"] },
+  server: {
+    port: 5183,
+    strictPort: true,
+    // nothing here is part of the UI, and the vendored trees are enormous
+    watch: {
+      ignored: ["**/target/**", "**/valhalla/**", "**/planetiler/**", "**/tippecanoe/**",
+        "**/prime_server/**", "**/rio-rgbify/**", "**/venv/**", "**/site/**", "**/output/**",
+        "**/data/**", "**/.cache/**", "**/tools/**", "**/crates/**", "**/src-tauri/**"],
+    },
+  },
   // maplibre-gl-compare is a CommonJS module that does require("events").EventEmitter, which
   // has no browser equivalent - without the polyfill the constructor throws
   // "EventEmitter is not a constructor" and no swiper is ever created.
