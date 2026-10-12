@@ -89,8 +89,16 @@ else
   fi
   if [ -n "$jar" ] && [ -f "$jar" ]; then
     # the fat jar carries native libraries for every platform at once; keep this one's
-    if [ "${STRIP_JAR:-1}" = "1" ] && command -v "$py" >/dev/null; then
-      "$py" "$repo/scripts/strip_jar_natives.py" "$jar" "$resources/$(basename "$jar")"
+    # A release signed for notarization has to sign the native libraries inside the jar as well:
+    # the notary service opens jars.
+    jar_args=()
+    [ "${STRIP_JAR:-1}" = "1" ] || jar_args+=(--keep-all)
+    if [ "$os" = macos ] && [ -n "${MACOS_SIGN_IDENTITY:-}" ] && [ "$MACOS_SIGN_IDENTITY" != "-" ]; then
+      jar_args+=(--sign "$MACOS_SIGN_IDENTITY")
+    fi
+    if { [ "${STRIP_JAR:-1}" = "1" ] || [ ${#jar_args[@]} -gt 0 ]; } && command -v "$py" >/dev/null; then
+      "$py" "$repo/scripts/strip_jar_natives.py" "$jar" "$resources/$(basename "$jar")" \
+        ${jar_args[@]+"${jar_args[@]}"}
     else
       cp "$jar" "$resources/$(basename "$jar")"
     fi

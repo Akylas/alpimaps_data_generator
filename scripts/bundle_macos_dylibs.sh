@@ -193,14 +193,38 @@ for lib in ${LIBS[@]+"${LIBS[@]}"}; do
 done
 
 # On Apple Silicon every Mach-O must carry a valid signature to load at all, and editing load
-# commands invalidates whatever was there. Ad-hoc signing here is enough to make the bundle run;
-# a release re-signs with the real identity afterwards, which is why this must happen *before*
-# the signing step and not after it.
+# commands invalidates whatever was there. Without an identity an ad-hoc signature is enough to
+# make the bundle run on this machine.
+#
+# A release is different. Notarization rejects anything not signed with a Developer ID, a secure
+# timestamp and the hardened runtime - for every Mach-O in the bundle, not only the ones Tauri
+# signs itself, and Tauri signs the app and not what the bundle carries in Resources. So when an
+# identity is given, the libraries are signed for notarization here, before the bundle exists,
+# and a failure stops the build: the error otherwise arrives from Apple half an hour later.
 IDENTITY="${MACOS_SIGN_IDENTITY:--}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "$IDENTITY" = "-" ]; then
+  LIB_SIGN=(--timestamp=none)
+  BIN_SIGN=(--timestamp=none)
+  strict=0
+else
+  LIB_SIGN=(--timestamp --options runtime)
+  BIN_SIGN=(--timestamp --options runtime --entitlements "$HERE/entitlements.plist")
+  strict=1
+fi
+sign() {
+  local target="$1"
+  shift
+  if [ "$strict" = 1 ]; then
+    codesign --force --sign "$IDENTITY" "$@" "$target"
+  else
+    codesign --force --sign "$IDENTITY" "$@" "$target" 2>/dev/null || true
+  fi
+}
 for lib in ${LIBS[@]+"${LIBS[@]}"}; do
-  codesign --force --sign "$IDENTITY" --timestamp=none "$DEST/$(basename "$lib")" 2>/dev/null || true
+  sign "$DEST/$(basename "$lib")" "${LIB_SIGN[@]}"
 done
-codesign --force --sign "$IDENTITY" --timestamp=none "$BINARY" 2>/dev/null || true
+sign "$BINARY" "${BIN_SIGN[@]}"
 
 # Verify the *whole* bundle, not just the binary. Checking only the executable passes while a
 # copied library still points at Homebrew for its own dependencies - which is a bundle that runs

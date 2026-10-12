@@ -12,15 +12,23 @@ platform. Class files are never touched, so a package that happens to be called
 than on the string appearing anywhere.
 
     strip_jar_natives.py <in.jar> <out.jar> [--os macos|linux|windows] [--arch aarch64|x86_64]
+                         [--keep-all] [--sign IDENTITY]
 
 Prints what it removed and what it kept.
+
+`--sign` is for macOS releases. Apple's notary service opens jars, and rejects a Mach-O file
+inside one that is not signed with a secure timestamp and the hardened runtime - which the
+natives a fat jar carries (zstd, snappy, sqlite) are not. They are signed in place with
+`codesign`, so what runs is still the same jar. `--keep-all` skips the platform filtering.
 """
 
 import argparse
 import platform
 import re
 import shutil
+import subprocess
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -74,12 +82,33 @@ def classify(path: str):
     return found_os, found_arch
 
 
+# a Mach-O file starts with one of these; 0xcafebabe is also the magic of a Java class file,
+# which is why class files are skipped by name before the bytes are looked at
+MACHO_MAGIC = (b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe",
+               b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe")
+
+
+def sign_macho(name: str, data: bytes, identity: str) -> bytes:
+    """`data` signed for notarization: secure timestamp, hardened runtime."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / Path(name).name
+        path.write_bytes(data)
+        subprocess.run(
+            ["codesign", "--force", "--sign", identity, "--timestamp", "--options", "runtime",
+             str(path)],
+            check=True,
+        )
+        return path.read_bytes()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("source")
     parser.add_argument("target")
     parser.add_argument("--os", default=None)
     parser.add_argument("--arch", default=None)
+    parser.add_argument("--keep-all", action="store_true")
+    parser.add_argument("--sign", default=None, metavar="IDENTITY")
     args = parser.parse_args()
 
     host_os = args.os or {"Darwin": "macos", "Linux": "linux", "Windows": "windows"}.get(
@@ -92,12 +121,16 @@ def main() -> int:
     source, target = Path(args.source), Path(args.target)
     dropped_bytes = 0
     dropped = 0
+    signed = 0
 
     with zipfile.ZipFile(source) as zin:
         entries = zin.infolist()
         keep = []
         for entry in entries:
             entry_os, entry_arch = classify(entry.filename)
+            if args.keep_all:
+                keep.append(entry)
+                continue
             # only drop when the entry names a platform *and* it is not ours; an unlabelled
             # native library is kept, because guessing wrong breaks the build silently
             if entry_os is not None and entry_os != host_os:
@@ -118,7 +151,15 @@ def main() -> int:
         # were, so what runs is the same jar minus the entries removed
         with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zout:
             for entry in keep:
-                zout.writestr(entry, zin.read(entry.filename))
+                data = zin.read(entry.filename)
+                if (
+                    args.sign
+                    and not entry.filename.endswith(".class")
+                    and data[:4] in MACHO_MAGIC
+                ):
+                    data = sign_macho(entry.filename, data, args.sign)
+                    signed += 1
+                zout.writestr(entry, data)
 
     before = source.stat().st_size
     after = target.stat().st_size
@@ -126,7 +167,9 @@ def main() -> int:
         f"  {before / 1048576:.1f} MB -> {after / 1048576:.1f} MB "
         f"({dropped} entries for other platforms, {dropped_bytes / 1048576:.1f} MB compressed)"
     )
-    if after >= before:
+    if signed:
+        print(f"  signed {signed} native libraries inside the jar")
+    if after >= before and not signed:
         # nothing gained; keep the original rather than a repacked copy of it
         shutil.copyfile(source, target)
     return 0
