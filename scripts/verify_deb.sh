@@ -35,7 +35,7 @@ resources="$(ls -d "$root"/usr/lib/*/resources 2>/dev/null | head -1)"
 # all, so this is the real answer for this layout rather than a reading of the rpath.
 resolves() {
   local what="$1" file="$2" out
-  out="$(ldd "$file" 2>/dev/null || true)"
+  out="$(env -u LD_LIBRARY_PATH ldd "$file" 2>/dev/null || true)"
   local missing
   missing="$(printf '%s' "$out" | awk '/not found/{print $1}' | tr '\n' ' ')"
   if [ -n "$missing" ]; then
@@ -56,7 +56,7 @@ if [ -n "$libdir" ]; then
   # usr/bin/../lib/..., which no string comparison against the directory will match. Normalise
   # both sides before comparing.
   libdir_real="$(cd "$libdir" && pwd -P)"
-  deps="$(ldd "$binary" "$libdir"/* 2>/dev/null | awk '/=>/ && $3 != "" {print $1, $3}' |
+  deps="$(env -u LD_LIBRARY_PATH ldd "$binary" "$libdir"/* 2>/dev/null | awk '/=>/ && $3 != "" {print $1, $3}' |
     while read -r soname path; do
       printf '%s %s\n' "$soname" "$(cd "$(dirname "$path")" 2>/dev/null && pwd -P)"
     done | sort -u)"
@@ -83,7 +83,7 @@ fi
 
 if [ -n "$resources" ] && [ -x "$resources/cairn" ]; then
   resolves "cairn CLI" "$resources/cairn"
-  out="$("$resources/cairn" --version 2>&1)"
+  out="$(env -u LD_LIBRARY_PATH "$resources/cairn" --version 2>&1)"
   case "$out" in
     *"not found"*|*"cannot open shared object"*) bad "the CLI does not start: $out" ;;
     *) note "cairn CLI runs: $out" ;;

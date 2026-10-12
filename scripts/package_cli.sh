@@ -94,7 +94,10 @@ echo "  $archive ($(du -h "$archive" | cut -f1))"
 # binary that finds its libraries through an absolute path works in place and nowhere else.
 check="$(mktemp -d)"
 tar -xzf "$archive" -C "$check"
-"$check/$name/cairn" --version >/dev/null
+# LD_LIBRARY_PATH is cleared for everything below: the build job sets it so the Valhalla build
+# can find the protobuf it was built with, and it outranks the rpath - so with it set, every
+# library looks like it loads from the system and the archive is never actually tested.
+env -u LD_LIBRARY_PATH "$check/$name/cairn" --version >/dev/null
 if [ "$(uname)" = Darwin ]; then
   outside="$(DYLD_PRINT_LIBRARIES=1 "$check/$name/cairn" --version 2>&1 |
     grep -c "/opt/homebrew\|/usr/local/Cellar" || true)"
@@ -111,7 +114,7 @@ else
   # Read once into a variable rather than piped per library: `grep -q` stops at the first match
   # and leaves ldd with a SIGPIPE, which `set -o pipefail` then reports as a failed pipeline -
   # so a matching library would be read as a missing one.
-  deps="$(ldd "$check/$name/cairn" "$check/$name/lib"/* 2>/dev/null || true)"
+  deps="$(env -u LD_LIBRARY_PATH ldd "$check/$name/cairn" "$check/$name/lib"/* 2>/dev/null || true)"
   for lib in "$check/$name/lib"/*; do
     [ -f "$lib" ] || continue
     soname="$(basename "$lib")"
