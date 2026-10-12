@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>Cairn</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#22443b"/>
+      <stop offset="1" stop-color="#0d1715"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.32" r="0.55">
+      <stop offset="0" stop-color="#5fd0a0" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#5fd0a0" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="s1" x1="0.1" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#f6faf4"/>
+      <stop offset="1" stop-color="#b3c9bb"/>
+    </linearGradient>
+    <linearGradient id="s2" x1="0.1" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#e4efe8"/>
+      <stop offset="1" stop-color="#94b3a2"/>
+    </linearGradient>
+    <linearGradient id="s3" x1="0.1" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#d2e9dd"/>
+      <stop offset="1" stop-color="#76a78e"/>
+    </linearGradient>
+    <linearGradient id="s4" x1="0.1" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#ffcf94"/>
+      <stop offset="1" stop-color="#e0893c"/>
+    </linearGradient>
+
+    <path id="p1" d="M262 742C250 672 330 622 430 614C520 608 640 616 722 652C780 678 790 737 744 782C700 822 580 830 470 828C360 826 276 802 262 742Z"/>
+    <path id="p2" d="M352 577C345 522 420 484 520 480C610 477 690 507 700 562C708 612 640 644 530 648C430 652 358 627 352 577Z"/>
+    <path id="p3" d="M392 442C390 397 450 370 520 368C590 366 642 394 640 438C638 482 580 502 515 504C450 506 394 484 392 442Z"/>
+    <path id="p4" d="M450 334C450 304 490 286 525 286C565 286 595 308 590 338C586 364 550 376 515 376C478 376 450 360 450 334Z"/>
+
+    <clipPath id="tile"><rect x="100" y="100" width="824" height="824" rx="190"/></clipPath>
+    <clipPath id="c1"><use xlink:href="#p1"/></clipPath>
+    <clipPath id="c2"><use xlink:href="#p2"/></clipPath>
+    <clipPath id="c3"><use xlink:href="#p3"/></clipPath>
+
+    <path id="loop" d="M0-100C60-108 122-62 116 0C110 72 40 112-30 96C-102 80-128 18-96-42C-76-82-36-98 0-100Z"/>
+  </defs>
+
+  <g clip-path="url(#tile)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <rect width="1024" height="1024" fill="url(#glow)"/>
+    <!-- contour lines around two summits -->
+    <g fill="none" stroke="#8ff0c4" stroke-opacity="0.18" stroke-width="4" stroke-linejoin="round" vector-effect="non-scaling-stroke">
+      <g transform="translate(850 920) rotate(-14)">
+        <use xlink:href="#loop" transform="scale(1.0)" vector-effect="non-scaling-stroke"/>
+        <use xlink:href="#loop" transform="scale(1.7)" vector-effect="non-scaling-stroke"/>
+        <use xlink:href="#loop" transform="scale(2.4)" vector-effect="non-scaling-stroke"/>
+        <use xlink:href="#loop" transform="scale(3.1)" vector-effect="non-scaling-stroke"/>
+      </g>
+      <g transform="translate(150 170) rotate(30)">
+        <use xlink:href="#loop" transform="scale(0.9)" vector-effect="non-scaling-stroke"/>
+        <use xlink:href="#loop" transform="scale(1.55)" vector-effect="non-scaling-stroke"/>
+        <use xlink:href="#loop" transform="scale(2.2)" vector-effect="non-scaling-stroke"/>
+        <use xlink:href="#loop" transform="scale(2.85)" vector-effect="non-scaling-stroke"/>
+      </g>
+    </g>
+    <ellipse cx="512" cy="826" rx="276" ry="30" fill="#000" fill-opacity="0.38"/>
+  </g>
+
+  <!-- the cairn, bottom stone first; each stone casts a soft shadow onto the one below -->
+  <use xlink:href="#p1" fill="url(#s1)"/>
+  <g clip-path="url(#c1)"><use xlink:href="#p2" transform="translate(6 20)" fill="#06120e" fill-opacity="0.30"/></g>
+  <ellipse cx="490" cy="722" rx="170" ry="34" fill="#fff" fill-opacity="0.30" transform="rotate(-5 490 722)" clip-path="url(#c1)"/>
+
+  <use xlink:href="#p2" fill="url(#s2)"/>
+  <g clip-path="url(#c2)"><use xlink:href="#p3" transform="translate(6 18)" fill="#06120e" fill-opacity="0.30"/></g>
+  <ellipse cx="512" cy="536" rx="120" ry="26" fill="#fff" fill-opacity="0.28" transform="rotate(2 512 536)" clip-path="url(#c2)"/>
+
+  <use xlink:href="#p3" fill="url(#s3)"/>
+  <g clip-path="url(#c3)"><use xlink:href="#p4" transform="translate(5 16)" fill="#06120e" fill-opacity="0.28"/></g>
+  <ellipse cx="500" cy="412" rx="76" ry="18" fill="#fff" fill-opacity="0.28" transform="rotate(-6 500 412)" clip-path="url(#c3)"/>
+
+  <use xlink:href="#p4" fill="url(#s4)"/>
+  <ellipse cx="510" cy="316" rx="38" ry="11" fill="#fff" fill-opacity="0.38" transform="rotate(-4 510 316)"/>
+</svg>
