@@ -112,8 +112,26 @@ fn link_args(link_line: &str, build: &Path) -> Vec<String> {
     // one leaves every C++ symbol in libvalhalla undefined.
     args.push("-lcurl".into());
     args.push("-lz".into());
-    args.push(if cfg!(target_os = "macos") { "-lc++".into() } else { "-lstdc++".to_string() });
+    if cfg!(target_os = "macos") {
+        args.push("-lc++".into());
+    } else if static_libstdcxx() {
+        // `-static-libstdc++` in RUSTFLAGS is a no-op here: rustc links through `cc`, and only
+        // the g++ driver acts on that flag. An explicit `-lstdc++` is what ends up as a NEEDED
+        // entry, so the static archive has to be asked for by name.
+        args.extend(["-Wl,-Bstatic".into(), "-lstdc++".into(), "-Wl,-Bdynamic".into()]);
+    } else {
+        args.push("-lstdc++".into());
+    }
     args
+}
+
+/// Whether the build asked for a static libstdc++, so a binary built on a newer toolchain runs on
+/// an older release. The release workflow sets it through RUSTFLAGS; a local build does not.
+#[allow(dead_code)]
+fn static_libstdcxx() -> bool {
+    std::env::var("CARGO_ENCODED_RUSTFLAGS")
+        .map(|flags| flags.split('\x1f').any(|flag| flag.contains("static-libstdc++")))
+        .unwrap_or(false)
 }
 
 /// Whether a link-line token names a library file rather than a flag.

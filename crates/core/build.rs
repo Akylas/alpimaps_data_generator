@@ -37,6 +37,11 @@ fn main() {
         // so the shim fails to compile in a release bundle while building fine in dev.
         cc.flag("-mmacosx-version-min=11.0");
     }
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") && static_libstdcxx() {
+        // cc-rs otherwise emits a dynamic `-lstdc++` of its own, which is the NEEDED entry a
+        // static build is trying to avoid; the static one is on the link line below
+        cc.cpp_link_stdlib(None::<&str>);
+    }
     for dir in includes {
         cc.include(dir);
     }
