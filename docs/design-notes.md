@@ -1,4 +1,8 @@
-# Cairn — desktop app plan
+# Design notes — the desktop app plan
+
+> Historical: the plan as written when the app was started, with the decisions it settled. Where
+> the code has since moved on, [internals.md](internals.md) is current.
+
 
 Replace the shell/Python pipeline with a desktop app that can run one, some, or all build
 steps for any area, expose every step's options as a form, show progress, browse generated
@@ -120,7 +124,7 @@ enum StepEvent {
 }
 ```
 
-Planetiler progress is parsed from stdout. Format (`bench/base.log:170`, ANSI stripped):
+Planetiler progress is parsed from stdout. Format (`crates/core/tests/fixtures/planetiler.log`, ANSI stripped):
 
 ```
 0:00:02 INF [lake_centerlines] -  read: [   22 100%   53/s ] write: [    0    0/s ] 0
@@ -157,7 +161,7 @@ Settings store. Configurable output root. Area discovery and registration. Tab s
 
 ### 1.3 Output catalog
 Per area: file list with sizes. Per mbtiles: `metadata` table, per-zoom tile count and byte
-totals. Side-by-side diff of two builds with deltas. Replaces the ad-hoc `bench/` scripts.
+totals. Side-by-side diff of two builds with deltas. Replaces the ad-hoc `tools/bench/` scripts.
 
 ---
 

@@ -13,9 +13,9 @@ tests, so the two cannot drift apart.
 
 ## prepare
 
-Now you need to run `./setup.sh` at leat once
-
-after that if you dont want to use the full build script you need to run `source ./env.sh` to ensure env variables are set
+These are the commands the original shell and Python pipeline ran. They still work; the scripts
+live in [`tools/legacy/`](../tools/legacy/). Run `tools/legacy/setup.sh` once to build the tools,
+then `source tools/legacy/env.sh` to put them on `PATH`.
 
 
 ## Building
@@ -30,7 +30,7 @@ First we need the poly / pbf from that region
 
 ```shell
 export AREA=italy
-python ./scripts/download-osm.py --poly $AREA
+python ./tools/legacy/scripts/download-osm.py --poly $AREA
 export POLY=$AREA.poly
 java -jar $PLANETILER_JAR  --only-download --area=$AREA
 valhalla_build_config --mjolnir-tile-dir ${PWD}/valhalla_tiles --mjolnir-tile-extract ${PWD}/valhalla_tiles.tar --mjolnir-timezone ${PWD}/valhalla_tiles/timezones.sqlite --mjolnir-admin ${PWD}/valhalla_tiles/admins.sqlite --additional-data-elevation ${PWD}/elevation_tiles > valhalla.json 
@@ -68,7 +68,7 @@ We use a small polyzoom (5) to avoid half filled tiles. You can raise it for fas
 If you want to have more defined tif over (that you would get from another source) you can use the `--overTif` option. It should do it all for you
 
 ```shell
-./scripts/generate_tif_from_hgt.sh --poly-shape $POLY --polyzoom 5 --elevation_tiles ./elevation_tiles --output ${AREA}.tif
+./tools/legacy/scripts/generate_tif_from_hgt.sh --poly-shape $POLY --polyzoom 5 --elevation_tiles ./elevation_tiles --output ${AREA}.tif
 ```
 
 All intermediates are VRT (no pixel written), so the only file created is the output itself.
@@ -96,7 +96,7 @@ gdaladdo -r average --config COMPRESS_OVERVIEW DEFLATE ${AREA}.tif
 
 ## # Terrain RGB tiles (single step, no intermediate tif)
 
-`scripts/build_terrain_rgb.py` goes straight from the elevation sources to an mbtiles,
+`tools/legacy/scripts/build_terrain_rgb.py` goes straight from the elevation sources to an mbtiles,
 mapterhorn style: the max zoom is warped once per macrotile and every lower zoom is a
 2x2 average of the tiles already produced, instead of one full pass over the dem per
 zoom. No `${AREA}.tif` is built, so the whole `generate_tif_from_hgt.sh` step and its
@@ -170,7 +170,7 @@ filtered on their real bounds once extracted. `crs` assigns a projection to deli
 that ship without one, like the `.asc` of RGE ALTI.
 
 ```shell
-python scripts/build_terrain_rgb.py --sources sources.json --poly-shape $POLY \
+python tools/legacy/scripts/build_terrain_rgb.py --sources sources.json --poly-shape $POLY \
   --minzoom 5 --maxzoom 12 --round-digits 0 --encoding mapbox -f webp \
   --blur 1000 --tile-buffer 1 -j 16 -o ${OUTPUT_DIR}/${AREA}/${AREA}_terrain.mbtiles
 ```
@@ -190,13 +190,13 @@ separately and never written.
 
 ## # Then build contours
 ```shell
-./scripts/build_contours.sh  --minzoom 11 --maxzoom 14 --poly-shape $POLY --output ${OUTPUT_DIR}/${AREA}/${AREA}_contours.mbtiles ${AREA}.tif
+./tools/legacy/scripts/build_contours.sh  --minzoom 11 --maxzoom 14 --poly-shape $POLY --output ${OUTPUT_DIR}/${AREA}/${AREA}_contours.mbtiles ${AREA}.tif
 ```
 
 ## # Cleanup contours mbtiles
 This steps ensure we have the same tiles in the area mbtiles and terrain/contours. It is important in AlpiMaps as we merge tiles from area and contours to draw contour lines in between the map style. 
 ```shell
-python ./scripts/filter_tiles_from_other_mbtiles.py --sourcembtiles ${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles ${OUTPUT_DIR}/${AREA}/${AREA}_contours.mbtiles
+python ./tools/legacy/scripts/filter_tiles_from_other_mbtiles.py --sourcembtiles ${OUTPUT_DIR}/${AREA}/${AREA}.mbtiles ${OUTPUT_DIR}/${AREA}/${AREA}_contours.mbtiles
 ```
 ## # build valhalla package
 
@@ -208,7 +208,7 @@ The same folder is reused later by `generate_tif_from_hgt.sh`, so use `-d` (deco
 
 Compute the bounds of your poly, then download from Tilezen:
 ```shell
-export BOUNDS=$(python ./scripts/get_shape_bounds_tile_envelope.py --poly-shape $POLY --minzoom 5 --maxzoom 5)
+export BOUNDS=$(python ./tools/legacy/scripts/get_shape_bounds_tile_envelope.py --poly-shape $POLY --minzoom 5 --maxzoom 5)
 valhalla_build_elevation -v -d -b $BOUNDS -o ./elevation_tiles
 ```
 Use the same `--minzoom/--maxzoom` value you intend to pass as `--polyzoom` to `generate_tif_from_hgt.sh` (5 here),
@@ -229,5 +229,5 @@ valhalla_build_tiles -c valhalla.json data/sources/${AREA//-/_}.osm.pbf
 ```
 Then build valhalla "mbtiles package
 ```shell
-python ./scripts/build_valhalla_package.py --id $AREA --poly $AREA.poly --polymaxzoom=11 valhalla_tiles ${OUTPUT_DIR}/${AREA}/${AREA}.vtiles
+python ./tools/legacy/scripts/build_valhalla_package.py --id $AREA --poly $AREA.poly --polymaxzoom=11 valhalla_tiles ${OUTPUT_DIR}/${AREA}/${AREA}.vtiles
 ```

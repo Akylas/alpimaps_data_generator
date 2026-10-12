@@ -34,8 +34,3 @@ All notable changes to this project will be documented in this file. See [standa
 ### Performance
 
 * **studio:** 216 MB bundle down to 156 MB, and a check that runs it ([fea4eaf](https://github.com/Akylas/alpimaps_data_generator/commit/fea4eaf30e8a25bac57368318e61380d320ca9e1))
-
-# Changelog
-
-All notable changes to Cairn (formerly AlpiMaps Studio) are documented here. Entries below this line are written
-by `standard-version` from the conventional commits since the previous tag.
