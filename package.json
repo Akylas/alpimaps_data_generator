@@ -49,6 +49,10 @@
         "updater": "./scripts/tauri-versioner.cjs"
       },
       {
+        "filename": "Cargo.lock",
+        "updater": "./scripts/cargo-lock-versioner.cjs"
+      },
+      {
         "filename": "src-tauri/tauri.conf.json",
         "type": "json"
       }
