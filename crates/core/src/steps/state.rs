@@ -514,6 +514,7 @@ mod tests {
     fn the_bathymap_writes_into_the_area_directory() {
         let settings = settings_at(Path::new("/repo"));
         let out = outputs_for(&settings, "world", StepId::Bathymap, &BTreeMap::new());
-        assert!(out[0].to_string_lossy().ends_with("world/world_bathymap.mbtiles"), "{out:?}");
+        // `Path::ends_with` compares components, so the separator does not matter
+        assert!(out[0].ends_with("world/world_bathymap.mbtiles"), "{out:?}");
     }
 }

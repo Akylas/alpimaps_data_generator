@@ -241,6 +241,10 @@ mod tests {
     }
 
     /// A caller that drops the cancel sender - or never holds one - must still get a full run.
+    ///
+    /// Unix only: it stands `/usr/bin/true` in for java, and there is no such executable on
+    /// Windows. The behaviour under test is platform-independent.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_dropped_cancel_sender_does_not_cancel() {
         let dir = tempfile::tempdir().unwrap();
