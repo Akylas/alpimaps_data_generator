@@ -25,7 +25,7 @@ tar = "0.4"
 futures-util = "0.3"
 rusqlite = { version = "0.32", features = ["bundled"] }
 axum = "0.7"
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors"] }
 image = { version = "0.25", default-features = false, features = ["webp", "png", "jpeg"] }
 pmtiles = { version = "0.24.0", default-features = false, features = ["write"] }
 webp = { version = "0.3", default-features = false }
