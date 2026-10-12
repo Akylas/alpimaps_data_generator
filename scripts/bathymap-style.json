@@ -1,6 +1,6 @@
 {
   "version": 8,
-  "name": "Alpimaps Bathymap check",
+  "name": "Cairn Bathymap check",
   "sources": {
     "bathymap": {
       "type": "vector",

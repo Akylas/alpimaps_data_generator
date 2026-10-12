@@ -3,8 +3,7 @@
 # Collect everything the packaged app needs to run without this repository.
 #
 # A published build has no submodules, no scripts and no checkout: whatever the pipeline reaches
-# for at run time has to be inside the bundle. Run from `cairn/` by Tauri's
-# `beforeBundleCommand`.
+# for at run time has to be inside the bundle. Run by Tauri's `beforeBundleCommand`.
 #
 #   planetiler jar   the basemap and routes steps are a subprocess over this
 #   valhalla.json    the embedded router validates the whole document, so a stub will not do
@@ -17,15 +16,14 @@
 
 set -euo pipefail
 
-studio="$(cd "$(dirname "${BASH_SOURCE[0]}")/../cairn" && pwd)"
-repo="$(dirname "$studio")"
-resources="$studio/src-tauri/resources"
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+resources="$repo/src-tauri/resources"
 # the dylibs live in their own source directory: mapping one directory to two destinations put
 # 34 MB of them in the bundle twice
 #
 # Linux uses the same directory for the same purpose - the libraries the app carries - so the
 # name is macOS's rather than a second resource mapping in tauri.conf.json for one .so directory.
-frameworks="$studio/src-tauri/frameworks"
+frameworks="$repo/src-tauri/frameworks"
 mkdir -p "$resources" "$frameworks"
 
 # Where those two directories end up once installed decides every rpath below.
@@ -36,15 +34,15 @@ mkdir -p "$resources" "$frameworks"
 # The Linux layout is debian::generate_data in tauri-bundler, and the AppImage bundler copies
 # that same usr/ tree into the AppDir - so one set of rpaths serves .deb, .rpm and .AppImage.
 product="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["productName"])' \
-  "$studio/src-tauri/tauri.conf.json")"
+  "$repo/src-tauri/tauri.conf.json")"
 
 say() { printf '  %s\n' "$*"; }
 
 # --- the CLI ---------------------------------------------------------------------------------
-( cd "$studio" && cargo build --release -p cairn-cli )
+( cd "$repo" && cargo build --release -p cairn-cli )
 # built as cairn-cli so that this build does not overwrite the app binary, which Tauri is
-# about to bundle from target/release/cairn - see cli/Cargo.toml
-cp "$studio/target/release/cairn-cli" "$resources/cairn"
+# about to bundle from target/release/cairn - see crates/cli/Cargo.toml
+cp "$repo/target/release/cairn-cli" "$resources/cairn"
 # it links Valhalla too, so it needs the same treatment as the app - on the build machine it
 # runs either way, which is exactly why this was missed until a bundle was checked
 if [ "$(uname)" = Darwin ]; then
@@ -91,8 +89,8 @@ else
 fi
 
 # --- valhalla.json ---------------------------------------------------------------------------
-if [ -f "$repo/valhalla.json" ]; then
-  cp "$repo/valhalla.json" "$resources/valhalla.json"
+if [ -f "$repo/config/valhalla.json" ]; then
+  cp "$repo/config/valhalla.json" "$resources/valhalla.json"
   say "valhalla.json"
 else
   echo "  WARNING: no valhalla.json; routing steps will have no config to start from" >&2
@@ -139,13 +137,13 @@ fi
 if [ "$(uname)" = Darwin ]; then
   # Contents/MacOS -> Contents/Resources/Frameworks
   "$repo/scripts/bundle_macos_dylibs.sh" \
-    "$studio/target/release/cairn" \
+    "$repo/target/release/cairn" \
     "$frameworks" \
     "@executable_path/../Resources/Frameworks"
 else
   # /usr/bin -> /usr/lib/<product>/Frameworks
   "$repo/scripts/bundle_linux_libs.sh" \
-    "$studio/target/release/cairn" \
+    "$repo/target/release/cairn" \
     "$frameworks" \
     "\$ORIGIN/../lib/$product/Frameworks" >/dev/null
   # the total, not what this call added: the CLI and the graph builder were bundled first and

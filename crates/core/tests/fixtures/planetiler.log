@@ -1,0 +1,436 @@
+[0m0:00:00 DEB - argument: config=null (path to config file)
+[m[0m0:00:00 DEB - argument: download_dir=data/sources (download directory)
+[m[0m0:00:00 DEB - argument: area=rhone-alpes (name of the extract to download if osm_url/osm_path not specified (i.e. 'monaco' 'rhode island' 'australia' or 'planet'))
+[m[0m0:00:00 INF - argument: stats=use in-memory stats
+[m[0m0:00:00 DEB - argument: madvise=true (default value for whether to use linux madvise(random) to improve memory-mapped read performance for temporary storage)
+[m[0m0:00:00 DEB - argument: storage=mmap (default storage type for temporary data, one of [ram, mmap, direct])
+[m[0m0:00:00 DEB - argument: parallel_tmp_io=false (Use unlimited parallelism reading/writing temp files (ie. if using tmpfs or ramfs for temp storage))
+[m[0m0:00:00 DEB - argument: threads=18 (num threads)
+[m[0m0:00:00 DEB - argument: write_threads=1 (number of threads to use when writing temp features)
+[m[0m0:00:00 DEB - argument: process_threads=17 (number of threads to use when processing input features)
+[m[0m0:00:00 DEB - argument: bounds=null (bounds)
+[m[0m0:00:00 DEB - argument: polygon=rhone-alpes.poly (a .poly file that limits output to tiles intersecting the shape)
+[m[0m0:00:00 INF - prepareShapeForZoom z0 CoveredTiles{z=0, tiles=1, storage=16B}
+[m[0m0:00:00 INF - prepareShapeForZoom z1 CoveredTiles{z=1, tiles=1, storage=16B}
+[m[0m0:00:00 INF - prepareShapeForZoom z2 CoveredTiles{z=2, tiles=1, storage=16B}
+[m[0m0:00:00 INF - prepareShapeForZoom z3 CoveredTiles{z=3, tiles=1, storage=16B}
+[m[0m0:00:00 INF - prepareShapeForZoom z4 CoveredTiles{z=4, tiles=1, storage=16B}
+[m[0m0:00:00 INF - prepareShapeForZoom z5 CoveredTiles{z=5, tiles=1, storage=16B}
+[m[0m0:00:00 INF - prepareShapeForZoom z6 CoveredTiles{z=6, tiles=4, storage=22B}
+[m[0m0:00:00 INF - prepareShapeForZoom z7 CoveredTiles{z=7, tiles=4, storage=22B}
+[m[0m0:00:00 INF - prepareShapeForZoom z8 CoveredTiles{z=8, tiles=10, storage=34B}
+[m[0m0:00:00 INF - prepareShapeForZoom z9 CoveredTiles{z=9, tiles=26, storage=38B}
+[m[0m0:00:00 INF - prepareShapeForZoom z10 CoveredTiles{z=10, tiles=86, storage=66B}
+[m[0m0:00:00 INF - prepareShapeForZoom z11 CoveredTiles{z=11, tiles=302, storage=124B}
+[m[0m0:00:00 INF - prepareShapeForZoom z12 CoveredTiles{z=12, tiles=1,099, storage=252B}
+[m[0m0:00:00 INF - prepareShapeForZoom z13 CoveredTiles{z=13, tiles=4,167, storage=558B}
+[m[0m0:00:00 INF - prepareShapeForZoom z14 CoveredTiles{z=14, tiles=16,139, storage=1.2kB}
+[m[0m0:00:00 INF - prepareShapeForZoom z15 CoveredTiles{z=15, tiles=63,450, storage=3.1kB}
+[m[0m0:00:00 INF - prepareShapeForZoom z16 CoveredTiles{z=16, tiles=251,578, storage=8.3kB}
+[m[0m0:00:00 DEB - argument: minzoom=0 (minimum zoom level)
+[m[0m0:00:00 DEB - argument: maxzoom=14 (maximum zoom level up to 16)
+[m[0m0:00:00 DEB - argument: render_maxzoom=14 (maximum rendering zoom level up to 16)
+[m[0m0:00:00 DEB - argument: tmpdir=data/tmp (temp directory)
+[m[0m0:00:00 DEB - argument: extra_name_tags= (Extra name tags to copy from OSM to output)
+[m[0m0:00:00 DEB - argument: mlt_advanced=false (Use FSST and FastPFOR encoding schemes when tile format=MLT)
+[m[0m0:00:00 DEB - argument: feature_read_threads=1 (number of threads to use when reading features at tile write time)
+[m[0m0:00:00 DEB - argument: tile_write_threads=1 (number of threads used to write tiles - only supported by [files, csv, tsv, proto, pbf, json])
+[m[0m0:00:00 DEB - argument: loginterval=10 seconds (time between logs)
+[m[0m0:00:00 DEB - argument: force=true (overwriting output file and ignore disk/RAM warnings)
+[m[0m0:00:00 DEB - argument: append=false (append to the output file - only supported by [files, csv, tsv, proto, pbf, json])
+[m[0m0:00:00 DEB - argument: compress_temp=false (compress temporary feature storage (uses more CPU, but less disk space))
+[m[0m0:00:00 DEB - argument: mmap_temp=true (use memory-mapped IO for temp feature files)
+[m[0m0:00:00 DEB - argument: sort_max_readers=6 (maximum number of concurrent read threads to use when sorting chunks)
+[m[0m0:00:00 DEB - argument: sort_max_writers=6 (maximum number of concurrent write threads to use when sorting chunks)
+[m[0m0:00:00 DEB - argument: nodemap_type=array (type of node location map, one of [noop, sortedtable, sparsearray, array])
+[m[0m0:00:00 DEB - argument: nodemap_storage=mmap (storage for node location map, one of [ram, mmap, direct])
+[m[0m0:00:00 DEB - argument: nodemap_madvise=true (use linux madvise(random) for node locations)
+[m[0m0:00:00 DEB - argument: multipolygon_geometry_storage=mmap (storage for multipolygon geometries, one of [ram, mmap, direct])
+[m[0m0:00:00 DEB - argument: multipolygon_geometry_madvise=true (use linux madvise(random) for temporary multipolygon geometry storage)
+[m[0m0:00:00 DEB - argument: http_user_agent=Planetiler downloader (https://github.com/onthegomap/planetiler) (User-Agent header to set when downloading files over HTTP)
+[m[0m0:00:00 DEB - argument: http_timeout=30 seconds (Timeout to use when downloading files over HTTP)
+[m[0m0:00:00 DEB - argument: http_retries=5 (Retries to use when downloading files over HTTP)
+[m[0m0:00:00 DEB - argument: http_retry_wait=5 seconds (How long to wait before retrying HTTP request)
+[m[0m0:00:00 DEB - argument: download_chunk_size_mb=100 (Size of file chunks to download in parallel in megabytes)
+[m[0m0:00:00 DEB - argument: download_threads=1 (Number of parallel threads to use when downloading each file)
+[m[0m0:00:00 DEB - argument: download_max_bandwidth= (Maximum bandwidth to consume when downloading files in units mb/s, mbps, kbps, etc.)
+[m[0m0:00:00 DEB - argument: min_feature_size_at_max_zoom=0.0625 (Default value for the minimum size in tile pixels of features to emit at the maximum zoom level to allow for overzooming)
+[m[0m0:00:00 DEB - argument: min_feature_size=2.0 (Default value for the minimum size in tile pixels of features to emit below the maximum zoom level)
+[m[0m0:00:00 DEB - argument: simplify_tolerance_at_max_zoom=0.0625 (Default value for the tile pixel tolerance to use when simplifying features at the maximum zoom level to allow for overzooming)
+[m[0m0:00:00 DEB - argument: simplify_tolerance=0.45 (Default value for the tile pixel tolerance to use when simplifying features below the maximum zoom level)
+[m[0m0:00:00 DEB - argument: osm_lazy_reads=true (Read OSM blocks from disk in worker threads)
+[m[0m0:00:00 DEB - argument: skip_filled_tiles=false (Skip writing tiles containing only polygon fills to the output)
+[m[0m0:00:00 DEB - argument: tile_warning_size_mb=1.0 (Maximum size in megabytes of a tile to emit a warning about)
+[m[0m0:00:00 DEB - argument: color=null (Color the terminal output)
+[m[0m0:00:00 DEB - argument: keep_unzipped=false (keep unzipped sources by default after reading)
+[m[0m0:00:00 DEB - argument: tile_compression=gzip (the tile compression, one of [gzip, none])
+[m[0m0:00:00 DEB - argument: tile_format=mvt (the tile format, one of [mlt, mvt])
+[m[0m0:00:00 DEB - argument: exclude_ids=false (Exclude feature IDs from generated vector tiles)
+[m[0m0:00:00 DEB - argument: mlt_fastpfor=false (Use FastPFOR encoding when tile format=MLT)
+[m[0m0:00:00 DEB - argument: mlt_fsst=false (Use FSST encoding when tile format=MLT)
+[m[0m0:00:00 DEB - argument: mlt_tessellate_polygons=false (Pre-triangulate polygons when tile format=MLT so that clients do not need to)
+[m[0m0:00:00 DEB - argument: mlt_polygon_outline=false (Store polygon outlines together with pre-triangulated polygons)
+[m[0m0:00:00 DEB - argument: mlt_reorder_features=false (Allow re-ordering output features within each layer when tile format=MLT to reduce tile sizes)
+[m[0m0:00:00 DEB - argument: mlt_shared_dict=false (Share dictionaries between string fields when tile format=MLT)
+[m[0m0:00:00 DEB - argument: output_layerstats=true (output a tsv.gz file for each tile/layer size)
+[m[0m0:00:00 DEB - argument: debug_url=https://onthegomap.github.io/planetiler-demo/#{z}/{lat}/{lon} (debug url to use for displaying tiles with {z} {lat} {lon} placeholders)
+[m[0m0:00:00 DEB - argument: tile_weights=data/tile_weights.tsv.gz (tsv.gz file with columns z,x,y,loads to generate weighted average tile size stat)
+[m[0m0:00:00 DEB - argument: max_point_buffer=4.0 (Additional global limit for the max tile pixels to include points outside tile bounds of all layers. Set to a lower value to reduce tile size for clients that handle label collisions across tiles (most web and native clients). NOTE: Do not reduce if you need to support raster tile rendering)
+[m[0m0:00:00 DEB - argument: log_jts_exceptions=false (Emit verbose details to debug JTS geometry errors)
+[m[0m0:00:00 DEB - argument: feature_source_id_multiplier=10 (Set vector tile feature IDs to (featureId * thisValue) + sourceId where sourceId is 1 for OSM nodes, 2 for ways, 3 for relations, and 0 for other sources. Set to false to disable.)
+[m[0m0:00:00 DEB - argument: reuse_featuredb=false (Reuse existing feature DB on disk, skipping source reading stages (for iterating on post-processing logic))
+[m[0m0:00:00 DEB - argument: only_download=false (download source data then exit)
+[m[0m0:00:00 DEB - argument: tests=null (run test cases in a yaml then quit)
+[m[0m0:00:00 DEB - argument: download=false (download sources)
+[m[0m0:00:00 DEB - argument: refresh_sources=false (download new version of source files if they have changed)
+[m[0m0:00:00 DEB - argument: download_osm_tile_weights=false (download OSM tile weights file)
+[m[0m0:00:00 DEB - argument: temp_nodes=data/tmp/node.db (temp node db location)
+[m[0m0:00:00 DEB - argument: temp_multipolygons=data/tmp/multipolygon.db (temp multipolygon db location)
+[m[0m0:00:00 DEB - argument: temp_features=data/tmp/feature.db (temp feature db location)
+[m[0m0:00:00 DEB - argument: osm_parse_node_bounds=false (parse bounds from OSM nodes instead of header)
+[m[0m0:00:00 DEB - argument: only_fetch_wikidata=false (fetch wikidata translations then quit)
+[m[0m0:00:00 DEB - argument: fetch_wikidata=false (fetch wikidata translations then continue)
+[m[0m0:00:00 DEB - argument: use_wikidata=false (use wikidata translations)
+[m[0m0:00:00 DEB - argument: wikidata_cache=data/sources/wikidata_names.json (wikidata cache file)
+[m[0m0:00:00 DEB - argument: wikidata_max_age=0 seconds (Maximum age of Wikidata translations (in ISO-8601 duration format PnDTnHnMn.nS; 0S = disabled))
+[m[0m0:00:00 DEB - argument: wikidata_update_limit=0 (Limit on how many old translations to update during one download (0 = disabled))
+[m[0m0:00:00 DEB - argument: lake_centerlines_path=data/sources/lake_centerline.shp.zip (lake_centerlines shapefile path)
+[m[0m0:00:00 DEB - argument: refresh_lake_centerlines=false (Download new version of lake_centerlines if changed)
+[m[0m0:00:00 DEB - argument: free_lake_centerlines_after_read=false (delete lake_centerlines input file after reading to make space for output (reduces peak disk usage))
+[m[0m0:00:00 DEB - argument: water_polygons_path=data/sources/water-polygons-split-3857.zip (water_polygons shapefile path)
+[m[0m0:00:00 DEB - argument: refresh_water_polygons=false (Download new version of water_polygons if changed)
+[m[0m0:00:00 DEB - argument: free_water_polygons_after_read=false (delete water_polygons input file after reading to make space for output (reduces peak disk usage))
+[m[0m0:00:00 DEB - argument: natural_earth_path=data/sources/natural_earth_vector.sqlite.zip (natural_earth sqlite db path)
+[m[0m0:00:00 DEB - argument: refresh_natural_earth=false (Download new version of natural_earth if changed)
+[m[0m0:00:00 DEB - argument: free_natural_earth_after_read=false (delete natural_earth input file after reading to make space for output (reduces peak disk usage))
+[m[0m0:00:00 DEB - argument: natural_earth_keep_unzipped=false (keep unzipped natural_earth after reading)
+[m[0m0:00:00 DEB - argument: osm_path=data/sources/rhone_alpes.osm.pbf (osm OSM input file path)
+[m[0m0:00:00 DEB - argument: refresh_osm=false (Download new version of osm if changed)
+[m[0m0:00:00 DEB - argument: free_osm_after_read=false (delete osm input file after reading to make space for output (reduces peak disk usage))
+[m[33m0:00:00 WAR - Argument 'mbtiles' is deprecated
+[m[0m0:00:00 DEB - argument: output=bench/base.mbtiles (output tile archive path)
+[m[0m0:00:00 DEB - argument: version=false (show version then exit)
+[m[0m0:00:00 INF - Planetiler build git hash: e6c37de5f311483d0d696b23aa8b013263674cee
+[m[0m0:00:00 INF - Planetiler build version: 0.10.3-SNAPSHOT
+[m[0m0:00:00 INF - Planetiler build timestamp: 2026-08-13T19:19:06.651Z
+[m[0m0:00:00 DEB - argument: transliterate=true (attempt to transliterate latin names)
+[m[0m0:00:00 DEB - argument: languages= (Languages to include labels for. "default" expands to the default set of languages configured by the profile. "-lang" excludes "lang". "*" includes every language not listed.)
+[m[0m0:00:00 DEB - argument: only_layers= (Include only certain layers)
+[m[0m0:00:00 DEB - argument: exclude_layers=route (Exclude certain layers)
+[m[0m0:00:00 DEB - argument: mountain_peak_radius=30.0 (mountain_peak layer: radius for clustering in meters)
+[m[0m0:00:00 DEB - argument: mountain_peak_radius_close=5.0 (mountain_peak layer: close radius for clustering in meters)
+[m[0m0:00:00 DEB - argument: mountain_peak_max_rank=3.0 (mountain_peak layer: close radius for clustering in meters)
+[m[0m0:00:00 DEB - argument: boundary_country_names=true (boundary layer: add left/right codes of neighboring countries)
+[m[0m0:00:00 DEB - argument: boundary_osm_only=false (boundary layer: only use OSM, even at low zoom levels)
+[m[0m0:00:00 DEB - argument: transportation_z13_paths=false (transportation(_name) layer: show all paths on z13)
+[m[0m0:00:00 DEB - argument: building_merge_z13=false (building layer: merge nearby buildings at z13)
+[m[0m0:00:00 INF - BuildingName
+[m[0m0:00:00 DEB - argument: transportation_name_brunnel=false (transportation_name layer: set to false to omit brunnel and help merge long highways)
+[m[0m0:00:00 DEB - argument: transportation_name_size_for_shield=false (transportation_name layer: allow road names on shorter segments (ie. they will have a shield))
+[m[0m0:00:00 DEB - argument: transportation_name_limit_merge=true (transportation_name layer: limit merge so we don't combine different relations to help merge long highways)
+[m[0m0:00:00 DEB - argument: transportation_name_minor_refs=false (transportation_name layer: include name and refs from minor road networks if not present on a way)
+[m[0m0:00:00 DEB - argument: help=false (show arguments then exit)
+[m[0m0:00:00 DEB - argument: layer_stats=/work/cairn/bench/base.mbtiles.layerstats.tsv.gz (layer stats output path)
+[m[0m0:00:00 INF - Building OpenMapTilesProfile profile into file:///work/cairn/bench/base.mbtiles in these phases:
+[m[0m0:00:00 INF -   lake_centerlines: Process features in data/sources/lake_centerline.shp.zip
+[m[0m0:00:00 INF -   water_polygons: Process features in data/sources/water-polygons-split-3857.zip
+[m[0m0:00:00 INF -   natural_earth: Process features in data/sources/natural_earth_vector.sqlite.zip
+[m[0m0:00:00 INF -   osm_pass1: Pre-process OpenStreetMap input (store node locations then relation members)
+[m[0m0:00:00 INF -   osm_pass2: Process OpenStreetMap nodes, ways, then relations
+[m[0m0:00:00 INF -   sort: Sort rendered features by tile ID
+[m[0m0:00:00 INF -   archive: Encode each tile and write to TileArchiveConfig[format=MBTILES, scheme=FILE, uri=file:///work/cairn/bench/base.mbtiles, options={}]
+[m[0m0:00:00 DEB - ✓ 77G storage on /work (/dev/disk3s1) requested for read phase disk, 909G available
+[m[0m0:00:00 DEB -  - 76G used for temporary node location cache
+[m[0m0:00:00 DEB -  - 80M used for temporary multipolygon geometry cache
+[m[0m0:00:00 DEB -  - 1.7G used for temporary feature storage
+[m[0m0:00:00 DEB - ✓ 2.6G storage on /work (/dev/disk3s1) requested for write phase disk, 909G available
+[m[0m0:00:00 DEB -  - 1.7G used for temporary feature storage
+[m[0m0:00:00 DEB -  - 877M used for archive output
+[m[0m0:00:00 DEB - ✓ 157M JVM heap requested for read phase, 34G available
+[m[0m0:00:00 DEB -  - 157M used for temporary profile storage
+[m[0m0:00:00 DEB - ✓ 76G storage on /work (/dev/disk3s1) requested for read phase, 909G available
+[m[0m0:00:00 DEB -  - 76G used for array node location cache (switch to sparsearray to reduce size)
+[m[0m0:00:00 DEB -  - 80M used for multipolygon way geometries
+[m[33m0:00:00 WAR - Planetiler will use ~76G memory-mapped files for node locations and multipolygon geometries but the OS only
+has 34G available to cache pages, this may slow the import down. To speed up, run on a machine with more
+memory or reduce the -Xmx setting.
+
+[m[0m0:00:00 DEB - argument: archive_name=OpenMapTiles ('name' attribute for tileset metadata)
+[m[0m0:00:00 DEB - argument: archive_description=A tileset showcasing all layers in OpenMapTiles. https://openmaptiles.org ('description' attribute for tileset metadata)
+[m[0m0:00:00 DEB - argument: archive_attribution=<a href="https://www.openmaptiles.org/" target="_blank">&copy; OpenMapTiles</a> <a href="https://www.openstreetmap.org/copyright" target="_blank">&copy; OpenStreetMap contributors</a> ('attribution' attribute for tileset metadata)
+[m[0m0:00:00 DEB - argument: archive_version=3.16.0 ('version' attribute for tileset metadata)
+[m[0m0:00:00 DEB - argument: archive_type=baselayer ('type' attribute for tileset metadata)
+[m[33m0:00:01 WAR - Argument 'compact_db' is deprecated
+[m[0m0:00:01 DEB - argument: compact=true (mbtiles: reduce the DB size by separating and deduping the tile data)
+[m[0m0:00:01 DEB - argument: no_index=false (mbtiles: skip adding index to sqlite DB)
+[m[0m0:00:01 DEB - argument: vacuum_analyze=false (mbtiles: vacuum analyze sqlite DB after writing)
+[m[0m0:00:01 INF - Using merge sort feature map, chunk size=2000mb max workers=18
+[m[0m0:00:01 INF [lake_centerlines] - 
+[m[0m0:00:01 INF [lake_centerlines] - Starting...
+[m[0m0:00:02 INF [lake_centerlines] -  read: [32m[   22 100%   53/s ][0m write: [    0    0/s ] 0    
+    cpus: [34m0.7[0m gc:  0% heap: 67M/34G direct: 245k postGC: [34m76M[0m
+    ->     (0/3) -> read( -%) ->    (0/1k) -> process( -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%) ->   (0/68k) -> write( -%)
+[m[0m0:00:02 INF [lake_centerlines] - Finished in 1s cpu:3s avg:2.7
+[m[0m0:00:02 INF [lake_centerlines] -   read     1x(19% 0.2s)
+[m[0m0:00:02 INF [lake_centerlines] -   process 17x(0% 0s)
+[m[0m0:00:02 INF [lake_centerlines] -   write    1x(0% 0s)
+[m[0m0:00:02 INF [water_polygons] - 
+[m[0m0:00:02 INF [water_polygons] - Starting...
+[m[0m0:00:06 INF [water_polygons] -  read: [    0    0/s ] write: [    0    0/s ] 0    
+    cpus: [34m1[0m gc:  0% heap: 93M/34G direct: 54M postGC: [34m76M[0m
+    ->     (0/3) -> read( -%) ->    (0/1k) -> process( -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%) ->   (0/68k) -> write( -%)
+[m[0m0:00:06 INF [water_polygons] - Finished in 5s cpu:5s avg:1
+[m[0m0:00:06 INF [water_polygons] -   read     1x(48% 2s done:2s)
+[m[0m0:00:06 INF [water_polygons] -   process 17x(0% 0s wait:2s done:2s)
+[m[0m0:00:06 INF [water_polygons] -   write    1x(0% 0s wait:2s done:2s)
+[m[0m0:00:06 INF [natural_earth] - 
+[m[0m0:00:06 INF [natural_earth] - Starting...
+[m[0m0:00:06 INF [natural_earth] - unzipping /work/cairn/data/sources/natural_earth_vector.sqlite.zip to data/tmp/%2Fnatural_earth_vector.sqlite%2Fpackages%2Fnatural_earth_vector.sqlite
+[m[0m0:00:09 INF [natural_earth] - unzipping /work/cairn/data/sources/natural_earth_vector.sqlite.zip to data/tmp/%2Fnatural_earth_vector.sqlite%2Fpackages%2Fnatural_earth_vector.sqlite
+[m[0m0:00:14 INF [natural_earth] -  read: [32m[ 349k 100%  64k/s ][0m write: [   40    7/s ] 17k  
+    cpus: [34m1.5[0m gc:  0% heap: 256M/34G direct: 54M postGC: [34m105M[0m
+    ->     (0/3) -> read( -%) ->    (0/1k) -> process( -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%) ->   (0/68k) -> write( -%)
+[m[0m0:00:14 INF [natural_earth] - Finished in 8s cpu:11s avg:1.4
+[m[0m0:00:14 INF [natural_earth] -   read     1x(64% 5s done:3s)
+[m[0m0:00:14 INF [natural_earth] -   process 17x(1% 0.1s wait:5s done:2s)
+[m[0m0:00:14 INF [natural_earth] -   write    1x(0% 0s wait:5s done:2s)
+[m[0m0:00:15 INF [osm_pass1] - 
+[m[0m0:00:15 INF [osm_pass1] - Starting...
+[m[0m0:00:25 INF [osm_pass1] -  nodes: [32m[  42M 4.2M/s ][0m 72G   ways: [    0    0/s ] rels: [    0    0/s ] blocks: [ 5.3k  531/s ]
+    cpus: [34m1.9[0m gc:  0% heap: 9.4G/34G direct: 624M postGC: [34m7.6G[0m hppc: 287k
+    read( 2%) ->   (35/52) -> process( 7%  6% 45%  6%  5%  5%  7%  6% 40%  5%  6%  5%  6%  6%  5%  6%  6%)
+[m[0m0:00:30 INF [osm_pass1:process] - Finished nodes: 55,857,962 (3.6M/s) in 15s cpu:25s avg:1.6
+[m[0m0:00:31 INF [osm_pass1:process] - Finished ways: 7,146,659 (16M/s) in 0.4s cpu:6s avg:14.7
+[m[0m0:00:31 INF [osm_pass1:process] - Finished relations: 154,041 (1.9M/s) in 0.1s cpu:0.8s avg:10.6
+[m[0m0:00:31 INF [osm_pass1] -  nodes: [32m[  55M 2.2M/s ][0m 112G  ways: [32m[ 7.1M 1.1M/s ][0m rels: [32m[ 154k  25k/s ][0m blocks: [ 7.8k  427/s ]
+    cpus: [34m2.4[0m gc:  0% heap: 4.5G/34G direct: 54M postGC: [34m1.9G[0m hppc: 1.1M
+    read( -%) ->    (0/52) -> process( -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%)
+[m[0m0:00:31 DEB [osm_pass1] - Processed 7,897 blocks:
+[m[0m0:00:31 DEB [osm_pass1] -   nodes: 55,857,962 (3.6M/s) in 15s cpu:25s avg:1.6
+[m[0m0:00:31 DEB [osm_pass1] -   ways: 7,146,659 (16M/s) in 0.4s cpu:6s avg:14.7
+[m[0m0:00:31 DEB [osm_pass1] -   relations: 154,041 (1.9M/s) in 0.1s cpu:0.8s avg:10.6
+[m[0m0:00:31 INF [osm_pass1] - Finished in 16s cpu:33s avg:2
+[m[0m0:00:31 INF [osm_pass1] -   read     1x(2% 0.3s wait:12s)
+[m[0m0:00:31 INF [osm_pass1] -   process 17x(11% 2s wait:13s)
+[m[0m0:00:31 INF [osm_pass2] - 
+[m[0m0:00:31 INF [osm_pass2] - Starting...
+[m[0m0:00:33 DEB [osm_pass2:process] - Sorting long long multimap...
+[m[0m0:00:33 DEB [osm_pass2:process] - Sorted long long multimap 0s cpu:0.1s avg:15.2
+[m[0m0:00:33 INF [osm_pass2:process] - Finished nodes: 55,857,962 (23M/s) in 2s cpu:35s avg:14.8
+[m[0m0:00:33 DEB [osm_pass2:process] - Sorting long long multimap...
+[m[0m0:00:33 DEB [osm_pass2:process] - Sorted long long multimap 0s cpu:0s avg:8.9
+[m[33m0:00:33 WAR [osm_pass2:process] - No GB polygon for inferring route network types
+[m[33m0:00:35 WAR [osm_pass2:process] - No IE polygon for inferring route network types
+[m[0m0:00:41 INF [osm_pass2] -  nodes: [32m[  55M 100% 5.5M/s ][0m 112G  ways: [32m[ 5.2M  74% 528k/s ][0m rels: [    0   0%    0/s ] features: [  17M 1.7M/s ] 3.1G  blocks: [ 7.6k  97%  763/s ]
+    cpus: [34m11.5[0m gc:  4% heap: 280M/34G direct: 55M postGC: [34m300M[0m relInfo:   1M mpGeoms: 31M  
+    read( 1%) ->   (11/28) -> process(54% 55% 54% 56% 56% 55% 56% 55% 59% 55% 53% 54% 58% 53% 54% 54% 53%) -> (8.9k/68k) -> write(27%)
+[m[0m0:00:43 INF [osm_pass2:process] - Finished ways: 7,146,659 (730k/s) in 10s cpu:1m42s avg:10.5
+[m[0m0:00:44 INF [osm_pass2:process] - Finished relations: 154,041 (97k/s) in 2s cpu:24s avg:15.5
+[m[0m0:00:45 INF [osm_pass2] -  nodes: [  55M 100%    0/s ] 112G  ways: [32m[ 7.1M 100% 465k/s ][0m rels: [32m[ 154k 100%  38k/s ][0m features: [  22M 1.4M/s ] 1.7G  blocks: [ 7.8k 100%   64/s ]
+    cpus: [34m12[0m gc:  2% heap: 302M/34G direct: 54M postGC: [34m225M[0m relInfo:   1M mpGeoms: 46M  
+    read( -%) ->    (0/28) -> process( -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%) ->   (0/68k) -> write( -%)
+[m[0m0:00:45 DEB [osm_pass2] - Processed 7,897 blocks:
+[m[0m0:00:45 DEB [osm_pass2] -   nodes: 55,857,962 (23M/s) in 2s cpu:35s avg:14.8
+[m[0m0:00:45 DEB [osm_pass2] -   ways: 7,146,659 (730k/s) in 10s cpu:1m42s avg:10.5
+[m[0m0:00:45 DEB [osm_pass2] -   relations: 154,041 (97k/s) in 2s cpu:24s avg:15.5
+[m[0m0:00:45 INF [osm_pass2] - Finished in 14s cpu:2m43s avg:11.7
+[m[0m0:00:45 INF [osm_pass2] -   read     1x(1% 0.1s wait:12s done:2s)
+[m[0m0:00:45 INF [osm_pass2] -   process 17x(56% 8s)
+[m[0m0:00:45 INF [osm_pass2] -   write    1x(25% 4s wait:9s)
+[m[0m0:00:45 INF [ne_lakes] - 
+[m[0m0:00:45 INF [ne_lakes] - Starting...
+[m[0m0:00:45 INF [ne_lakes] - Finished in 0s cpu:0s avg:1.1
+[m[0m0:00:45 INF [boundaries] - 
+[m[0m0:00:45 INF [boundaries] - Starting...
+[m[0m0:00:45 INF [boundaries] - Creating polygons for 3 boundaries
+[m[33m0:00:45 WAR [boundaries] - Unable to form closed polygon for OSM relation 2202162 (likely missing edges)
+[m[33m0:00:45 WAR [boundaries] - Unable to form closed polygon for OSM relation 51701 (likely missing edges)
+[m[33m0:00:45 WAR [boundaries] - Unable to form closed polygon for OSM relation 365331 (likely missing edges)
+[m[0m0:00:45 INF [boundaries] - Finished creating 0 country polygons
+[m[0m0:00:45 INF [boundaries] - Finished in 0s cpu:0s avg:2.2
+[m[0m0:00:45 INF [agg_stop] - 
+[m[0m0:00:45 INF [agg_stop] - Starting...
+[m[0m0:00:45 INF [agg_stop] - Processing 136 agg_stop sets
+[m[0m0:00:45 INF [agg_stop] - Finished in 0s cpu:0s avg:4.7
+[m[0m0:00:45 INF [agg_stop] - Deleting node.db to make room for output file
+[m[0m0:00:45 INF [sort] - 
+[m[0m0:00:45 INF [sort] - Starting...
+[m[0m0:00:45 INF [sort] - Grouped 9 chunks into 2
+[m[0m0:00:47 INF [sort] -  chunks: [   2 /   2 100% ] 1.7G 
+    cpus: [34m9[0m gc:  9% heap: 3.1G/34G direct: 54M postGC: [34m3.2G[0m
+    ->     (0/8) -> worker( -%  -%)
+[m[0m0:00:47 INF [sort] - Finished in 2s cpu:15s avg:9
+[m[0m0:00:47 INF [sort] -   worker  5x(16% 0.3s done:1s)
+[m[0m0:00:47 INF [sort] - read:0s write:1s sort:1s
+[m[0m0:00:47 INF [archive] - 
+[m[0m0:00:47 INF [archive] - Starting...
+[m[0m0:00:47 DEB [archive] - Execute mbtiles: create table metadata (name text, value text);
+[m[0m0:00:47 DEB [archive] - Execute mbtiles: create unique index name on metadata (name);
+[m[0m0:00:47 DEB [archive] - Execute mbtiles: create table tiles_shallow (
+  zoom_level integer,
+  tile_column integer,
+  tile_row integer,
+  tile_data_id integer
+
+  , primary key(zoom_level,tile_column,tile_row)
+
+) without rowid
+
+[m[0m0:00:47 DEB [archive] - Execute mbtiles: create table tiles_data (
+  tile_data_id integer primary key,
+  tile_data blob
+)
+
+[m[0m0:00:47 DEB [archive] - Execute mbtiles: create view tiles AS
+select
+  tiles_shallow.zoom_level as zoom_level,
+  tiles_shallow.tile_column as tile_column,
+  tiles_shallow.tile_row as tile_row,
+  tiles_data.tile_data as tile_data
+from tiles_shallow
+join tiles_data on tiles_shallow.tile_data_id = tiles_data.tile_data_id
+
+[m[0m0:00:47 INF [archive:write] - Starting z0
+[m[0m0:00:47 INF [archive:write] - Finished z0 in 0s cpu:0s avg:9.8, now starting z1
+[m[0m0:00:47 INF [archive:write] - Finished z1 in 0s cpu:0s avg:16.6, now starting z2
+[m[0m0:00:47 INF [archive:write] - Finished z2 in 0s cpu:0s avg:3.6, now starting z3
+[m[0m0:00:47 INF [archive:write] - Finished z3 in 0s cpu:0s avg:8.8, now starting z4
+[m[0m0:00:47 INF [archive:write] - Finished z4 in 0s cpu:0.2s avg:16.2, now starting z5
+[m[0m0:00:47 INF [archive:write] - Finished z5 in 0.1s cpu:1s avg:16.7, now starting z6
+[m[0m0:00:48 INF [archive:write] - Finished z6 in 0.2s cpu:4s avg:16.1, now starting z7
+[m[0m0:00:48 INF [archive:write] - Finished z7 in 0.1s cpu:1s avg:16.6, now starting z8
+[m[0m0:00:48 INF [archive:write] - Finished z8 in 0.2s cpu:4s avg:15.8, now starting z9
+[m[0m0:00:48 INF [archive:write] - Finished z9 in 0.4s cpu:6s avg:15.6, now starting z10
+[m[0m0:00:49 INF [archive:write] - Finished z10 in 0.3s cpu:4s avg:15.5, now starting z11
+[m[0m0:00:49 INF [archive:write] - Finished z11 in 0.6s cpu:8s avg:14, now starting z12
+[m[0m0:00:50 INF [archive:write] - Finished z12 in 1s cpu:20s avg:15.7, now starting z13
+[m[0m0:00:52 INF [archive:write] - Finished z13 in 2s cpu:23s avg:14.8, now starting z14
+[m[0m0:00:53 DEB [archive:write] - Shallow tiles written: 21,843
+[m[0m0:00:53 DEB [archive:write] - Tile data written: 21,767 (0% omitted)
+[m[0m0:00:53 DEB [archive:write] - Unique tile hashes: 3
+[m[0m0:00:53 INF [archive:write] - Finished z14 in 1s cpu:17s avg:15.3
+[m[0m0:00:53 DEB [archive:write] - Set mbtiles metadata: name=OpenMapTiles
+[m[0m0:00:53 DEB [archive:write] - Set mbtiles metadata: description=A tileset showcasing all layers in OpenMapTiles. https://openmaptiles.org
+[m[0m0:00:53 DEB [archive:write] - Set mbtiles metadata: attribution=<a href="https://www.openmaptiles.org/" target="_blank">&copy; OpenMapTiles</a> <a href="https://www.openstreetmap.org/copyright" target="_blank">&copy; OpenStreetMap contributors</a>
+[m[0m0:00:53 DEB [archive:write] - Set mbtiles metadata: version=3.16.0
+[m[0m0:00:53 DEB [archive:write] - Set mbtiles metadata: type=baselayer
+[m[0m0:00:53 DEB [archive:write] - Set mbtiles metadata: format=pbf
+[m[0m0:00:53 DEB [archive:write] - Set mbtiles metadata: bounds=3.68608,44.11274,7.19206,46.52248
+[m[0m0:00:53 DEB [archive:write] - Set mbtiles metadata: center=5.43907,45.31761,7
+[m[0m0:00:53 DEB [archive:write] - Set mbtiles metadata: minzoom=0
+[m[0m0:00:53 DEB [archive:write] - Set mbtiles metadata: maxzoom=14
+[m[0m0:00:53 DEB [archive:write] - Set mbtiles metadata: json={"vector_layers":[{"id":"aerodrome_label","fields":{"class":"String","ele":"Number","iata":"String","icao":"String","name":"String","name_int":"String"},"minzoom":8,"maxzoom":14},{"id":"aeroway","fields":{"class":"String","ref":"String"},"minzoom":10,"maxzoom":14},{"id":"boundary","fields":{"admin_level":"Number","claimed_by":"String","color":"String","disputed":"Number","disputed_name":"String","name":"String","name_int":"String","ref":"String"},"minzoom":0,"maxzoom":14},{"id":"building","fields":{"hide_3d":"Boolean","render_height":"Number","render_min_height":"Number"},"minzoom":14,"maxzoom":14},{"id":"building_name","fields":{"name":"String","name_int":"String"},"minzoom":14,"maxzoom":14},{"id":"housenumber","fields":{"housenumber":"String"},"minzoom":14,"maxzoom":14},{"id":"landcover","fields":{"class":"String","subclass":"String"},"minzoom":5,"maxzoom":14},{"id":"landcover_name","fields":{"class":"String","name":"String","name_int":"String","subclass":"String","way_pixels":"Numbe... 1970 more characters
+[m[0m0:00:53 DEB [archive:write] - Set mbtiles metadata: planetiler:buildtime=2026-08-13T19:19:06.651Z
+[m[0m0:00:53 DEB [archive:write] - Set mbtiles metadata: planetiler:githash=e6c37de5f311483d0d696b23aa8b013263674cee
+[m[0m0:00:53 DEB [archive:write] - Set mbtiles metadata: planetiler:osm:osmosisreplicationseq=4875
+[m[0m0:00:53 DEB [archive:write] - Set mbtiles metadata: planetiler:osm:osmosisreplicationtime=2026-08-12T20:21:46Z
+[m[0m0:00:53 DEB [archive:write] - Set mbtiles metadata: planetiler:osm:osmosisreplicationurl=https://download.geofabrik.de/europe/france/rhone-alpes-updates
+[m[0m0:00:53 DEB [archive:write] - Set mbtiles metadata: planetiler:version=0.10.3-SNAPSHOT
+[m[0m0:00:53 DEB [archive:write] - Set mbtiles metadata: compression=gzip
+[m[0m0:00:53 INF [archive] -  features: [32m[  22M 100% 3.7M/s ][0m 1.7G  tiles: [  21k 3.6k/s ] 296M 
+    cpus: [34m15.2[0m gc:  5% heap: 6G/34G direct: 54M postGC: [34m3.4G[0m
+    read( -%) ->  (0/1.7k) -> encode( -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%  -%) ->  (0/1.7k) -> write( -%) ->  (0/1.7k) -> stats( -%)
+    last tile: 14/8519/5867 (z14 99%) https://onthegomap.github.io/planetiler-demo/#14.5/45.40616/7.19604
+[m[0m0:00:53 DEB [archive] - Tile stats:
+[m[0m0:00:53 DEB [archive] - Biggest tiles (gzipped)
+1. 14/8452/5881 (259k) https://onthegomap.github.io/planetiler-demo/#14.5/45.18978/5.72388 (poi:113k)
+2. 14/8412/5844 (205k) https://onthegomap.github.io/planetiler-demo/#14.5/45.75986/4.84497 (poi:139k)
+3. 14/8411/5844 (195k) https://onthegomap.github.io/planetiler-demo/#14.5/45.75986/4.823 (poi:108k)
+4. 14/8391/5865 (175k) https://onthegomap.github.io/planetiler-demo/#14.5/45.43701/4.38354 (building:120k)
+5. 14/8413/5844 (161k) https://onthegomap.github.io/planetiler-demo/#14.5/45.75986/4.86694 (building:85k)
+6. 14/8411/5843 (161k) https://onthegomap.github.io/planetiler-demo/#14.5/45.77519/4.823 (building:84k)
+7. 9/264/182 (156k) https://onthegomap.github.io/planetiler-demo/#9.5/45.82826/5.97656 (landcover:140k)
+8. 14/8413/5843 (156k) https://onthegomap.github.io/planetiler-demo/#14.5/45.77519/4.86694 (building:73k)
+9. 14/8414/5844 (155k) https://onthegomap.github.io/planetiler-demo/#14.5/45.75986/4.88892 (building:94k)
+10. 14/8451/5881 (154k) https://onthegomap.github.io/planetiler-demo/#14.5/45.18978/5.7019 (building:85k)
+[m[0m0:00:53 DEB [archive] - Max tile sizes
+                      z0    z1    z2    z3    z4    z5    z6    z7    z8    z9   z10   z11   z12   z13   z14   all
+           boundary   62    84    92   339   467   307  1.9k  2.9k  3.6k  2.4k  1.6k  1.5k  1.3k    1k  1.3k  3.6k
+              water 3.6k  2.1k  2.3k  2.1k  1.3k   746   219   573  2.7k  5.3k   13k   13k  6.1k  3.2k  9.3k   13k
+              place    0     0     0    93    93    93   136   506   979  1.5k  2.1k  2.7k  2.4k  1.9k  3.5k  3.5k
+            landuse    0     0     0     0   169   233  2.1k   13k   47k   42k   39k   29k   16k   12k   23k   47k
+               park    0     0     0     0   212   782   987  1.7k    3k  2.3k  1.7k  1.9k  2.8k  1.7k    3k    3k
+     transportation    0     0     0     0  1.3k  2.9k  2.3k   12k   18k   31k   23k   23k   94k   50k   74k   94k
+           waterway    0     0     0     0   256   367   181   382   612  3.9k  2.1k  1.2k   16k  9.4k  7.1k   16k
+          landcover    0     0     0     0     0   256   349   31k [33m 127k[0m [33m 140k[0m [33m 109k[0m   56k   43k   36k [33m 119k[0m [33m 140k[0m
+      mountain_peak    0     0     0     0     0     0   123   269   553  1.1k  1.5k  1.6k  1.7k  1.1k   55k   55k
+transportation_name    0     0     0     0     0     0    1k    1k  1.5k  1.2k  1.4k  1.2k  2.8k  2.4k   42k   42k
+         water_name    0     0     0     0     0     0     0   125   152   154   155   205   186   178  1.2k  1.2k
+    aerodrome_label    0     0     0     0     0     0     0     0   280   197   489   312   200   197   197   489
+       landuse_name    0     0     0     0     0     0     0     0   156   156   156   156   135   152  2.1k  2.1k
+     landcover_name    0     0     0     0     0     0     0     0     0   124   138   264   292   266   664   664
+                poi    0     0     0     0     0     0     0     0     0  9.7k  8.5k  3.4k  5.7k  2.7k [33m 139k[0m [33m 139k[0m
+            aeroway    0     0     0     0     0     0     0     0     0     0  1.6k    3k  3.4k  3.8k  6.4k  6.4k
+           building    0     0     0     0     0     0     0     0     0     0     0     0     0     0 [33m 120k[0m [33m 120k[0m
+      building_name    0     0     0     0     0     0     0     0     0     0     0     0     0     0  5.6k  5.6k
+        housenumber    0     0     0     0     0     0     0     0     0     0     0     0     0     0   28k   28k
+          full tile 3.7k  2.2k  2.4k  2.5k  3.9k  5.7k  8.4k   55k  175k  217k  144k   75k  118k   66k  393k  393k
+            gzipped 3.3k  2.1k  2.2k  2.3k  3.2k  4.4k  6.5k   40k  125k  156k  105k   61k   66k   38k  259k  259k
+[m[0m0:00:53 DEB [archive] -    Max tile: 393k (gzipped: 259k)
+[m[0m0:00:53 DEB [archive] -    Avg tile: 47k (gzipped: 35k) using weighted average based on OSM traffic
+[m[0m0:00:53 DEB [archive] -     # tiles: 21,843
+[m[0m0:00:53 DEB [archive] -  # features: 22,718,054
+[m[0m0:00:53 INF [archive] - Finished in 6s cpu:1m32s avg:14.4
+[m[0m0:00:53 INF [archive] -   read    1x(15% 0.9s wait:2s done:3s)
+[m[0m0:00:53 INF [archive] -   encode 17x(69% 4s)
+[m[0m0:00:53 INF [archive] -   stats   1x(2% 0.1s wait:6s)
+[m[0m0:00:53 INF [archive] -   write   1x(5% 0.3s wait:6s)
+[m[0m0:00:53 INF [archive] - Finished in 54s cpu:5m24s gc:1s avg:6
+[m[0m0:00:53 INF [archive] - FINISHED!
+[m[0m0:00:53 INF [archive] - 
+[m[0m0:00:53 INF [archive] - ----------------------------------------
+[m[0m0:00:53 INF [archive] - data errors:
+[m[0m0:00:53 INF [archive] - 	render_snap_fix_input	93,748
+[m[0m0:00:53 INF [archive] - 	osm_boundary_missing_way	11,709
+[m[0m0:00:53 INF [archive] - 	osm_multipolygon_missing_way	73
+[m[0m0:00:53 INF [archive] - 	feature_polygon_osm_invalid_multipolygon_empty_after_fix	28
+[m[0m0:00:53 INF [archive] - 	feature_point_on_surface_osm_invalid_multipolygon_empty_after_fix	28
+[m[0m0:00:53 INF [archive] - 	omt_fix_water_before_ne_intersect	15
+[m[0m0:00:53 INF [archive] - 	omt_park_area_osm_invalid_multipolygon_empty_after_fix	14
+[m[0m0:00:53 INF [archive] - 	merge_snap_fix_input	4
+[m[0m0:00:53 INF [archive] - 	feature_centroid_if_convex_osm_invalid_multipolygon_empty_after_fix	1
+[m[0m0:00:53 INF [archive] - 	omt_park_area_osm_invalid_multipolygon_empty	1
+[m[0m0:00:53 INF [archive] - 	osm_multipolygon_duplicate_member	1
+[m[0m0:00:53 INF [archive] - ----------------------------------------
+[m[0m0:00:53 INF [archive] - 	overall          54s cpu:5m24s gc:1s avg:6
+[m[0m0:00:53 INF [archive] - 	lake_centerlines 1s cpu:3s avg:2.7
+[m[0m0:00:53 INF [archive] - 	  read     1x(19% 0.2s)
+[m[0m0:00:53 INF [archive] - 	  process 17x(0% 0s)
+[m[0m0:00:53 INF [archive] - 	  write    1x(0% 0s)
+[m[0m0:00:53 INF [archive] - 	water_polygons   5s cpu:5s avg:1
+[m[0m0:00:53 INF [archive] - 	  read     1x(48% 2s done:2s)
+[m[0m0:00:53 INF [archive] - 	  process 17x(0% 0s wait:2s done:2s)
+[m[0m0:00:53 INF [archive] - 	  write    1x(0% 0s wait:2s done:2s)
+[m[0m0:00:53 INF [archive] - 	natural_earth    8s cpu:11s avg:1.4
+[m[0m0:00:53 INF [archive] - 	  read     1x(64% 5s done:3s)
+[m[0m0:00:53 INF [archive] - 	  process 17x(1% 0.1s wait:5s done:2s)
+[m[0m0:00:53 INF [archive] - 	  write    1x(0% 0s wait:5s done:2s)
+[m[0m0:00:53 INF [archive] - 	osm_pass1        16s cpu:33s avg:2
+[m[0m0:00:53 INF [archive] - 	  read     1x(2% 0.3s wait:12s)
+[m[0m0:00:53 INF [archive] - 	  process 17x(11% 2s wait:13s)
+[m[0m0:00:53 INF [archive] - 	osm_pass2        14s cpu:2m43s avg:11.7
+[m[0m0:00:53 INF [archive] - 	  read     1x(1% 0.1s wait:12s done:2s)
+[m[0m0:00:53 INF [archive] - 	  process 17x(56% 8s)
+[m[0m0:00:53 INF [archive] - 	  write    1x(25% 4s wait:9s)
+[m[0m0:00:53 INF [archive] - 	ne_lakes         0s cpu:0s avg:1.1
+[m[0m0:00:53 INF [archive] - 	boundaries       0s cpu:0s avg:2.2
+[m[0m0:00:53 INF [archive] - 	agg_stop         0s cpu:0s avg:4.7
+[m[0m0:00:53 INF [archive] - 	sort             2s cpu:15s avg:9
+[m[0m0:00:53 INF [archive] - 	  worker  5x(16% 0.3s done:1s)
+[m[0m0:00:53 INF [archive] - 	archive          6s cpu:1m32s avg:14.4
+[m[0m0:00:53 INF [archive] - 	  read    1x(15% 0.9s wait:2s done:3s)
+[m[0m0:00:53 INF [archive] - 	  encode 17x(69% 4s)
+[m[0m0:00:53 INF [archive] - 	  stats   1x(2% 0.1s wait:6s)
+[m[0m0:00:53 INF [archive] - 	  write   1x(5% 0.3s wait:6s)
+[m[0m0:00:53 INF [archive] - ----------------------------------------
+[m[0m0:00:53 INF [archive] - 	archive	296MB
+[m[0m0:00:53 INF [archive] - 	features	1.7GB
+[m[0m0:00:53 INF [archive] - Acknowledgments
+Generated vector tiles are produced work of OpenStreetMap data.
+Such tiles are reusable under CC-BY license granted by OpenMapTiles team:
+- https://github.com/openmaptiles/openmaptiles/#license
+Maps made with these vector tiles must display a visible credit:
+- © OpenMapTiles © OpenStreetMap contributors
+Thanks to all free, open source software developers and Open Data Contributors!
+
+[m

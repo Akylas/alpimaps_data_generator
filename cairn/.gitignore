@@ -1,6 +1,0 @@
-node_modules/
-dist/
-target/
-resources/*.jar
-resources/Frameworks/*.dylib
-resources/*.jar

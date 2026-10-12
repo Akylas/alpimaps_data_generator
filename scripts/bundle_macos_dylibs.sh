@@ -9,7 +9,7 @@
 #
 #   scripts/bundle_macos_dylibs.sh <binary> <frameworks-dir> [rpath-prefix]
 #
-# The Studio calls it from Tauri'''s beforeBundleCommand with the libraries going to
+# Cairn calls it from Tauri'''s beforeBundleCommand with the libraries going to
 # src-tauri/resources/Frameworks and a prefix of @executable_path/../Resources/Frameworks:
 # Tauri'''s bundle.macOS.frameworks only accepts a .framework or .dylib path, never a directory,
 # so they travel as a named resource directory instead.

@@ -1,47 +1,65 @@
-# Anchored with a leading slash: these name things at the top of the repository, and an
-# unanchored pattern matches every path segment of that name anywhere below it. `valhalla`
-# was hiding cairn/core/src/valhalla/ - the whole routing module - from git.
-/valhalla
-valhalla_tiles
-elevation_tiles
-/prime_server
-/planetiler
-/alpimaps_mbtiles
+# Patterns are anchored with a leading slash wherever they name something at the top of the
+# repository: an unanchored pattern matches every path segment of that name anywhere below it.
+# `valhalla` once hid crates/core/src/valhalla/ - the whole routing module - from git.
+
+# --- vendored tools: submodules, and what they build ---------------------------------------
+/valhalla/build
+/planetiler/planetiler-dist/target
 /venv
-/tippecanoe
-__pycache__
-cache
-# fetched terrain tiles and pmtiles directories, kept so a rebuild does not ask for them again
-/.cache
-*.tif
-*.poly
-data
-.yarn
-*.tif
-*.mbtiles
-*.etiles
-*.vtiles
-*.geojson
-work_france_ign
 
-# release tooling
+# --- build output --------------------------------------------------------------------------
 node_modules/
-
-# benchmark output: the scripts are tracked, the archives and logs they produce are not
-bench/*.log
-bench/*.tsv.gz
-bench/terrain/
-.terrain_rgb/
-build_tiles.log
-*.aux.xml
-route_symbols.json
-valhalla_tiles.tar
+/dist
+/target
 
 # Bundled at package time by scripts/bundle_resources.sh - the jar, the CLI, valhalla.json and
 # the collected dylibs. Large, machine-specific, and rebuilt on every release.
-cairn/src-tauri/resources/*
-!cairn/src-tauri/resources/.gitkeep
-cairn/src-tauri/frameworks/*
-!cairn/src-tauri/frameworks/.gitkeep
-# generated test builds
+/src-tauri/resources/*
+!/src-tauri/resources/.gitkeep
+/src-tauri/frameworks/*
+!/src-tauri/frameworks/.gitkeep
+/src-tauri/gen/
+
+# --- data: never committed -----------------------------------------------------------------
 /output
+/data
+/.cache
+/.terrain_rgb
+/elevation_tiles
+/valhalla_tiles
+/valhalla_tiles.tar
+/alpimaps_mbtiles
+/alpimaps-studio
+/work_france_ign
+/scripts/cache/
+/tools/legacy/**/cache/
+*.tif
+*.aux.xml
+*.mbtiles
+*.pmtiles
+*.etiles
+*.vtiles
+*.pbf
+*.poly
+*.geojson
+*.log
+route_symbols.json
+
+# ...except the sample areas
+!/crates/core/tests/fixtures/*.log
+!/examples/areas/*.poly
+!/examples/areas/*.geojson
+
+# benchmark output: the scripts are tracked, the archives they produce are not
+/tools/bench/*.tsv.gz
+/tools/bench/terrain/
+
+# --- local ---------------------------------------------------------------------------------
+__pycache__/
+.DS_Store
+.vscode/
+.idea/
+.claude/
+.env
+.env.*
+!.env.example

@@ -1791,7 +1791,7 @@ def build_mbtiles(tippecanoe: str, layers: list[tuple[str, Path]], output: Path,
         "--no-tiny-polygon-reduction",
         "--coalesce-densest-as-needed",
 
-        "--name", "Alpimaps Bathymap",
+        "--name", "Cairn Bathymap",
         "--description", "Global landcover and bathymetry for low zooms",
         "--attribution",
         "© Natural Earth; © ESA WorldCover project 2021 / VersaTiles",
@@ -1973,7 +1973,7 @@ def main(argv: list[str] | None = None) -> int:
     chunk_zoom = choose_chunk_zoom(bbox, args.max_zoom, jobs, args.chunk_zoom)
 
     log("=" * 60)
-    log(f"Alpimaps Bathymap - pipeline v{PIPELINE_VERSION}")
+    log(f"Cairn Bathymap - pipeline v{PIPELINE_VERSION}")
     log(f"bbox:       {bbox_string(bbox)}{' (global)' if is_global(bbox) else ''}")
     chosen = "chosen" if args.chunk_zoom is None else "requested"
     log(f"zoom:       {args.min_zoom}-{args.max_zoom}, "

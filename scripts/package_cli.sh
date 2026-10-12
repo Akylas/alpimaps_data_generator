@@ -14,9 +14,8 @@ VERSION="${1:?usage: package_cli.sh <version> [outdir]}"
 OUT="${2:-dist}"
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-studio="$repo/cairn"
-# cairn-cli on disk, `cairn` once installed - see cli/Cargo.toml for why they differ
-binary="$studio/target/release/cairn-cli"
+# cairn-cli on disk, `cairn` once installed - see crates/cli/Cargo.toml for why they differ
+binary="$repo/target/release/cairn-cli"
 
 [ -f "$binary" ] || { echo "no CLI at $binary - build it first" >&2; exit 1; }
 
@@ -50,12 +49,12 @@ fi
 cat > "$stage/README.txt" <<EOF
 cairn $VERSION ($target)
 
-The AlpiMaps tile pipeline from a terminal: OSM extracts, basemap and route tiles, terrain-RGB,
+The Cairn map-data pipeline from a terminal: OSM extracts, basemap and route tiles, terrain-RGB,
 Valhalla routing packages.
 
   ./cairn --help
   ./cairn catalog --stats
-  ./cairn basemap --area rhone-alpes --repo /path/to/alpimaps_data_generator
+  ./cairn basemap --area rhone-alpes --repo /path/to/cairn
 
 Put it anywhere on PATH. Java 21+ has to be available for the planetiler steps; the jar is
 fetched on first use unless one is passed with --jar.

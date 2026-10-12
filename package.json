@@ -1,20 +1,87 @@
 {
-  "name": "alpimaps-data-generator",
+  "name": "cairn",
   "private": true,
   "version": "0.1.1",
-  "description": "Release tooling for Cairn. The app itself lives in cairn/.",
+  "type": "module",
+  "description": "Build offline map data (vector tiles, terrain, routing) from OpenStreetMap, from a desktop app or a command line.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Akylas/cairn.git"
+  },
   "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "tauri": "tauri",
     "release": "standard-version --commit-all",
     "release:dry": "standard-version --commit-all --dry-run",
     "build:planetiler": "cd planetiler && JAVA_HOME=\"$(/usr/libexec/java_home -v 21 2>/dev/null || echo \"$JAVA_HOME\")\" ./scripts/build.sh",
     "build:tippecanoe": "make -C tippecanoe -j",
-    "build:prime_server": "cd prime_server && ./autogen.sh && ./configure && make -j",
     "build:valhalla": "cmake -S valhalla -B valhalla/build -DCMAKE_BUILD_TYPE=Release -DENABLE_BENCHMARKS=Off -DENABLE_PYTHON_BINDINGS=Off -DENABLE_TESTS=Off && make -C valhalla/build -j",
-    "build:rio-rgbify": "venv/bin/python -m pip install -r rio-rgbify/requirements.txt && venv/bin/python -m pip install -e rio-rgbify",
-    "build:all": "npm run build:planetiler && npm run build:tippecanoe && npm run build:rio-rgbify && npm run build:prime_server && npm run build:valhalla"
+    "build:tools": "npm run build:planetiler && npm run build:tippecanoe && npm run build:valhalla"
+  },
+  "dependencies": {
+    "@mapbox/vector-tile": "^3.0.0",
+    "@maplibre/maplibre-gl-compare": "^0.5.0",
+    "@maplibre/mlt": "^1.1.12",
+    "@tauri-apps/api": "^2.0.0",
+    "events": "^3.3.0",
+    "maplibre-gl": "^5.24.0",
+    "pbf": "^5.1.2",
+    "randomcolor": "^0.6.2"
   },
   "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "@tauri-apps/cli": "^2.0.0",
+    "svelte": "^5.0.0",
+    "vite": "^6.0.0",
     "@tauri-apps/toml": "^2.2.4",
     "standard-version": "^9.5.0"
+  },
+  "standard-version": {
+    "bumpFiles": [
+      {
+        "filename": "package.json",
+        "type": "json"
+      },
+      {
+        "filename": "Cargo.toml",
+        "updater": "./scripts/tauri-versioner.cjs"
+      },
+      {
+        "filename": "src-tauri/tauri.conf.json",
+        "type": "json"
+      }
+    ],
+    "types": [
+      {
+        "type": "feat",
+        "section": "Features"
+      },
+      {
+        "type": "fix",
+        "section": "Bug Fixes"
+      },
+      {
+        "type": "perf",
+        "section": "Performance"
+      },
+      {
+        "type": "refactor",
+        "section": "Refactoring"
+      },
+      {
+        "type": "docs",
+        "hidden": true
+      },
+      {
+        "type": "test",
+        "hidden": true
+      },
+      {
+        "type": "chore",
+        "hidden": true
+      }
+    ]
   }
 }
